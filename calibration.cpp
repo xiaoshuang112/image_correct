@@ -179,180 +179,6 @@ void example_full_calibration() {
     }
 }
 
-// 示例2：使用已有标定结果进行坐标转换
-void example_coordinate_transformation() {
-    std::cout << "\n=== 坐标转换示例 ===" << std::endl;
-    std::cout << "=====================" << std::endl;
-
-    // 1. 加载已有标定结果
-    HandEyeCalibration calibrator;
-    if (!calibrator.loadCalibration("hand_eye_calibration.yaml")) {
-        std::cerr << "加载标定结果失败，请先进行标定" << std::endl;
-        return;
-    }
-
-    // 2. 模拟从3D相机获取的点云
-    std::vector<cv::Point3f> points_camera = CameraControl::getCameraPoints();
-
-    // 3. 从机器人获取当前位姿
-    cv::Mat T_base_flange = RobotControl::getRobotPose(calibrator);
-
-    // 显示机器人位姿信息
-    RobotControl::displayRobotPoseInfo(T_base_flange);
-
-    // 4. 转换到基坐标系
-    std::vector<cv::Point3f> points_base =
-        calibrator.transformPoints(points_camera, T_base_flange, 1);
-
-    // 5. 输出结果
-    std::cout << "\n坐标转换结果：" << std::endl;
-    std::cout << "共转换 " << points_camera.size() << " 个点" << std::endl;
-
-    // 显示前几个点的转换结果
-    int display_count = std::min(5, (int)points_camera.size());
-    for (int i = 0; i < display_count; ++i) {
-        std::cout << "点 " << i + 1 << ":" << std::endl;
-        std::cout << "  相机坐标系: (" << std::fixed << std::setprecision(3)
-            << points_camera[i].x << ", "
-            << points_camera[i].y << ", "
-            << points_camera[i].z << ") m" << std::endl;
-        std::cout << "  基坐标系:   (" << std::fixed << std::setprecision(3)
-            << points_base[i].x << ", "
-            << points_base[i].y << ", "
-            << points_base[i].z << ") m" << std::endl;
-    }
-
-    if (points_camera.size() > display_count) {
-        std::cout << "... 还有 " << (points_camera.size() - display_count)
-            << " 个点未显示" << std::endl;
-    }
-}
-
-// 示例3：标定结果验证
-void example_calibration_verification() {
-    std::cout << "\n=== 标定结果验证 ===" << std::endl;
-    std::cout << "====================" << std::endl;
-
-    HandEyeCalibration calibrator;
-    if (!calibrator.loadCalibration("hand_eye_calibration.yaml")) {
-        std::cerr << "加载标定结果失败" << std::endl;
-        return;
-    }
-
-    // 获取标定结果
-    cv::Mat T_flange_camera = calibrator.getCalibrationResult();
-    float error = calibrator.getCalibrationError();
-
-    std::cout << "标定误差: " << error << std::endl;
-    std::cout << "变换矩阵 T_flange_camera:" << std::endl;
-    std::cout << T_flange_camera << std::endl;
-
-    // 测试转换一致性
-    std::cout << "\n转换一致性测试：" << std::endl;
-
-    // 测试点1：相机坐标系原点
-    cv::Point3f camera_origin(0, 0, 0);
-    cv::Point3f flange_origin = calibrator.cameraToFlange(camera_origin);
-
-    std::cout << "相机原点在法兰坐标系: ("
-        << flange_origin.x << ", "
-        << flange_origin.y << ", "
-        << flange_origin.z << ") m" << std::endl;
-
-    // 测试多个点的转换
-    std::vector<cv::Point3f> test_points = {
-        cv::Point3f(0.1, 0, 0),
-        cv::Point3f(0, 0.1, 0),
-        cv::Point3f(0, 0, 0.1),
-        cv::Point3f(0.1, 0.1, 0.5)
-    };
-
-    cv::Mat T_base_flange = calibrator.poseToTransformMatrix(0, 0, 0, 0, 0, 0, true);
-
-    std::cout << "\n多个测试点转换：" << std::endl;
-    for (size_t i = 0; i < test_points.size(); ++i) {
-        cv::Point3f point_flange = calibrator.cameraToFlange(test_points[i]);
-        cv::Point3f point_base = calibrator.cameraToBase(test_points[i], T_base_flange);
-
-        std::cout << "测试点" << i + 1 << ": 相机("
-            << test_points[i].x << "," << test_points[i].y << "," << test_points[i].z << ")"
-            << " -> 法兰(" << point_flange.x << "," << point_flange.y << "," << point_flange.z << ")"
-            << " -> 基座(" << point_base.x << "," << point_base.y << "," << point_base.z << ")"
-            << std::endl;
-    }
-}
-
-// 示例4：实时处理演示
-void example_realtime_demo() {
-    std::cout << "\n=== 实时处理演示 ===" << std::endl;
-    std::cout << "===================" << std::endl;
-
-    HandEyeCalibration calibrator;
-    if (!calibrator.loadCalibration("hand_eye_calibration.yaml")) {
-        std::cerr << "加载标定结果失败" << std::endl;
-        return;
-    }
-
-    std::cout << "开始实时处理演示..." << std::endl;
-    std::cout << "模拟处理10帧数据，每帧间隔0.5秒" << std::endl;
-
-    for (int frame = 0; frame < 10; ++frame) {
-        std::cout << "\n--- 帧 " << frame + 1 << " ---" << std::endl;
-
-        // 获取机器人当前位姿
-        cv::Mat T_base_flange = RobotControl::getRobotPose(calibrator);
-
-        // 获取相机点云
-        std::vector<cv::Point3f> points_camera = CameraControl::getCameraPoints();
-
-        // 转换到基坐标系
-        std::vector<cv::Point3f> points_base =
-            calibrator.transformPoints(points_camera, T_base_flange, 1);
-
-        // 输出结果
-        std::cout << "检测到 " << points_camera.size() << " 个点" << std::endl;
-
-        // 计算点云中心
-        cv::Point3f center(0, 0, 0);
-        for (const auto& point : points_base) {
-            center.x += point.x;
-            center.y += point.y;
-            center.z += point.z;
-        }
-
-        if (!points_base.empty()) {
-            center.x /= points_base.size();
-            center.y /= points_base.size();
-            center.z /= points_base.size();
-
-            std::cout << "点云中心在基坐标系: ("
-                << std::fixed << std::setprecision(3)
-                << center.x << ", " << center.y << ", " << center.z << ") m" << std::endl;
-
-            // 计算中心点相对于机器人的位置
-            cv::Point3f robot_position(T_base_flange.at<double>(0, 3),
-                T_base_flange.at<double>(1, 3),
-                T_base_flange.at<double>(2, 3));
-
-            cv::Point3f relative_position(
-                center.x - robot_position.x,
-                center.y - robot_position.y,
-                center.z - robot_position.z
-            );
-
-            std::cout << "相对于机器人: ("
-                << relative_position.x << ", "
-                << relative_position.y << ", "
-                << relative_position.z << ") m" << std::endl;
-        }
-
-        // 延时，模拟实时处理
-        std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    }
-
-    std::cout << "\n实时处理演示结束" << std::endl;
-}
-
 
 std::vector<double> parse_robot_joint_pose(const std::string& pose_str) {
     std::vector<double> values;
@@ -489,7 +315,7 @@ void example_caitu_demo()
 
 again:    
     std::cout << "退出采集 请输入0  ";
-    std::cout << "请选择要使用的位姿 数据 (1-5): ";
+    std::cout << "请选择要使用的位姿 数据 (1-8): ";
 
     int choice = 0;
     std::cin >> choice;
@@ -505,16 +331,14 @@ again:
 // 主菜单
 void display_menu() {
     std::cout << "\n========================================" << std::endl;
-    std::cout << "      机器人手眼标定系统" << std::endl;
+    std::cout << "      机器人标定系统" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "1. 执行完整标定流程" << std::endl;
-    std::cout << "2. 坐标转换测试（使用已有标定结果）" << std::endl;
-    std::cout << "3. 标定结果验证" << std::endl;
-    std::cout << "4. 实时处理演示" << std::endl;
-    std::cout << "5. 自动采集图像" << std::endl;    
-    std::cout << "6. 退出程序" << std::endl;
+    std::cout << "1. 固定轨迹采集图像" << std::endl;
+    std::cout << "2. 本地数据拟合验证" << std::endl;
+    std::cout << "3. 执行完整标定流程" << std::endl;
+    std::cout << "4. 退出程序" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-6): ";
+    std::cout << "请选择操作 (1-4): ";
 }
 
 
@@ -579,6 +403,32 @@ int load_config(std::string cfg_file) {
     return 0;
 }
 
+void local_fit_demo()
+{ 
+
+    std::vector<std::string> arr = { "calibration-25", "calibration40", "calibration-40-1" };
+    std::string strBaseDir = "E:/bot/hand_eye_calibration/eye_hand_data/";
+    HandEyeCalibration calibrator(strBaseDir + "camera_params.yaml");
+
+    for (auto dir : arr)
+    {
+        calibrator.loadChessboardDataset(
+            strBaseDir + dir,   // 图像文件夹
+            strBaseDir + dir + "/rob_pos.csv"  // 机器人位姿CSV
+        );
+
+        // 执行标定
+        if (calibrator.calibrate()) {
+            calibrator.saveCalibration("hand_eye_result.yaml");
+
+            // 测试转换
+            cv::Point3f test_point(0.1, 0.2, 0.5);
+            cv::Point3f result = calibrator.cameraToFlange(test_point);
+            std::cout << "转换结果: " << result << std::endl;
+        }
+    }
+}
+
 int main() {
 
     GetBasePathInfo();
@@ -616,21 +466,15 @@ int main() {
 
         switch (choice) {
         case 1:
-            example_full_calibration();
+            example_caitu_demo();
             break;
         case 2:
-            example_coordinate_transformation();
-            break;
+            local_fit_demo();
+            break;       
         case 3:
-            example_calibration_verification();
+            example_full_calibration();
             break;
         case 4:
-            example_realtime_demo();
-            break;
-        case 5:
-            example_caitu_demo();
-            break;            
-        case 6:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;
             return 0;
         default:

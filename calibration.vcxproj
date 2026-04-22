@@ -176,7 +176,7 @@
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_CONSOLE;_CRT_SECURE_NO_WARNINGS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
-      <AdditionalIncludeDirectories>CGXi\windows\include;$(SolutionDir)cv460-freetype\include;F:\Program Files\OrbbecSDK 2.4.11\include</AdditionalIncludeDirectories>
+      <AdditionalIncludeDirectories>CGXi\windows\include;F:\soft\cv\cv-4.13/include;-cv460-freetype\include;F:\Program Files\OrbbecSDK 2.4.11\include</AdditionalIncludeDirectories>
       <LanguageStandard>stdcpp20</LanguageStandard>
       <Optimization>Disabled</Optimization>
       <AdditionalOptions> /utf-8 %(AdditionalOptions)</AdditionalOptions>
@@ -186,7 +186,7 @@
       <EnableCOMDATFolding>true</EnableCOMDATFolding>
       <OptimizeReferences>true</OptimizeReferences>
       <GenerateDebugInformation>true</GenerateDebugInformation>
-      <AdditionalDependencies>CGXi\windows\libs\cr_sdk.lib;$(SolutionDir)cv460-freetype\x64\vc16\lib\opencv_world460.lib;F:\soft\cv460\cv460-cpu\x64\vc15\lib\opencv_img_hash460.lib;F:\Program Files\OrbbecSDK 2.4.11\lib\OrbbecSDK.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>CGXi\windows\libs\cr_sdk.lib;F:\soft\cv\cv-4.13\x64\vc16\lib\opencv_world4130.lib;F:\soft\cv\cv-4.13\x64\vc16\lib\opencv_img_hash4130.lib;F:\Program Files\OrbbecSDK 2.4.11\lib\OrbbecSDK.lib;%(AdditionalDependencies)</AdditionalDependencies>
     </Link>
   </ItemDefinitionGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='cv48|x64'">

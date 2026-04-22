@@ -246,7 +246,7 @@ public:
      * @param num_poses 需要采集的位姿数量
      * @param save_path 数据保存路径（可选）
      */
-    void collectCalibrationData(int num_poses = 15, const std::string& save_name = "");
+    void collectCalibrationData(int num_poses = 15, const std::string& save_path = "");
 
     /**
      * @brief 执行手眼标定
@@ -329,6 +329,13 @@ public:
         cv::Mat& image_with_detection,
         cv::Mat& rvec, cv::Mat& tvec) const;
 
+
+
+    bool detectCalibrationBoard_ChArUco_file(const std::string& filename,
+        cv::Mat& image_with_detection,
+        cv::Mat& rvec, cv::Mat& tvec) const;
+
+
     // 从文件加载相机标定数据
     bool detectChessboardFromFile(
         const std::string& image_path,
@@ -361,6 +368,13 @@ private:
     cv::Mat camera_matrix_;
     cv::Mat dist_coeffs_;
 
+    void drawCharucoReprojectionError(
+        cv::Mat& image_with_detection,
+        const std::vector<cv::Point2f>& charuco_corners,
+        const std::vector<int>& charuco_ids,
+        const cv::Mat& rvec,
+        const cv::Mat& tvec) const;
+
     // 标定板参数
     cv::Ptr<cv::aruco::Dictionary> dictionary_;
     cv::Ptr<cv::aruco::CharucoBoard> board_;
@@ -377,6 +391,10 @@ private:
     // 标定板角点世界坐标
     std::vector<cv::Point3f> board_corners_3d_;
 
+    /**
+     * @brief 初始化标定板
+     */
+    void initCalibrationBoard();
 };
 
 #endif // HAND_EYE_CALIBRATION_HPP

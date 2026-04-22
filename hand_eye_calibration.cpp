@@ -45,6 +45,70 @@ HandEyeCalibration::HandEyeCalibration(const std::string& camera_params_file)
     }
 }
 
+void HandEyeCalibration::initCalibrationBoard() {
+    // 创建 ChArUco 板（更适合 3D 相机）
+    int squares_x = 7;      // 横向方格数
+    int squares_y = 5;      // 纵向方格数
+    float square_length = 0.03328f;  // 方格边长 30mm
+    float marker_length = 0.0252776;// 0.023f; // 标记边长 23mm
+
+    // 使用 6x6 的 ArUco 标记字典
+#if defined(CV_VERSION_MINOR) && CV_VERSION_MINOR >= 7
+    // OpenCV 4.7.0+：使用构造函数
+
+    dictionary_ = cv::makePtr<cv::aruco::Dictionary>(
+        cv::aruco::getPredefinedDictionary(cv::aruco::DICT_5X5_100));
+
+    board_ = cv::makePtr<cv::aruco::CharucoBoard>(
+        cv::Size(squares_x, squares_y),
+        square_length, marker_length, *dictionary_);
+
+    // 检测参数
+    params_ = cv::makePtr<cv::aruco::DetectorParameters>();
+#else
+    // OpenCV < 4.7.0：使用 create() 静态方法
+    dictionary_ = cv::aruco::getPredefinedDictionary(cv::aruco::DICT_6X6_250);
+
+    // 创建 ChArUco 板
+    board_ = cv::aruco::CharucoBoard::create(
+        squares_x, squares_y, square_length, marker_length, dictionary_);
+
+    // 检测参数
+    params_ = cv::aruco::DetectorParameters::create();
+#endif
+
+
+
+
+    // 生成标定板图像
+    cv::Mat board_image;
+    int margin_pixels = 50;
+    int border_bits = 1;
+
+    // 计算图像尺寸（假设1mm对应10像素）
+    int pixels_per_mm = 10;
+    int image_width = squares_x * (int)(square_length * 1000) * pixels_per_mm + 2 * margin_pixels;
+    int image_height = squares_y * (int)(square_length * 1000) * pixels_per_mm + 2 * margin_pixels;
+
+    // 生成标定板图像
+    //board_->draw(cv::Size(image_width, image_height), board_image, margin_pixels, border_bits);
+
+    //// 保存标定板图像
+    //cv::imwrite("charuco_board.png", board_image);
+    //std::cout << "标定板图像已生成并保存为 charuco_board.png" << std::endl;
+    //std::cout << "请打印此图像用于标定，确保打印尺寸正确" << std::endl;
+
+    // 生成标定板角点的 3D 世界坐标
+#if CV_MAJOR_VERSION >= 4 && CV_VERSION_MINOR >= 7
+    // OpenCV 4.7.0+：使用 getter 方法
+    board_corners_3d_ = board_->getChessboardCorners();
+#else
+    // OpenCV 4.6.x 及以下：直接访问成员变量
+    board_corners_3d_ = board_->chessboardCorners;
+#endif
+    
+}
+
 bool HandEyeCalibration::loadCameraParams(const std::string& camera_params_file) {
     cv::FileStorage fs(camera_params_file, cv::FileStorage::READ);
     if (!fs.isOpened()) {
@@ -66,6 +130,68 @@ bool HandEyeCalibration::loadCameraParams(const std::string& camera_params_file)
     return true;
 }
 
+void HandEyeCalibration::drawCharucoReprojectionError(
+    cv::Mat& image_with_detection,
+    const std::vector<cv::Point2f>& charuco_corners,
+    const std::vector<int>& charuco_ids,
+    const cv::Mat& rvec,
+    const cv::Mat& tvec) const {
+
+    std::vector<cv::Point3f> object_points;
+    object_points.reserve(charuco_ids.size());
+
+    
+#if CV_MAJOR_VERSION >= 4 && CV_VERSION_MINOR >= 7
+    // OpenCV 4.7.0+：使用 getter 方法
+    const auto& board_object_points = board_->getChessboardCorners();
+#else
+    // OpenCV 4.6.x 及以下：直接访问成员变量
+    const auto& board_object_points = board_->chessboardCorners;
+#endif
+
+
+    for (size_t i = 0; i < charuco_ids.size(); ++i) {
+        const int id = charuco_ids[i];
+        if (id < 0 || static_cast<size_t>(id) >= board_object_points.size()) {
+            continue;
+        }
+        object_points.push_back(board_object_points[static_cast<size_t>(id)]);
+    }
+
+    if (object_points.size() != charuco_corners.size() || object_points.empty()) {
+        return;
+    }
+
+    std::vector<cv::Point2f> projected_points;
+    cv::projectPoints(object_points, rvec, tvec, camera_matrix_, dist_coeffs_, projected_points);
+
+    double sum_err = 0.0;
+    double sum_sq_err = 0.0;
+    double max_err = 0.0;
+
+    for (size_t i = 0; i < projected_points.size(); ++i) {
+        const cv::Point2f& p_det = charuco_corners[i];
+        const cv::Point2f& p_proj = projected_points[i];
+        const double err = cv::norm(p_det - p_proj);
+
+        sum_err += err;
+        sum_sq_err += err * err;
+        max_err = std::max(max_err, err);
+
+        cv::circle(image_with_detection, p_proj, 3, cv::Scalar(0, 0, 255), -1);
+        cv::line(image_with_detection, p_det, p_proj, cv::Scalar(0, 255, 255), 1);
+    }
+
+    const double mean_err = sum_err / static_cast<double>(projected_points.size());
+    const double rms_err = std::sqrt(sum_sq_err / static_cast<double>(projected_points.size()));
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "Reproj(px) mean=" << mean_err << " rms=" << rms_err << " max=" << max_err;
+    cv::putText(image_with_detection, oss.str(), cv::Point(10, 120),
+        cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
+}
+
 bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
@@ -74,7 +200,7 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
         return false;
     }
 
-    cv::Mat image_gray;
+    cv::Mat image_gray, image_marker;
     if (image.channels() == 3) {
         cv::cvtColor(image, image_gray, cv::COLOR_BGR2GRAY);
     }
@@ -89,13 +215,14 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
 
     // 绘制检测结果
     image.copyTo(image_with_detection);
+    image.copyTo(image_marker);
 
     if (marker_ids.empty()) {
         return false;
     }
 
     // 绘制检测到的标记
-    cv::aruco::drawDetectedMarkers(image_with_detection, marker_corners, marker_ids);
+    cv::aruco::drawDetectedMarkers(image_marker, marker_corners, marker_ids);
 
     // 插值 ChArUco 角点
     std::vector<cv::Point2f> charuco_corners;
@@ -118,6 +245,9 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
             camera_matrix_, dist_coeffs_, rvec, tvec);
 
         if (valid) {
+            // 计算反投影误差并可视化
+            drawCharucoReprojectionError(image_with_detection, charuco_corners, charuco_ids, rvec, tvec);
+
             // 绘制坐标系
             cv::drawFrameAxes(image_with_detection, camera_matrix_,
                 dist_coeffs_, rvec, tvec, 0.05f);
@@ -126,6 +256,16 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
     }
 
     return false;
+}
+
+
+
+bool HandEyeCalibration::detectCalibrationBoard_ChArUco_file(const std::string& filename,
+    cv::Mat& image_with_detection,
+    cv::Mat& rvec, cv::Mat& tvec) const {
+
+    cv::Mat image = cv::imread(filename);
+    return detectCalibrationBoard(image, image_with_detection, rvec, tvec);
 }
 
 cv::Mat HandEyeCalibration::parseRobotPose(const std::string& pose_str, bool use_quaternion) {
@@ -286,9 +426,10 @@ bool HandEyeCalibration::loadChessboardDataset(
         std::stringstream ss;
         ss << image_folder << "/" << std::setw(3) << std::setfill('0') << i << ".jpg";
 
-        cv::Mat rvec, tvec, image_with_detection;
-        std::string img_path = ss.str();
-        if (detectChessboardFromFile(img_path, image_with_detection, rvec, tvec)) {
+        cv::Mat rvec, tvec;
+        cv::Mat image_with_detection;
+        // if (detectChessboardFromFile(ss.str(), rvec, tvec)) {        
+        if (detectCalibrationBoard_ChArUco_file(ss.str(), image_with_detection, rvec, tvec)) {
             // 转换为变换矩阵
             cv::Mat R;
             cv::Rodrigues(rvec, R);
@@ -309,7 +450,6 @@ bool HandEyeCalibration::loadChessboardDataset(
     std::cout << "成功加载 " << camera_poses_.size() << " 组有效数据" << std::endl;
     return camera_poses_.size() >= 3;
 }
-
 
 void HandEyeCalibration::collectCalibrationData(int num_poses, 
     const std::string& save_name) {
