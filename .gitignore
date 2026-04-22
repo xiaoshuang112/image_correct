@@ -1,0 +1,19 @@
+libs/
+dist/
+test/
+rel-old/
+rel (copy)/
+rel/
+build/
+collector/build/
+pd/build/
+uploader/build/
+public/third-party/spdlog/
+.vscode/
+*.sqlsqlite3
+cloud-rb-ubuntu*
+*.7z
+test-core-load-lib
+test-kill-app
+boost_*.bz2
+public/third-party/boost_1_88_0/
