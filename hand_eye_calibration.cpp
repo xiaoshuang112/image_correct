@@ -37,7 +37,7 @@ HandEyeCalibration::HandEyeCalibration(const std::string& camera_params_file)
     : calibration_error_(0.0) {
 
     // 初始化标定板
-    // initCalibrationBoard();
+    initCalibrationBoard();
 
     // 加载相机内参
     if (!camera_params_file.empty()) {
@@ -49,15 +49,15 @@ void HandEyeCalibration::initCalibrationBoard() {
     // 创建 ChArUco 板（更适合 3D 相机）
     int squares_x = 7;      // 横向方格数
     int squares_y = 5;      // 纵向方格数
-    float square_length = 0.03328f;  // 方格边长 30mm
-    float marker_length = 0.0252776;// 0.023f; // 标记边长 23mm
+    float square_length = 0.04f;  // 方格边长 30mm
+    float marker_length = 0.028;// 0.023f; // 标记边长 23mm
 
     // 使用 6x6 的 ArUco 标记字典
 #if defined(CV_VERSION_MINOR) && CV_VERSION_MINOR >= 7
     // OpenCV 4.7.0+：使用构造函数
 
     dictionary_ = cv::makePtr<cv::aruco::Dictionary>(
-        cv::aruco::getPredefinedDictionary(cv::aruco::DICT_5X5_100));
+        cv::aruco::getPredefinedDictionary(cv::aruco::DICT_5X5_250));
 
     board_ = cv::makePtr<cv::aruco::CharucoBoard>(
         cv::Size(squares_x, squares_y),
@@ -77,9 +77,6 @@ void HandEyeCalibration::initCalibrationBoard() {
     params_ = cv::aruco::DetectorParameters::create();
 #endif
 
-
-
-
     // 生成标定板图像
     cv::Mat board_image;
     int margin_pixels = 50;
@@ -91,7 +88,7 @@ void HandEyeCalibration::initCalibrationBoard() {
     int image_height = squares_y * (int)(square_length * 1000) * pixels_per_mm + 2 * margin_pixels;
 
     // 生成标定板图像
-    //board_->draw(cv::Size(image_width, image_height), board_image, margin_pixels, border_bits);
+    board_->generateImage(cv::Size(image_width, image_height), board_image, margin_pixels, border_bits);
 
     //// 保存标定板图像
     //cv::imwrite("charuco_board.png", board_image);
@@ -106,6 +103,7 @@ void HandEyeCalibration::initCalibrationBoard() {
     // OpenCV 4.6.x 及以下：直接访问成员变量
     board_corners_3d_ = board_->chessboardCorners;
 #endif
+    int temp = 0;
     
 }
 
@@ -192,7 +190,7 @@ void HandEyeCalibration::drawCharucoReprojectionError(
         cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
 }
 
-bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
+bool HandEyeCalibration::detectCalibrationBoard_aruco(const cv::Mat& image,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
     if (camera_matrix_.empty()) {
@@ -259,12 +257,114 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
 }
 
 
+// charuco calibration
+bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
+    cv::Mat& image_with_detection,
+    cv::Mat& rvec, cv::Mat& tvec) const {
+    if (camera_matrix_.empty()) {
+        std::cerr << "请先加载相机内参" << std::endl;
+        return false;
+    }
+
+    cv::Mat image_gray, image_marker;
+    if (image.channels() == 3) {
+        cv::cvtColor(image, image_gray, cv::COLOR_BGR2GRAY);
+    }
+    else {
+        image_gray = image.clone();
+    }
+
+    // 创建 Charuco 检测器，并启用标记角点细化以提高精度
+    cv::aruco::DetectorParameters detectorParams;
+    cv::aruco::CharucoParameters charucoParams;
+    detectorParams.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+    charucoParams.cameraMatrix = camera_matrix_;
+    charucoParams.distCoeffs = dist_coeffs_;
+    charucoParams.minMarkers = 1;  
+    charucoParams.tryRefineMarkers = true; // 启用标记角点细化，可获得更精准的 ChArUco 角点
+    cv::aruco::CharucoDetector detector(*board_, charucoParams, detectorParams);
+
+    std::vector<int> markerIds;
+    std::vector<std::vector<cv::Point2f>> markerCorners, rejectedMarkers;
+    std::vector<cv::Point2f> charucoCorners;
+    std::vector<int> charucoIds;
+
+    // 核心：检测当前帧中的 ChArUco 角点
+    detector.detectBoard(image_gray, charucoCorners, charucoIds, markerCorners, markerIds);
+
+    if (charucoIds.empty() && !markerIds.empty()) {
+        cv::aruco::interpolateCornersCharuco(
+            markerCorners, markerIds, image_gray, board_,
+            charucoCorners, charucoIds, camera_matrix_, dist_coeffs_, 1);
+    }
+
+    if (charucoIds.empty()) {
+        std::vector<int> markerIds2;
+        std::vector<std::vector<cv::Point2f>> markerCorners2;
+        cv::aruco::detectMarkers(image_gray, dictionary_, markerCorners2, markerIds2, params_);
+
+        if (!markerIds2.empty()) {
+            markerIds = markerIds2;
+            markerCorners = markerCorners2;
+            cv::aruco::interpolateCornersCharuco(
+                markerCorners, markerIds, image_gray, board_,
+                charucoCorners, charucoIds, camera_matrix_, dist_coeffs_, 1);
+        }
+    }
+
+    
+    // 绘制检测结果
+    image.copyTo(image_with_detection);
+    image.copyTo(image_marker);
+
+    
+    // 绘制检测到的标记
+    cv::aruco::drawDetectedMarkers(image_marker, markerCorners, markerIds);
+
+   
+    
+
+    // 如果找到足够多的角点，估计位姿
+    if (charucoIds.size() >= 4) {
+        cv::aruco::drawDetectedCornersCharuco(
+            image_with_detection, charucoCorners, charucoIds);
+
+        // 估计标定板位姿
+        bool valid = cv::aruco::estimatePoseCharucoBoard(
+            charucoCorners, charucoIds, board_,
+            camera_matrix_, dist_coeffs_, rvec, tvec);
+        /*if (valid) {
+            drawCharucoReprojectionError(image_with_detection, charuco_corners, charuco_ids, rvec, tvec, 0.5);
+            if (charuco_corners.size() >= 4)
+                valid = cv::aruco::estimatePoseCharucoBoard(
+                    charuco_corners, charuco_ids, board_, camera_matrix_, dist_coeffs_, rvec, tvec);
+            else
+                valid = false;
+        }*/
+
+
+        if (valid) {
+            // 计算反投影误差并可视化
+            //drawCharucoReprojectionError(image_with_detection, charucoCorners, charucoIds, rvec, tvec, -1);
+
+            // 绘制坐标系
+            // cv::drawFrameAxes(image_with_detection, camera_matrix_,
+            //     dist_coeffs_, rvec, tvec, 0.05f);
+            return true;
+        }
+    }
+
+    return false;
+}
+
 
 bool HandEyeCalibration::detectCalibrationBoard_ChArUco_file(const std::string& filename,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
 
     cv::Mat image = cv::imread(filename);
+    if(0==image.cols || 0 == image.rows)
+       return false;
     return detectCalibrationBoard(image, image_with_detection, rvec, tvec);
 }
 
@@ -402,16 +502,19 @@ cv::Mat HandEyeCalibration::poseToTransformMatrix(double x, double y, double z,
 // 新增函数：直接从棋盘格数据集批量读取
 bool HandEyeCalibration::loadChessboardDataset(
     const std::string& image_folder,
-    const std::string& robot_pose_file) {
+    const std::string& robot_pose_file,
+    bool clear_existing) {
 
-    // 清空之前的数据
-    robot_poses_.clear();
-    camera_poses_.clear();
+    if (clear_existing) {
+        robot_poses_.clear();
+        camera_poses_.clear();
+    }
+
+    size_t base_count = robot_poses_.size();  // 已有数据量，新数据从这之后开始
 
     // 1. 读取机器人位姿（从Excel导出的CSV）
     std::ifstream file(robot_pose_file);
     std::string line;
-    std::vector<cv::Mat> robot_poses;
 
     while (std::getline(file, line)) {
         // 假设CSV格式: x,y,z,rx,ry,rz (单位mm,度)
@@ -421,14 +524,14 @@ bool HandEyeCalibration::loadChessboardDataset(
         }
     }
 
-    // 2. 遍历图像文件夹
-    for (size_t i = 0; i < robot_poses_.size(); i++) {
+    // 2. 遍历图像文件夹（只遍历本次新增的位姿）
+    size_t cam_count_before = camera_poses_.size();
+    for (size_t i = base_count, idx = 0; i < robot_poses_.size(); i++, idx++) {
         std::stringstream ss;
-        ss << image_folder << "/" << std::setw(3) << std::setfill('0') << i << ".jpg";
+        ss << image_folder << "/" << std::setw(3) << std::setfill('0') << idx << ".jpg";
 
         cv::Mat rvec, tvec;
         cv::Mat image_with_detection;
-        // if (detectChessboardFromFile(ss.str(), rvec, tvec)) {        
         if (detectCalibrationBoard_ChArUco_file(ss.str(), image_with_detection, rvec, tvec)) {
             // 转换为变换矩阵
             cv::Mat R;
@@ -440,14 +543,15 @@ bool HandEyeCalibration::loadChessboardDataset(
             camera_poses_.push_back(T_camera_calib);
         }
         else {
-            std::cerr << "第" << i << "张图像检测失败，跳过" << std::endl;
+            std::cerr << "第" << idx << "张图像检测失败，跳过" << std::endl;
             // 从robot_poses_中移除对应的位姿
             robot_poses_.erase(robot_poses_.begin() + i);
             i--;
         }
     }
 
-    std::cout << "成功加载 " << camera_poses_.size() << " 组有效数据" << std::endl;
+    std::cout << "成功加载 " << camera_poses_.size() << " 组有效数据（本次新增 "
+              << (camera_poses_.size() - cam_count_before) << "）" << std::endl;
     return camera_poses_.size() >= 3;
 }
 

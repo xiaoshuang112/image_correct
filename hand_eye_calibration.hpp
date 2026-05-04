@@ -325,6 +325,10 @@ public:
     /**
      * @brief 可视化标定板检测结果
      */
+    bool detectCalibrationBoard_aruco(const cv::Mat& image,
+        cv::Mat& image_with_detection,
+        cv::Mat& rvec, cv::Mat& tvec) const;
+
     bool detectCalibrationBoard(const cv::Mat& image,
         cv::Mat& image_with_detection,
         cv::Mat& rvec, cv::Mat& tvec) const;
@@ -344,9 +348,11 @@ public:
         cv::Mat& tvec);
 
     // 新增函数：直接从棋盘格数据集批量读取
+    // clear_existing=false 时追加数据（用于多目录合并标定）
     bool loadChessboardDataset(
         const std::string& image_folder,
-        const std::string& robot_pose_file);     
+        const std::string& robot_pose_file,
+        bool clear_existing = true);     
 
     /**
      * @brief 获取机器人位姿数量

@@ -51,16 +51,16 @@ else()
     if(ARCH_TYPE STREQUAL "x86_64")
         set(ORBBEC_SDK_V2_DIR "/usr/local")
         # Include directory for your project
-        set(CGX_SDK_DIR  "/work/soft/CGXi/linux")
+        set(CGX_SDK_DIR  ${SRC_DIR}/libs/cr_sdk)
         include_directories(${CGX_SDK_DIR}/include)      
 
         set(CGX_SDK_LIBS
-            ${CGX_SDK_DIR}/libs/libcr_sdk.so
-            ${CGX_SDK_DIR}/libs/libLogStorageDll.so
-            ${CGX_SDK_DIR}/libs/libRobotConfigDll.so
-            ${CGX_SDK_DIR}/libs/libz.so
-            ${CGX_SDK_DIR}/libs/libprotobuf-c.so
-            ${CGX_SDK_DIR}/libs/libprotobuf-rpc.so
+            ${CGX_SDK_DIR}/libs/x64/libcr_sdk.so
+            ${CGX_SDK_DIR}/libs/x64/libLogStorageDll.so
+            ${CGX_SDK_DIR}/libs/x64/libRobotConfigDll.so
+            ${CGX_SDK_DIR}/libs/x64/libz.so
+            ${CGX_SDK_DIR}/libs/x64/libprotobuf-c.so
+            ${CGX_SDK_DIR}/libs/x64/libprotobuf-rpc.so
         )
 
     elseif(ARCH_TYPE STREQUAL "ARM64")

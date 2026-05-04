@@ -241,16 +241,73 @@ void goto_jointpos(double* jointpos)
     assert(result == sucess);
 }
 
+std::string get_pos_dir(int pos){
+    return g_posPath+std::to_string(pos) + "/";
+}
+
+void convert_joint_2_pos(int pos){
+   std::string pos_dir = get_pos_dir(pos);
+   std::string rob_joint_file = pos_dir + "rob_joint.csv";
+   std::string rob_pos_file = pos_dir + "rob_pos.csv";
+   std::ifstream file(rob_joint_file);
+   std::string line;
+   while (std::getline(file, line)) {
+        // 假设CSV格式: x,y,z,rx,ry,rz (单位mm,度)
+        std::vector<double> actual_pose(ROB_AXIS_NUM);                
+        std::vector<double> joint_pose = parse_robot_joint_pose(line);
+        if (joint_pose.empty()) 
+           continue;
+        cr_kineForward(robotHandle, joint_pose.data(), actual_pose.data());
+        VectorWriter writer_tcp(rob_pos_file, 6);
+        writer_tcp.appendDoubleVector(actual_pose);
+   }
+}
+
+void convert_pos_2_joint(int pos)
+{
+    std::string pos_dir = get_pos_dir(pos);
+   std::string rob_joint_file = pos_dir + "rob_joint.csv";
+   std::string rob_joint_file_n = pos_dir + "rob_joint_n.csv";
+   std::string rob_pos_file = pos_dir + "rob_pos.csv";
+   std::ifstream i_joint(rob_joint_file), i_pos(rob_pos_file);
+   std::string joint_line, pos_line;
+   if(fs::exists(rob_joint_file_n))
+      std::remove(rob_joint_file_n.data());
+   int i = 0;
+   while (std::getline(i_joint, joint_line)) {
+        i++;
+        std::getline(i_pos, pos_line);
+        // 假设CSV格式: x,y,z,rx,ry,rz (单位mm,度)
+        std::vector<double> new_joint(ROB_AXIS_NUM);                
+        std::vector<double> joint_pose = parse_robot_joint_pose(joint_line);
+        std::vector<double> line_pose = parse_robot_joint_pose(pos_line);
+        if (joint_pose.empty()) 
+           continue;
+        cr_kineInverse(robotHandle, line_pose.data(), joint_pose.data(), new_joint.data());
+        VectorWriter writer_tcp(rob_joint_file_n, 6);
+        writer_tcp.appendDoubleVector(new_joint);
+   }
+   i_joint.close();
+   i_pos.close();
+   std::string rob_joint_file_old = pos_dir + "rob_joint_old.csv";
+   if(fs::exists(rob_joint_file_old))
+      std::remove(rob_joint_file_old.data());
+   std::rename(rob_joint_file.data(), rob_joint_file_old.data());
+   std::rename(rob_joint_file_n.data(), rob_joint_file.data());
+}
+
 // 从csv文件读取 joint pos 然后让机械臂运动到 该pos
 void cap_image_by_pos(int pos)
 {
-    std::string pos_path = g_posPath+std::to_string(pos) + "/";
+    std::string pos_path = get_pos_dir(pos);
     if (!fs::exists(pos_path))
     {
         std::cout << "pos path is not exists   "<<  pos_path << std::endl;
         return;
     }
-
+    // for(int i = 1; i < 9; i++)
+    //    convert_joint_2_pos(i);
+    convert_pos_2_joint(pos);
     std::string rob_joint_file = pos_path + "rob_joint.csv";
     if (!fs::exists(rob_joint_file))
     {
@@ -262,6 +319,7 @@ void cap_image_by_pos(int pos)
     fs::create_directories(img_path);
 
     std::string rob_pos_file = img_path + "rob_pos.csv";
+    std::string new_joint_file = img_path + "rob_joint.csv";    
 
     // 1. 读取机器人位姿（从Excel导出的CSV）
     std::ifstream file(rob_joint_file);
@@ -279,7 +337,8 @@ void cap_image_by_pos(int pos)
         
         // 采集图像
         cv::Mat frame = g_camera->captureOneFrame(1000);
-        if (frame.empty()) break;
+        if (frame.empty()) 
+            break;
 
         std::string img_name = string_format("%s%03d.jpg", img_path.c_str(), idx++);
 
@@ -288,10 +347,10 @@ void cap_image_by_pos(int pos)
 
         // 保存法兰坐标
         // 从用户输入获取机器人位姿
-        std::cout << "\n=== 保存位姿 " << (idx) << " ===" << std::endl;
-        std::cout << "开始获取机器人法兰位姿:" << std::endl;
-        std::cout << "格式: x,y,z,rx,ry,rz (单位:mm,度)" << std::endl;
-        std::cout << "例如: 500,0,300,0,0,0\n" << std::endl;
+        // std::cout << "\n=== 保存位姿 " << (idx) << " ===" << std::endl;
+        // std::cout << "开始获取机器人法兰位姿:" << std::endl;
+        // std::cout << "格式: x,y,z,rx,ry,rz (单位:mm,度)" << std::endl;
+        // std::cout << "例如: 500,0,300,0,0,0\n" << std::endl;
 
         std::vector<double> actual_pose(ROB_AXIS_NUM);
         CRresult result = cr_get_tcpActualPose(robotHandle, actual_pose.data());
@@ -301,9 +360,26 @@ void cap_image_by_pos(int pos)
             printf("%.2f   ", actual_pose[i]);
         }
 
-        std::cout << " \n  jointActualPos \n" << std::endl;
+        std::cout << " \n  tcpActualPose \n" << std::endl;
         VectorWriter writer_tcp(rob_pos_file, 6);
         writer_tcp.appendDoubleVector(actual_pose);
+
+
+        //轴角 坐标
+        std::cout << " \n  jointActualPos \n" << std::endl;
+
+        std::vector<double> actual_joint_pos(ROB_AXIS_NUM);
+        result = cr_get_jointActualPos(robotHandle, actual_joint_pos.data());
+        for (int i = 0; i < ROB_AXIS_NUM; i++)
+        {
+            printf("%.2f   ", actual_joint_pos[i]);
+        }    
+        
+        std::cout << " \n" << std::endl;
+
+        std::cout << " \n  jointActualPos \n" << std::endl;
+        VectorWriter writer_joint(new_joint_file, 6);
+        writer_joint.appendDoubleVector(actual_joint_pos);
     }
 }
 
@@ -369,7 +445,7 @@ bool GetBasePathInfo() {
     
 
     if (!fs::exists(g_paramPath))
-        fs::create_directory(g_paramPath);
+        fs::create_directory(g_paramPath); 
 
     if (!fs::exists(g_calibrationPath))
         fs::create_directory(g_calibrationPath);
@@ -403,30 +479,79 @@ int load_config(std::string cfg_file) {
     return 0;
 }
 
-void local_fit_demo()
-{ 
+void do_calibration(HandEyeCalibration &calibrator, int has_data){
+    if (!has_data) {
+        std::cerr << "没有找到标定数据" << std::endl;
+        return;
+    }
+    // 所有数据汇总后统一标定一次
+    if (calibrator.calibrate()) {
+        calibrator.saveCalibration(g_appPath + "hand_eye_result.yaml");
+        cv::Point3f test_point(0.1, 0.2, 0.5);
+        cv::Point3f result = calibrator.cameraToFlange(test_point);
+        std::cout << "转换结果: " << result << std::endl;
+    }
+}
 
-    std::vector<std::string> arr = { "calibration-25", "calibration40", "calibration-40-1" };
-    std::string strBaseDir = "E:/bot/hand_eye_calibration/eye_hand_data/";
-    HandEyeCalibration calibrator(strBaseDir + "camera_params.yaml");
+void do_type_calibration(int use_all_data){
+   // 如果 dir 只有一级目录（如 "5"），自动找该目录下最新采集；如果传了时间戳（如 "5/2026-04-29_19-36-55"），直接使用
+    std::vector<std::string> arr = { "5", "6", "7", "8" };
+    HandEyeCalibration calibrator(g_posPath + "camera_params.yaml");
+    bool has_data = false;
 
     for (auto dir : arr)
     {
-        calibrator.loadChessboardDataset(
-            strBaseDir + dir,   // 图像文件夹
-            strBaseDir + dir + "/rob_pos.csv"  // 机器人位姿CSV
-        );
+        std::string base = g_posPath + dir;
+        std::string rob_pos_file = base + "/rob_pos.csv";
 
-        // 执行标定
-        if (calibrator.calibrate()) {
-            calibrator.saveCalibration("hand_eye_result.yaml");
+        // 如果传的是 "5" 这样的一级目录，找最新时间戳子目录
+        auto pos = dir.find('/');
+        if (pos == std::string::npos) {
+            if (!fs::exists(base)) continue;
 
-            // 测试转换
-            cv::Point3f test_point(0.1, 0.2, 0.5);
-            cv::Point3f result = calibrator.cameraToFlange(test_point);
-            std::cout << "转换结果: " << result << std::endl;
+            std::vector<std::string> sessions;
+            for (auto& entry : fs::directory_iterator(base)) {
+                if (entry.is_directory()) {
+                    sessions.push_back(entry.path().filename().string());
+                }
+            }
+            if (sessions.empty()) continue;
+            std::sort(sessions.begin(), sessions.end());
+            std::string latest = sessions.back();
+
+            base = base + "/" + latest;
+            rob_pos_file = base + "/rob_pos.csv";
         }
+
+        if (!fs::exists(rob_pos_file)) {
+            std::cout << "跳过（无 rob_pos.csv）: " << base << std::endl;
+            continue;
+        }
+
+        calibrator.loadChessboardDataset(base, rob_pos_file, !has_data);
+        
+        if(!use_all_data)
+           do_calibration(calibrator, true); 
+        else
+           has_data = true;
     }
+
+    if(use_all_data)
+        do_calibration(calibrator, has_data);  
+}
+
+void local_fit_demo()
+{
+      do_type_calibration(0);
+      do_type_calibration(1);
+}
+
+int  open_camera(){
+   if (!g_camera->open()) {
+                std::cerr << "打开相机失败" << std::endl;
+                return -1;
+            }
+    return 0;
 }
 
 int main() {
@@ -454,11 +579,7 @@ int main() {
 
     // 使用默认配置
     g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
-    // 打开相机
-    if (!g_camera->open()) {
-        std::cerr << "打开相机失败" << std::endl;
-        return -1;
-    }
+    // 打开相机   
     
     while (true) {
         display_menu();
@@ -466,12 +587,14 @@ int main() {
 
         switch (choice) {
         case 1:
+            open_camera();
             example_caitu_demo();
             break;
         case 2:
             local_fit_demo();
             break;       
         case 3:
+            open_camera();
             example_full_calibration();
             break;
         case 4:
