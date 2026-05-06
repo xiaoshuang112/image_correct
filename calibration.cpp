@@ -36,6 +36,8 @@ RobotHandle robotHandle;
 
 namespace fs = std::filesystem;
 
+OBCameraIntrinsic g_cam_param;
+
 
 std::string string_format(const char* format, ...) {
 #if 1 // 最大长度限制：1024 - 1
@@ -307,7 +309,7 @@ void cap_image_by_pos(int pos)
     }
     // for(int i = 1; i < 9; i++)
     //    convert_joint_2_pos(i);
-    convert_pos_2_joint(pos);
+    // convert_pos_2_joint(pos);
     std::string rob_joint_file = pos_path + "rob_joint.csv";
     if (!fs::exists(rob_joint_file))
     {
@@ -336,13 +338,20 @@ void cap_image_by_pos(int pos)
         goto_jointpos(joint_pose.data());
         
         // 采集图像
-        cv::Mat frame = g_camera->captureOneFrame(1000);
-        if (frame.empty()) 
+        // cv::Mat frame = g_camera->captureOneFrame(1000);
+        cv::Mat frame,depthMat;
+        g_camera->captureOneFrameWithDepth(frame, depthMat,5000);
+
+        if (frame.empty() || depthMat.empty())
             break;
 
-        std::string img_name = string_format("%s%03d.jpg", img_path.c_str(), idx++);
+        std::string img_name = string_format("%s%03d.jpg", img_path.c_str(), idx);
+        std::string depth_name = string_format("%s%03d.png", img_path.c_str(), idx);
+
+        idx++;
 
         cv::imwrite(img_name, frame);
+        cv::imwrite(depth_name, depthMat);
 
 
         // 保存法兰坐标
@@ -475,6 +484,20 @@ int load_config(std::string cfg_file) {
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
     fs.release();
+
+
+    // g_cam_param
+    ///< Focal length in x direction
+    g_cam_param.fx = 608.212;
+    ///< Focal length in y direction        
+    g_cam_param.fy = 608.21;
+    ///< Optical center abscissa        
+    g_cam_param.cx = 648.738;
+    ///< Optical center ordinate
+    g_cam_param.cy = 392.18;
+
+    g_cam_param.width = 1280;
+    g_cam_param.height = 800;
 
     return 0;
 }

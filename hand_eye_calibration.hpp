@@ -11,6 +11,116 @@
 #include <algorithm>
 #include <iomanip>
 #include <filesystem>
+// SDK v2 核心头文件
+#include "libobsensor/ObSensor.hpp"
+
+struct DEPTH_INFO {
+    uint32_t  width = 0;
+    uint32_t  height = 0;
+    float     scale = 0;
+    uint32_t  data_len = 0;
+    uint16_t* data = nullptr;
+
+    int from_depthFrame(std::shared_ptr<ob::Frame>& depthFrame)
+    {
+        if (depthFrame) {
+            auto depthVideoFrame = depthFrame->as<const ob::DepthFrame>();
+            width = depthVideoFrame->getWidth();
+            height = depthVideoFrame->getHeight();
+            scale = depthVideoFrame->getValueScale();
+            data_len = width * height;
+            data = (uint16_t*)depthVideoFrame->getData();
+            return 0;
+        }
+        else {
+            std::cerr << "Failed to get depth frame (is depth stream enabled?)" << std::endl;
+
+            return -1;
+        }
+
+    }
+
+    int from_depthMat(const cv::Mat& depthMat)
+    {
+        if (!depthMat.empty()) {
+            width = depthMat.cols;
+            height = depthMat.rows;
+            scale = 1;
+            data_len = width * height;
+            data = (uint16_t*)depthMat.data;
+            return 0;
+        }
+        else {
+            std::cerr << "Failed to get depth frame (is depth stream enabled?)" << std::endl;
+
+            return -1;
+        }
+
+    }
+
+    static void saveDepthFrame(const std::shared_ptr<ob::DepthFrame>& depthFrame, const std::string& depthName) {
+        std::vector<int> params;
+        params.push_back(cv::IMWRITE_PNG_COMPRESSION);
+        params.push_back(0);
+        params.push_back(cv::IMWRITE_PNG_STRATEGY);
+        params.push_back(cv::IMWRITE_PNG_STRATEGY_DEFAULT);
+
+        cv::Mat depthMat(depthFrame->height(), depthFrame->width(), CV_16UC1, depthFrame->data());
+        cv::imwrite(depthName, depthMat, params);
+        std::cout << "Depth saved:" << depthName << std::endl;
+    }
+
+
+    void get_world_xy_by_z(OBCameraIntrinsic& cam_param, int img_x, int img_y,
+        float& x, float& y, float z)
+    {
+        if (z > 0) { // 有效的深度点
+
+            // 10. 将像素坐标 (u,v) 和深度值转换为三维坐标 (x,y,z)
+            x = (img_x - cam_param.cx) * z / cam_param.fx;
+            y = (img_y - cam_param.cy) * z / cam_param.fy;
+        }
+    }
+
+    void get_world_z_by_xy(int img_x, int img_y, float& z)
+    {
+        z = -1;
+
+        // pixel value multiplied by scale is the actual distance value in millimeters
+        size_t depth_pos = width * img_y + img_x;
+
+        // 越界了
+        if (depth_pos >= data_len) return;
+
+        z = data[depth_pos] * scale;
+    }
+
+    void get_world_xyz(OBCameraIntrinsic& cam_param, int img_x, int img_y,
+        float& x, float& y, float& z)
+    {
+        x = y = z = -1;
+
+        get_world_z_by_xy(img_x, img_y, z);
+
+        // attention: if the distance is 0, it means that the depth camera cannot detect the object（may be out of detection range）
+        std::cout << "x " << img_x << "y " << img_y << "  dist  " << z << " mm away. " << std::endl;
+
+        if (z > 0) { // 有效的深度点
+
+            // 10. 将像素坐标 (u,v) 和深度值转换为三维坐标 (x,y,z)
+            get_world_xy_by_z(cam_param, img_x, img_y, x, y, z);
+
+            std::cout << "3D Coordinate at (" << img_x << ", " << img_y << "): ";
+            std::cout << "X=" << x << " mm, Y=" << y << " mm, Z=" << z << " mm" << std::endl;
+        }
+    }
+
+
+
+};
+
+
+
 
 class VectorWriter {
 private:
@@ -330,12 +440,14 @@ public:
         cv::Mat& rvec, cv::Mat& tvec) const;
 
     bool detectCalibrationBoard(const cv::Mat& image,
+        const cv::Mat& image_depth,
         cv::Mat& image_with_detection,
         cv::Mat& rvec, cv::Mat& tvec) const;
 
 
 
     bool detectCalibrationBoard_ChArUco_file(const std::string& filename,
+        const std::string& filename_depth,
         cv::Mat& image_with_detection,
         cv::Mat& rvec, cv::Mat& tvec) const;
 

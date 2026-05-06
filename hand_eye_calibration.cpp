@@ -19,6 +19,7 @@ extern std::string g_paramPath;
 
 extern std::shared_ptr<OrbbecCameraV2> g_camera;
 extern RobotHandle robotHandle;
+extern OBCameraIntrinsic g_cam_param;
 
 extern std::string string_format(const char* format, ...);
 
@@ -259,11 +260,23 @@ bool HandEyeCalibration::detectCalibrationBoard_aruco(const cv::Mat& image,
 
 // charuco calibration
 bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
+    const cv::Mat& image_depth,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
     if (camera_matrix_.empty()) {
         std::cerr << "请先加载相机内参" << std::endl;
         return false;
+    }
+
+    if (!image_depth.empty()) {
+        // 深度信息可以这样计算
+        DEPTH_INFO depthInfo;
+        depthInfo.from_depthMat(image_depth);
+
+        // 获取 100 100 位置的深度z，单位为毫米
+        // 如果获取失败，z 的值为 -1
+        float z = -1;
+        depthInfo.get_world_z_by_xy(100, 100, z);
     }
 
     cv::Mat image_gray, image_marker;
@@ -359,13 +372,20 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
 
 
 bool HandEyeCalibration::detectCalibrationBoard_ChArUco_file(const std::string& filename,
+    const std::string& filename_depth,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
 
     cv::Mat image = cv::imread(filename);
     if(0==image.cols || 0 == image.rows)
        return false;
-    return detectCalibrationBoard(image, image_with_detection, rvec, tvec);
+
+    cv::Mat image_depth;
+    if (fs::exists(filename_depth)) {
+        image_depth = cv::imread(filename_depth);
+    }
+
+    return detectCalibrationBoard(image, image_depth, image_with_detection, rvec, tvec);
 }
 
 cv::Mat HandEyeCalibration::parseRobotPose(const std::string& pose_str, bool use_quaternion) {
@@ -530,9 +550,12 @@ bool HandEyeCalibration::loadChessboardDataset(
         std::stringstream ss;
         ss << image_folder << "/" << std::setw(3) << std::setfill('0') << idx << ".jpg";
 
+        std::stringstream ss_depth;
+        ss_depth << image_folder << "/" << std::setw(3) << std::setfill('0') << idx << ".png";
+
         cv::Mat rvec, tvec;
         cv::Mat image_with_detection;
-        if (detectCalibrationBoard_ChArUco_file(ss.str(), image_with_detection, rvec, tvec)) {
+        if (detectCalibrationBoard_ChArUco_file(ss.str(), ss_depth.str(), image_with_detection, rvec, tvec)) {
             // 转换为变换矩阵
             cv::Mat R;
             cv::Rodrigues(rvec, R);
@@ -580,15 +603,24 @@ void HandEyeCalibration::collectCalibrationData(int num_poses,
 
     int collected_poses = 0;
     while (collected_poses < num_poses) {
-        cv::Mat frame = g_camera->captureOneFrame(1000);
-        if (frame.empty()) break;
+
+        // 采集图像
+        // cv::Mat frame = g_camera->captureOneFrame(1000);
+        cv::Mat frame, depthMat;
+        g_camera->captureOneFrameWithDepth(frame, depthMat, 5000);
+
+        if (frame.empty() || depthMat.empty())
+            break;
+
+        std::string img_name = string_format("%s%03d.jpg", g_calibrationPath.c_str(), collected_poses);
+        std::string depth_name = string_format("%s%03d.png", g_calibrationPath.c_str(), collected_poses);
+
+        cv::imwrite(img_name, frame);
+        cv::imwrite(depth_name, depthMat);
+
 
         cv::Mat image_with_detection;
         cv::Mat rvec, tvec;
-
-        std::string img_name = string_format("%s%03d.jpg", g_calibrationPath.c_str(), collected_poses);
-
-        cv::imwrite(img_name, frame);
 
         // 检测角点
         bool detected = detectChessboardFromFile(img_name, image_with_detection, rvec, tvec);

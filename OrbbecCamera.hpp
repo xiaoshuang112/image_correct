@@ -26,6 +26,7 @@ public:
     bool open();
     void close();
     cv::Mat captureOneFrame(int timeoutMs = 1000);
+    int captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs = 2000);
     bool isOpened() const { return m_isOpened; }
     const CONFIG& getConfig() const { return m_config; }
 
@@ -37,6 +38,7 @@ private:
     std::shared_ptr<ob::Device> m_device;
     std::shared_ptr<ob::Pipeline> m_pipeline;
     std::shared_ptr<ob::Config> m_configPtr;
+    std::shared_ptr<ob::FormatConvertFilter> m_formatConverter;
 };
 
 #endif
