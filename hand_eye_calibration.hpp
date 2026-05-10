@@ -234,7 +234,7 @@ public:
      * @brief 构造函数
      * @param camera_params_file 相机内参文件路径（YAML格式）
      */
-    HandEyeCalibration(const std::string& camera_params_file = "");
+    HandEyeCalibration(const std::string& camera_params_file = "", int minIdsNum=12, float thresh=0.25);
 
     /**
      * @brief 加载相机内参
@@ -251,8 +251,10 @@ public:
     /**
      * @brief 执行手眼标定
      * @param method 标定方法：Tsai-Lenz/Navy/Park
+     * @param min_corners 最低角点数过滤（0=不过滤）
      */
-    bool calibrate(cv::HandEyeCalibrationMethod method = cv::CALIB_HAND_EYE_TSAI);
+    bool calibrate(cv::HandEyeCalibrationMethod method = cv::CALIB_HAND_EYE_TSAI,
+                    int min_corners = 0);
 
     /**
      * @brief 将相机坐标系下的点转换到法兰坐标系
@@ -298,7 +300,7 @@ public:
     /**
      * @brief 位姿转变换矩阵
      */
-    cv::Mat poseToTransformMatrix(double x, double y, double z,
+    cv::Mat poseEulerToTransformMatrix(double x, double y, double z,
         double rx, double ry, double rz, bool degrees = true);
 
     /**
@@ -331,13 +333,22 @@ public:
 
     bool detectCalibrationBoard(const cv::Mat& image,
         cv::Mat& image_with_detection,
-        cv::Mat& rvec, cv::Mat& tvec) const;
+        cv::Mat& rvec, cv::Mat& tvec,
+        int* out_corner_count = nullptr,
+        int override_minIds = 0) const;
 
 
 
     bool detectCalibrationBoard_ChArUco_file(const std::string& filename,
         cv::Mat& image_with_detection,
         cv::Mat& rvec, cv::Mat& tvec) const;
+
+    // 带角点计数返回的重载
+    bool detectCalibrationBoard_ChArUco_file(const std::string& filename,
+        cv::Mat& image_with_detection,
+        cv::Mat& rvec, cv::Mat& tvec,
+        int* out_corner_count,
+        int override_minIds = 0) const;
 
 
     // 从文件加载相机标定数据
@@ -347,12 +358,14 @@ public:
         cv::Mat& rvec,
         cv::Mat& tvec);
 
-    // 新增函数：直接从棋盘格数据集批量读取
+    // 直接从棋盘格数据集批量读取
     // clear_existing=false 时追加数据（用于多目录合并标定）
+    // override_minIds>0 时覆盖构造参数 minIdsNum_ 以控制检测严格程度
     bool loadChessboardDataset(
         const std::string& image_folder,
         const std::string& robot_pose_file,
-        bool clear_existing = true);     
+        bool clear_existing = true,
+        int override_minIds = 0);
 
     /**
      * @brief 获取机器人位姿数量
@@ -360,11 +373,32 @@ public:
     size_t getPoseCount() const { return robot_poses_.size(); }
 
     /**
+     * @brief 获取每帧角点计数
+     */
+    const std::vector<int>& getCornerCounts() const { return corner_counts_; }
+
+    /**
+     * @brief 评估标定质量：计算标定板在基坐标系下的位置一致性 + 重投影误差
+     * @param output_file 输出报告路径（可选，为空则只打印）
+     * @param min_corners 最低角点数过滤（与 calibrate 一致）
+     */
+    void evaluateCalibration(const std::string& output_file = "", int min_corners = 0);
+
+    /**
+     * @brief 调试标定数据：保存每帧详细诊断信息到CSV，用于离线分析
+     * @param csv_path CSV输出路径
+     * @param min_corners 最低角点数过滤
+     */
+    void dumpCalibrationDebug(const std::string& csv_path = "calib_debug.csv", int min_corners = 0);
+
+    /**
      * @brief 清空所有数据
      */
     void clearData() {
         robot_poses_.clear();
         camera_poses_.clear();
+        image_paths_.clear();
+        corner_counts_.clear();
         calibration_error_ = 0.0;
         T_flange_camera_ = cv::Mat();
     }
@@ -373,13 +407,22 @@ private:
     // 相机内参
     cv::Mat camera_matrix_;
     cv::Mat dist_coeffs_;
+    int minIdsNum_;
+    float thresh_;
 
     void drawCharucoReprojectionError(
         cv::Mat& image_with_detection,
-        const std::vector<cv::Point2f>& charuco_corners,
-        const std::vector<int>& charuco_ids,
+        std::vector<cv::Point2f>& charuco_corners,
+        std::vector<int>& charuco_ids,
         const cv::Mat& rvec,
-        const cv::Mat& tvec) const;
+        const cv::Mat& tvec, float thresh) const;
+
+    // ChArUco 角点检测（组合三种方案：CharucoDetector + 旧 API fallback）
+    bool detectChArUco(const cv::Mat& image_gray,
+        std::vector<cv::Point2f>& charucoCorners,
+        std::vector<int>& charucoIds,
+        std::vector<std::vector<cv::Point2f>>& markerCorners,
+        std::vector<int>& markerIds) const;
 
     // 标定板参数
     cv::Ptr<cv::aruco::Dictionary> dictionary_;
@@ -389,6 +432,8 @@ private:
     // 标定数据
     std::vector<cv::Mat> robot_poses_;      // 机器人位姿（T_base_flange）
     std::vector<cv::Mat> camera_poses_;     // 相机位姿（T_camera_calib）
+    std::vector<std::string> image_paths_;  // 每帧图像路径（用于标定质量评估）
+    std::vector<int> corner_counts_;       // 每帧检测到的 ChArUco 角点数
 
     // 标定结果
     cv::Mat T_flange_camera_;              // 法兰到相机的变换矩阵
