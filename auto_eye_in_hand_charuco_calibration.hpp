@@ -1,0 +1,64 @@
+#ifndef AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
+#define AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
+
+#include <opencv2/opencv.hpp>
+#include <string>
+#include <vector>
+
+class OrbbecCameraV2;
+
+// 自动眼在手 ChArUco 标定结果
+struct CalibrationResult {
+    bool success = false;
+    cv::Mat T_flange_camera;   // 4x4 手眼矩阵（法兰→相机）
+    cv::Mat camera_matrix;     // 3x3 相机内参（标定或输入值）
+    cv::Mat dist_coeffs;      // 畸变系数
+    int valid_frames = 0;      // 参与标定的有效帧数
+    double reproj_error = 0.0; // 重投影误差
+    std::string message;       // 状态/错误信息
+};
+
+// ChArUco 标定板参数
+struct CharucoBoardConfig {
+    int squares_x = 7;          // 横向方格数
+    int squares_y = 5;          // 纵向方格数
+    float square_length = 0.04f;   // 方格边长 (m)
+    float marker_length = 0.028f;  // 标记边长 (m)
+    int dictionary_id = 4;          // cv::aruco::DICT_5X5_250
+};
+
+/**
+ * @brief 自动眼在手 ChArUco 标定（CGXi SDK）
+ *
+ * 从起始轴角位姿出发，在欧拉空间生成 729（3⁶）个候选位姿组合，
+ * IK 预过滤后逐点运动采集，自动完成手眼标定。
+ * 如 camera_matrix 为空，从采集帧自动标定相机内参。
+ *
+ * @param robot_handle    CGXi RobotHandle（来自 cr_create_robot）
+ * @param init_tcp_pose   起始 TCP 轴角位姿 [x,y,z,rx,ry,rz] (mm, deg)
+ * @param tcp_offset      TCP 偏移量 [x,y,z,rx,ry,rz] (mm, deg)
+ * @param camera          已打开的 OrbbecCameraV2
+ * @param board_config    ChArUco 标定板参数
+ * @param camera_matrix   输入：已知内参 / 空 Mat 则自动标定；输出：最终内参
+ * @param dist_coeffs     同上
+ * @param result          标定结果
+ * @param save_dir        数据保存目录（为空则不保存）。保存内容：
+ *                        - 000.jpg, 001.jpg, ... 采集图像
+ *                        - rob_pos.csv 法兰轴角位姿 (mm,deg)
+ *                        - rob_joint.csv 关节角 (deg)
+ * @return true/false
+ */
+bool autoEyeInHandCharucoCalibration(
+    int robot_handle,
+    const double init_tcp_pose[6],
+    const double tcp_offset[6],
+    OrbbecCameraV2& camera,
+    const CharucoBoardConfig& board_config,
+    cv::InputOutputArray camera_matrix,
+    cv::InputOutputArray dist_coeffs,
+    CalibrationResult& result,
+    const std::string& save_dir = ""
+);
+void moveToJointPos(int robot_handle, const double joint[6]);
+
+#endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
