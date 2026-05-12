@@ -19,6 +19,7 @@ extern std::string g_paramPath;
 
 extern std::shared_ptr<OrbbecCameraV2> g_camera;
 extern RobotHandle robotHandle;
+extern OBCameraIntrinsic g_cam_param;
 
 extern std::string string_format(const char* format, ...);
 
@@ -268,6 +269,7 @@ bool HandEyeCalibration::detectCalibrationBoard_aruco(const cv::Mat& image,
 
 
 bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
+    const cv::Mat& image_depth,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec, int* out_corner_count, int override_minIds) const {
     if (camera_matrix_.empty()) return false;
@@ -293,9 +295,9 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
 
     cv::aruco::drawDetectedCornersCharuco(image_with_detection, charucoCorners, charucoIds);
     bool valid = false;
-    if(charucoIds.size() >= 6)
+    if (charucoIds.size() >= 6)
         valid = cv::aruco::estimatePoseCharucoBoard(
-        charucoCorners, charucoIds, board_, camera_matrix_, dist_coeffs_, rvec, tvec);
+            charucoCorners, charucoIds, board_, camera_matrix_, dist_coeffs_, rvec, tvec);
     if (!valid) {
         if (out_corner_count) *out_corner_count = 0;
         return false;
@@ -312,6 +314,7 @@ bool HandEyeCalibration::detectCalibrationBoard(const cv::Mat& image,
 
 
 bool HandEyeCalibration::detectCalibrationBoard_ChArUco_file(const std::string& filename,
+    const std::string& filename_depth,
     cv::Mat& image_with_detection,
     cv::Mat& rvec, cv::Mat& tvec) const {
 
@@ -325,9 +328,10 @@ bool HandEyeCalibration::detectCalibrationBoard_ChArUco_file(const std::string& 
     int override_minIds) const {
 
     cv::Mat image = cv::imread(filename);
-    if(0==image.cols || 0 == image.rows)
-       return false;
-    return detectCalibrationBoard(image, image_with_detection, rvec, tvec, out_corner_count, override_minIds);
+    if (image.empty()) return false;
+
+    cv::Mat empty_depth;
+    return detectCalibrationBoard(image, empty_depth, image_with_detection, rvec, tvec, out_corner_count, override_minIds);
 }
 
 cv::Mat HandEyeCalibration::parseRobotPose(const std::string& pose_str, bool use_quaternion) {
@@ -560,15 +564,24 @@ void HandEyeCalibration::collectCalibrationData(int num_poses,
 
     int collected_poses = 0;
     while (collected_poses < num_poses) {
-        cv::Mat frame = g_camera->captureOneFrame(1000);
-        if (frame.empty()) break;
+
+        // 采集图像
+        // cv::Mat frame = g_camera->captureOneFrame(1000);
+        cv::Mat frame, depthMat;
+        g_camera->captureOneFrameWithDepth(frame, depthMat, 5000);
+
+        if (frame.empty() || depthMat.empty())
+            break;
+
+        std::string img_name = string_format("%s%03d.jpg", g_calibrationPath.c_str(), collected_poses);
+        std::string depth_name = string_format("%s%03d.png", g_calibrationPath.c_str(), collected_poses);
+
+        cv::imwrite(img_name, frame);
+        cv::imwrite(depth_name, depthMat);
+
 
         cv::Mat image_with_detection;
         cv::Mat rvec, tvec;
-
-        std::string img_name = string_format("%s%03d.jpg", g_calibrationPath.c_str(), collected_poses);
-
-        cv::imwrite(img_name, frame);
 
         // 检测角点
         bool detected = detectChessboardFromFile(img_name, image_with_detection, rvec, tvec);

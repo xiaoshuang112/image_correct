@@ -37,6 +37,8 @@ RobotHandle robotHandle;
 
 namespace fs = std::filesystem;
 
+OBCameraIntrinsic g_cam_param;
+
 
 std::string string_format(const char* format, ...) {
 #if 1 // 最大长度限制：1024 - 1
@@ -347,9 +349,9 @@ void cap_image_by_pos(int pos)
         return;
     }
     // for(int i = 1; i < 9; i++)
-    //    convert_joint_2_pos(i);
-    //convert_pos_2_joint(pos);
+    //    convert_joint_2_pos(i);    
     // convert_pos_euler_2_joint(9);
+    // convert_pos_2_joint(pos);
     std::string rob_joint_file = pos_path + "rob_joint.csv";
     if (!fs::exists(rob_joint_file))
     {
@@ -378,13 +380,20 @@ void cap_image_by_pos(int pos)
         goto_jointpos(joint_pose.data());
         
         // 采集图像
-        cv::Mat frame = g_camera->captureOneFrame(1000);
-        if (frame.empty()) 
+        // cv::Mat frame = g_camera->captureOneFrame(1000);
+        cv::Mat frame,depthMat;
+        g_camera->captureOneFrameWithDepth(frame, depthMat,5000);
+
+        if (frame.empty() || depthMat.empty())
             break;
 
-        std::string img_name = string_format("%s%03d.jpg", img_path.c_str(), idx++);
+        std::string img_name = string_format("%s%03d.jpg", img_path.c_str(), idx);
+        std::string depth_name = string_format("%s%03d.png", img_path.c_str(), idx);
+
+        idx++;
 
         cv::imwrite(img_name, frame);
+        cv::imwrite(depth_name, depthMat);
 
 
         // 保存法兰坐标
@@ -528,6 +537,20 @@ int load_config(std::string cfg_file) {
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
     fs.release();
+
+
+    // g_cam_param
+    ///< Focal length in x direction
+    g_cam_param.fx = 608.212;
+    ///< Focal length in y direction        
+    g_cam_param.fy = 608.21;
+    ///< Optical center abscissa        
+    g_cam_param.cx = 648.738;
+    ///< Optical center ordinate
+    g_cam_param.cy = 392.18;
+
+    g_cam_param.width = 1280;
+    g_cam_param.height = 800;
 
     return 0;
 }
@@ -685,9 +708,68 @@ void local_fit_demo()
     std::cout << "\n========== 三级过滤对比完成 ==========" << std::endl;
 }
 
+void checkAndRestoreRobotHand(){
+    // 检查机械臂是否上电
+    enum RobotModes robotMode;
+    CRresult res = cr_get_robotMode(robotHandle, &robotMode);
+    if (res == sucess)
+    {
+        if (robotMode == JointPowerOff)
+        {
+            std::cout << "机械臂未上电，上电使能" << std::endl;
+            res = cr_FaultReset(robotHandle);
+            if (res == sucess)
+            {
+                std::cout << "机械臂故障复位" << std::endl;
+                std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            }
+            else
+                std::cout << "故障复位失败" << std::endl;
+            
+            if (res == sucess)
+                res = cr_poweron(robotHandle); // 上电
+            if (res == sucess)
+            {
+                std::cout << "机械臂开始上电" << std::endl;
+                while (res == sucess)
+                {
+                    res = cr_get_robotMode(robotHandle, &robotMode);
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                    if (robotMode == JointIdle)
+                    {
+                        break;
+                    }
+                }
+
+                res = cr_enable(robotHandle); // 使能
+                if (res == sucess)
+                {
+                    std::cout << "机械臂开始使能" << std::endl;
+                    while (res == sucess)
+                    {
+                        res = cr_get_robotMode(robotHandle, &robotMode);
+                        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                        if (robotMode == ProgramStop)
+                        {
+                            break;
+                        }
+                    }
+                }
+                else
+                    std::cout << "机械臂使能失败 res: " << res << std::endl;
+            }
+            else
+                std::cout << "机械臂上电失败 res: " << res << std::endl;
+        }
+    }
+    else
+        std::cout << "获取机械臂模式失败" << std::endl;
+}
+
 // ============================================================
 // 自动手眼标定入口（菜单项 5）
 // ============================================================
+//void moveToJointPos(int robot_handle, const double joint[6]);
 void auto_handeye_calibration() {
     // 尝试加载已有相机内参
     cv::Mat camera_matrix, dist_coeffs;
@@ -712,11 +794,14 @@ void auto_handeye_calibration() {
     std::cout << "  按 's' 开始自动标定" << std::endl;
     std::cout << "  按 'q' 取消" << std::endl;
     std::cout << "----------------------------------------\n" << std::endl;
+    
+    checkAndRestoreRobotHand();   
 
-    double init_tcp_pose[6] = {0};
+    double init_tcp_pose[6] = {209.396,	-38.517, -29.509,-43.52,95.22,239.616};
     TCPMsg tcp_msg;
     bool confirmed = false;
-
+    moveToJointPos(robotHandle, init_tcp_pose);   
+    CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
         if (frame.empty()) continue;
@@ -724,7 +809,8 @@ void auto_handeye_calibration() {
         // 检测 ChArUco 并叠加显示
         cv::Mat display;
         cv::Mat rvec, tvec;
-        if (detector.detectCalibrationBoard(frame, display, rvec, tvec)) {
+        cv::Mat empty_depth;
+        if (detector.detectCalibrationBoard(frame, empty_depth, display, rvec, tvec)) {
             cv::putText(display, "ChArUco OK  Press 's' to start",
                         cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
                         0.7, cv::Scalar(0, 255, 0), 2);
