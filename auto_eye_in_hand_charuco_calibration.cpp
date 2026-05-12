@@ -751,7 +751,7 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (1+zi)/3;
+        double z = z_values[zi], dlt = 360 * (3-zi)/3;
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {
     for (double dy : xy_offsets) {
