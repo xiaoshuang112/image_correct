@@ -1,3 +1,5 @@
+sources/
+docs/
 libs/
 dist/
 test/
@@ -13,7 +15,9 @@ public/third-party/spdlog/
 *.sqlsqlite3
 cloud-rb-ubuntu*
 *.7z
+*.pdf
 test-core-load-lib
 test-kill-app
 boost_*.bz2
 public/third-party/boost_1_88_0/
+CLAUDE.md
