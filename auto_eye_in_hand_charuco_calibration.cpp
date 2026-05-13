@@ -1,8 +1,13 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 
 #include "AICamera.hpp"
+#ifdef useORB
+#include <OrbbecCamera.hpp>
+#endif // REL_DBG
+
+#ifdef useOAK
 #include "OAKCamera.hpp"
-#include "OrbbecCamera.hpp"
+#endif // REL_DBG
 
 #include "robotapi.h"
 #include "basestruct.h"

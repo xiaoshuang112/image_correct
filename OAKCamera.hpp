@@ -9,7 +9,6 @@
 #include <memory>
 #include <thread>
 
-
 /**
  * @brief OAK深度相机封装类（适配 DepthAI SDK v3.5.0）
  * 支持USB和PoE连接的OAK相机（OAK-D, OAK-D-Lite, OAK-1等）
@@ -61,6 +60,9 @@ private:
     std::shared_ptr<dai::node::Camera> m_monoLeft;
     std::shared_ptr<dai::node::Camera> m_monoRight;
     std::shared_ptr<dai::node::StereoDepth> m_stereo;
+
+    // MJPEG 编码器（减少带宽占用）
+    std::shared_ptr<dai::node::VideoEncoder> m_videoEnc;
 
     // 输出队列
     std::shared_ptr<dai::MessageQueue> m_colorQueue;

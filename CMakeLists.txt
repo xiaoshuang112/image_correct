@@ -88,7 +88,40 @@ link_directories(${ORBBEC_SDK_V2_DIR}/lib)
 include_directories(${depthai_DIR}/include)
 link_directories(${depthai_DIR}/lib)
 
-add_executable(${PROJECT_NAME} calibration.cpp OrbbecCamera.cpp OAKCamera.cpp exposure_fusion.cpp  
-                hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
-                putText.cpp Util.cpp Texts.cpp)
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} OrbbecSDK depthai-core ${CGX_SDK_LIBS} )
+
+SET(useORB TRUE)
+SET(useOAK FALSE)
+
+
+SET(SRC_LISTS 
+    calibration.cpp exposure_fusion.cpp  
+    hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
+    putText.cpp Util.cpp Texts.cpp
+)
+
+SET(SRC_LIBS 
+)
+
+if(useORB)
+    add_definitions(-DuseORB)
+    list(APPEND SRC_LISTS
+        OrbbecCamera.cpp
+    )
+    list(APPEND SRC_LIBS
+        OrbbecSDK
+    )
+endif()
+
+if(useOAK)
+    add_definitions(-DuseOAK)
+    list(APPEND SRC_LISTS
+        OAKCamera.cpp    
+    )
+    list(APPEND SRC_LIBS
+        depthai-core
+    )
+endif()
+
+
+add_executable(${PROJECT_NAME} ${SRC_LISTS})
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )

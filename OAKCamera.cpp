@@ -2,6 +2,14 @@
 #include <iostream>
 #include <chrono>
 
+// 解码 MJPEG 编码的帧数据为 BGR 图像
+static cv::Mat decodeMjpegFrame(const std::shared_ptr<dai::ImgFrame>& frame) {
+    if (!frame) return cv::Mat();
+    const auto& data = frame->getData();
+    if (data.empty()) return cv::Mat();
+    return cv::imdecode(cv::Mat(1, static_cast<int>(data.size()), CV_8UC1, data.data()), cv::IMREAD_COLOR);
+}
+
 OAKCamera::OAKCamera(const CONFIG& config)
     : AICamera(config) {
 }
@@ -60,11 +68,18 @@ bool OAKCamera::open() {
         m_colorCam = m_pipeline->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_A,
                                                                      std::make_pair(sensorW, sensorH),
                                                                      sensorFps);
+        // NV12：VideoEncoder MJPEG 要求的输入格式
         auto* colorOutput = m_colorCam->requestOutput({sensorW, sensorH},
-                                                       dai::ImgFrame::Type::BGR888i,
+                                                       dai::ImgFrame::Type::NV12,
                                                        dai::ImgResizeMode::CROP,
                                                        sensorFps);
-        m_colorQueue = colorOutput->createOutputQueue();
+
+        // MJPEG 编码器：将原始 BGR 流压缩为 MJPEG，减少 USB/PoE 带宽占用
+        m_videoEnc = m_pipeline->create<dai::node::VideoEncoder>();
+        m_videoEnc->setDefaultProfilePreset(sensorFps, dai::VideoEncoderProperties::Profile::MJPEG);
+        m_videoEnc->setQuality(80);
+        colorOutput->link(m_videoEnc->input);
+        m_colorQueue = m_videoEnc->bitstream.createOutputQueue();
 
         // 大分辨率下增大帧池，避免丢帧（4056x3040 BGR ≈ 37MB/帧）
         if (sensorW > 1920 || sensorH > 1080) {
@@ -88,16 +103,23 @@ bool OAKCamera::open() {
             }
 
             if (hasStereo) {
-                m_monoLeft = m_pipeline->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_B);
-                m_monoRight = m_pipeline->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_C);
+                // 与彩色相机保持相同帧率，确保立体匹配帧同步
+                m_monoLeft = m_pipeline->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_B,
+                                                                             std::make_pair(640U, 400U),
+                                                                             sensorFps);
+                m_monoRight = m_pipeline->create<dai::node::Camera>()->build(dai::CameraBoardSocket::CAM_C,
+                                                                              std::make_pair(640U, 400U),
+                                                                              sensorFps);
 
                 // 显式指定输出类型为 GRAY8，确保与 StereoDepth 节点输入匹配
-                auto* leftOut = m_monoLeft->requestOutput(
-                    {640, 400}, dai::ImgFrame::Type::GRAY8,
-                    dai::ImgResizeMode::CROP, static_cast<float>(m_config.fps));
-                auto* rightOut = m_monoRight->requestOutput(
-                    {640, 400}, dai::ImgFrame::Type::GRAY8,
-                    dai::ImgResizeMode::CROP, static_cast<float>(m_config.fps));
+                auto* leftOut = m_monoLeft->requestOutput({640, 400},
+                                                           dai::ImgFrame::Type::GRAY8,
+                                                           dai::ImgResizeMode::CROP,
+                                                           sensorFps);
+                auto* rightOut = m_monoRight->requestOutput({640, 400},
+                                                             dai::ImgFrame::Type::GRAY8,
+                                                             dai::ImgResizeMode::CROP,
+                                                             sensorFps);
 
                 m_stereo = m_pipeline->create<dai::node::StereoDepth>();
                 leftOut->link(m_stereo->left);
@@ -123,7 +145,15 @@ bool OAKCamera::open() {
             }
         }
 
-        // 4. 启动 Pipeline
+        // 4. 配置 BoardConfig（watchdog 等）并启动 Pipeline
+#ifdef WATCH_DOG
+        {
+            auto boardCfg = m_pipeline->getBoardConfig();
+            boardCfg.watchdogTimeoutMs = 120000;  // 120 秒
+            m_pipeline->setBoardConfig(boardCfg);
+        }
+#endif
+
         m_pipeline->start();
 
         // 5. 验证：获取首帧（彩色）
@@ -132,7 +162,7 @@ bool OAKCamera::open() {
         int retryWaitMs = (sensorW > 1920 || sensorH > 1080) ? 200 : 100;
         for (int retry = 0; retry < maxRetries; retry++) {
             auto frame = m_colorQueue->tryGet<dai::ImgFrame>();
-            if (frame && !frame->getCvFrame().empty()) {
+            if (frame && !frame->getData().empty()) {
                 frameReceived = true;
                 std::cout << "First color frame received successfully" << std::endl;
                 break;
@@ -199,6 +229,7 @@ void OAKCamera::close() {
         m_monoLeft.reset();
         m_monoRight.reset();
         m_stereo.reset();
+        m_videoEnc.reset();
         m_isOpened = false;
         std::cout << "OAK Camera closed" << std::endl;
     }
@@ -221,7 +252,7 @@ cv::Mat OAKCamera::captureOneFrame(int timeoutMs) {
         if (!frame || hasTimedout) {
             return cv::Mat();
         }
-        return frame->getCvFrame().clone();
+        return decodeMjpegFrame(frame);
     }
     catch (const std::exception& e) {
         std::cerr << "Capture error: " << e.what() << std::endl;
@@ -237,14 +268,18 @@ int OAKCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
 
     try {
         // 丢弃少量旧帧，确保拿到最新的同步帧对
+        int discardedColor = 0, discardedDepth = 0;
         for (int i = 0; i < 3; i++) {
             bool timedout = false;
-            m_colorQueue->get<dai::ImgFrame>(std::chrono::milliseconds(100), timedout);
+            auto cf = m_colorQueue->get<dai::ImgFrame>(std::chrono::milliseconds(100), timedout);
+            if (!timedout && cf) discardedColor++;
             if (m_depthQueue) {
                 bool dt = false;
-                m_depthQueue->get<dai::ImgFrame>(std::chrono::milliseconds(100), dt);
+                auto df = m_depthQueue->get<dai::ImgFrame>(std::chrono::milliseconds(100), dt);
+                if (!dt && df) discardedDepth++;
             }
         }
+        std::cout << "Discarded frames: color=" << discardedColor << " depth=" << discardedDepth << std::endl;
 
         // 获取彩色帧
         bool colorTimedout = false;
@@ -254,32 +289,36 @@ int OAKCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
             std::cerr << "Color frame timeout" << std::endl;
             return -1;
         }
-        bgrImage = colorFrame->getCvFrame().clone();
+        bgrImage = decodeMjpegFrame(colorFrame);
         std::cout << "Color frame: " << bgrImage.cols << "x" << bgrImage.rows
                   << " type=" << bgrImage.type() << std::endl;
 
         // 获取深度帧
         if (m_depthQueue) {
-            // 持续尝试直到获取到有效深度帧（非全零）
             cv::Mat rawDepth;
             bool gotValidDepth = false;
-            for (int attempt = 0; attempt < 5; attempt++) {
+            for (int attempt = 0; attempt < 10; attempt++) {
                 bool depthTimedout = false;
                 auto depthFrame = m_depthQueue->get<dai::ImgFrame>(
-                    std::chrono::milliseconds(timeoutMs), depthTimedout);
+                    std::chrono::milliseconds(500), depthTimedout);
                 if (!depthFrame || depthTimedout) {
+                    std::cerr << "Depth attempt " << attempt << ": timeout" << std::endl;
                     continue;
                 }
-                // 使用 SDK 推荐的 getCvFrame() 而非 getFrame()，避免 stride 对齐问题
                 rawDepth = depthFrame->getCvFrame();
+                if (rawDepth.empty()) {
+                    std::cerr << "Depth attempt " << attempt << ": getCvFrame() returned empty" << std::endl;
+                    continue;
+                }
                 double dmin, dmax;
                 cv::minMaxLoc(rawDepth, &dmin, &dmax);
-                std::cout << "Depth frame attempt " << attempt << ": "
+                std::cout << "Depth attempt " << attempt << ": "
                           << rawDepth.cols << "x" << rawDepth.rows
                           << " type=" << rawDepth.type()
                           << " min=" << dmin << " max=" << dmax << std::endl;
                 if (dmax > 0) {
                     gotValidDepth = true;
+                    cv::imwrite("debug_depth_raw_before_resize.png", rawDepth);
                     break;
                 }
                 std::cerr << "Depth frame all zeros, retrying..." << std::endl;
@@ -288,7 +327,7 @@ int OAKCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
             if (gotValidDepth) {
                 depthImage = rawDepth;
             } else {
-                std::cerr << "Failed to get valid depth frame after retries" << std::endl;
+                std::cerr << "Failed to get valid depth frame after 10 attempts" << std::endl;
                 depthImage = cv::Mat::zeros(bgrImage.size(), CV_16UC1);
             }
         } else {
@@ -303,7 +342,7 @@ int OAKCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
                       << " type=" << depthImage.type() << std::endl;
         }
 
-        // cv::imwrite("debug_depth_raw.png", depthImage);
+        cv::imwrite("debug_depth_raw.png", depthImage);
         return bgrImage.empty() ? -1 : 0;
     }
     catch (const std::exception& e) {

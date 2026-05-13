@@ -22,8 +22,13 @@
 
 #include "my_base.h"
 #include "AICamera.hpp"
+#ifdef useORB
+#include <OrbbecCamera.hpp>
+#endif // REL_DBG
+
+#ifdef useOAK
 #include "OAKCamera.hpp"
-#include "OrbbecCamera.hpp"
+#endif // REL_DBG
 #include "robotapi.h"
 #include "basestruct.h"
 #include "putText.h"
@@ -958,7 +963,7 @@ int main() {
         return -1;
 
     // 使用默认配置
-    g_camera = std::make_shared<OAKCamera>(g_cfg);
+    g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
     // 打开相机   
     
     while (true) {
