@@ -1,6 +1,9 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 
+#include "AICamera.hpp"
+#include "OAKCamera.hpp"
 #include "OrbbecCamera.hpp"
+
 #include "robotapi.h"
 #include "basestruct.h"
 
@@ -271,11 +274,11 @@ void transformToAxisAnglePose(const cv::Mat& T, double pose[6]) {
 // use_center=true:  score = ids.size() * 10000 - 中心距像素
 // use_center=false: score = ids.size() * 1000000 + 凸包面积
 static std::tuple<double, int, cv::Point2f> evaluatePose(
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
     const cv::Ptr<cv::aruco::CharucoBoard>& board,
     bool use_center) {
-    cv::Mat f = camera.captureOneFrame(1500);
+    cv::Mat f = camera->captureOneFrame(1500);
     if (f.empty()) return {0, 0, cv::Point2f(0, 0)};
     double cx = f.cols / 2.0;
     double cy = f.rows / 2.0;
@@ -314,7 +317,7 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
 // 返回最佳评分 (全失败返回 -1)
 // 注意：函数会临时运动到候选位姿做评估，返回前会回到原始位置
 static double tryCandidatePoses(int robot_handle,
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
     const cv::Ptr<cv::aruco::CharucoBoard>& board,
     bool use_center,
@@ -364,7 +367,7 @@ static double tryCandidatePoses(int robot_handle,
 
 // 多步长 XY 搜索（Phase 2 / Phase 4 共用）
 static void searchXYSteps(int robot_handle,
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
     const cv::Ptr<cv::aruco::CharucoBoard>& board,
     const double* steps, int num_steps,
@@ -405,7 +408,7 @@ float bound_camera_angle(float angle){
 
 // 一次公式反算找最佳位姿：板居中、面积 25-30%、长边平行
 bool autoFindBestPose(int robot_handle,
-                      OrbbecCameraV2& camera,
+                      std::shared_ptr<AICamera>& camera,
                       const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                       const cv::Ptr<cv::aruco::CharucoBoard>& board,
                       double tcp_aa[6],        // in/out: TCP 轴角 (mm,deg)
@@ -493,7 +496,7 @@ bool autoFindBestPose(int robot_handle,
     // ================================================================
 
     for (int iter = 0; iter < MAX_REFINE_ZRZ; iter++) {
-        cv::Mat frame = camera.captureOneFrame(1500);
+        cv::Mat frame = camera->captureOneFrame(1500);
         if (frame.empty()) {
             std::cerr << "[autoFindBestPose] 采集图像失败" << std::endl;
             return false;
@@ -538,7 +541,7 @@ bool autoFindBestPose(int robot_handle,
         if (tryCandidatePoses(robot_handle, camera, dictionary, board,
                                false, zrz_candidates, best_j) > cur_s) {
             moveToJointPos(robot_handle, best_j);            
-            cv::Mat frame = camera.captureOneFrame(1500);
+            cv::Mat frame = camera->captureOneFrame(1500);
             double actual[6];
             cr_get_tcpActualPose((RobotHandle)robot_handle, actual);
             fixed_z = actual[2];
@@ -570,7 +573,7 @@ bool autoFindBestPose(int robot_handle,
             double joint_best[ROB_AXIS_NUM];
             if (cr_kineInverse((RobotHandle)robot_handle, tcp_aa, ref_j, joint_best) == sucess) {
                 moveToJointPos(robot_handle, joint_best);                
-                cv::Mat frame = camera.captureOneFrame(1500);
+                cv::Mat frame = camera->captureOneFrame(1500);
                 cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
             }
         }
@@ -615,7 +618,7 @@ cv::Mat rvecTvecToTransform(const cv::Mat& rvec, const cv::Mat& tvec) {
 // ============================================================
 
 static bool computeZValues(int robot_handle,
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
     const cv::Ptr<cv::aruco::CharucoBoard>& board,
     const double ref_euler[6],   // 当前欧拉位姿（含 Z）
@@ -626,7 +629,7 @@ static bool computeZValues(int robot_handle,
     std::copy(ref_joint, ref_joint + ROB_AXIS_NUM, orig_j);
 
     // 在当前位姿检测标定板像素尺寸
-    cv::Mat frame = camera.captureOneFrame(1500);
+    cv::Mat frame = camera->captureOneFrame(1500);
     if (frame.empty()) return false;
 
     std::vector<cv::Point2f> corners;
@@ -680,7 +683,7 @@ static bool computeZValues(int robot_handle,
 
             moveToJointPos(robot_handle, joint);            
 
-            cv::Mat vf = camera.captureOneFrame(1500);
+            cv::Mat vf = camera->captureOneFrame(1500);
             if (vf.empty()) continue;
 
             std::vector<cv::Point2f> vc;
@@ -791,7 +794,7 @@ bool generateCandidates(int robot_handle,
 // ============================================================
 
 bool executeCollection(int robot_handle,
-                       OrbbecCameraV2& camera,
+                       std::shared_ptr<AICamera>& camera,
                        const double tcp_offset[6],
                        const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                        const cv::Ptr<cv::aruco::CharucoBoard>& board,
@@ -822,7 +825,7 @@ bool executeCollection(int robot_handle,
 
         moveToJointPos(robot_handle, candidates[i].joint);       
 
-        cv::Mat frame = camera.captureOneFrame(1500);
+        cv::Mat frame = camera->captureOneFrame(1500);
         if (frame.empty()) {
             std::cerr << "\n[autoCalib] 采集图像失败 (pose " << i << ")" << std::endl;
             continue;
@@ -1097,7 +1100,7 @@ bool autoEyeInHandCharucoCalibration(
     int robot_handle,
     const double init_tcp_pose[6],
     const double tcp_offset[6],
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,

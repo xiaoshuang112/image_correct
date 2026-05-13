@@ -21,6 +21,8 @@
 #endif
 
 #include "my_base.h"
+#include "AICamera.hpp"
+#include "OAKCamera.hpp"
 #include "OrbbecCamera.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
@@ -32,7 +34,7 @@ std::string g_paramPath = "";
 std::string g_posPath = "";
 std::string g_calibrationPath = "";
 
-std::shared_ptr<OrbbecCameraV2> g_camera = nullptr;
+std::shared_ptr<AICamera> g_camera = nullptr;
 RobotHandle robotHandle;
 
 namespace fs = std::filesystem;
@@ -865,7 +867,7 @@ void auto_handeye_calibration() {
         robotHandle,
         init_tcp_pose,
         tcp_msg.tcpOffset,
-        *g_camera,
+        g_camera,
         board_cfg,
         camera_matrix,
         dist_coeffs,
@@ -909,6 +911,25 @@ int  open_camera(){
                 std::cerr << "打开相机失败" << std::endl;
                 return -1;
             }
+
+    // 读取相机内参
+    auto m = g_camera->getCameraIntrinsics(g_cfg.cam_width, g_cfg.cam_height);        
+
+    // 保存相机参数到文件
+    cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
+    cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
+    cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+
+    camera_matrix.at<double>(0, 0) = m[0][0];
+    camera_matrix.at<double>(1, 1) = m[1][1];
+    camera_matrix.at<double>(2, 2) = 1.0;
+
+    camera_matrix.at<double>(0, 2) = m[0][2];
+    camera_matrix.at<double>(1, 2) = m[1][2];
+
+    out << "camera_matrix" << camera_matrix;
+    out << "distortion_coefficients" << dist_coeffs;
+
     return 0;
 }
 
@@ -936,28 +957,32 @@ int main() {
         return -1;
 
     // 使用默认配置
-    g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
+    g_camera = std::make_shared<OAKCamera>(g_cfg);
     // 打开相机   
     
     while (true) {
         display_menu();
         std::cin >> choice;
 
+        int ret = -1;
         switch (choice) {
         case 1:
-            open_camera();
+            ret = open_camera();
+            if (-1==ret) break;
             example_caitu_demo();
             break;
         case 2:
             local_fit_demo();
             break;       
         case 3:
-            open_camera();
+            ret = open_camera();
+            if (-1==ret) break;
             example_full_calibration();
             break;
         case 4:
-            open_camera();
-            auto_handeye_calibration();
+            ret = open_camera();
+            if (-1==ret) break;
+            auto_handeye_calibration();   
             break;
         case 5:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;

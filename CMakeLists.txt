@@ -81,9 +81,13 @@ else()
 
 endif()
 
+set(depthai_DIR "/usr/local/")
+find_package(depthai REQUIRED CONFIG)
 
 include_directories(${ORBBEC_SDK_V2_DIR}/include)
 link_directories(${ORBBEC_SDK_V2_DIR}/lib)
 
-add_executable(${PROJECT_NAME} calibration.cpp OrbbecCamera.cpp hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp putText.cpp Util.cpp Texts.cpp)
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} OrbbecSDK ${CGX_SDK_LIBS})
+add_executable(${PROJECT_NAME} calibration.cpp OrbbecCamera.cpp OAKCamera.cpp exposure_fusion.cpp  
+                hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
+                putText.cpp Util.cpp Texts.cpp)
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} OrbbecSDK depthai::core ${CGX_SDK_LIBS} )

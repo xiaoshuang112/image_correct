@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-class OrbbecCameraV2;
+#include "AICamera.hpp"
 
 // 自动眼在手 ChArUco 标定结果
 struct CalibrationResult {
@@ -52,7 +52,7 @@ bool autoEyeInHandCharucoCalibration(
     int robot_handle,
     const double init_tcp_pose[6],
     const double tcp_offset[6],
-    OrbbecCameraV2& camera,
+    std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
