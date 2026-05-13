@@ -658,7 +658,7 @@ static bool computeZValues(int robot_handle,
     if (board_dim < 1.0f) { moveToJointPos(robot_handle, orig_j); return false; }
 
     double current_z = ref_euler[2];
-    const double ratios[3] = {0.08, 0.20, 0.49};
+    const double ratios[3] = {0.1, 0.2, 0.49};
 
     for (int i = 0; i < 3; i++) {
         double z_attempt = current_z * board_dim / (ratios[i] * img_dim);
@@ -667,7 +667,7 @@ static bool computeZValues(int robot_handle,
                   << ", 初始Z=" << z_attempt << std::endl;
 
         bool converged = false;
-        for (int iter = 0; iter < 10; iter++) {
+        for (int iter = 0; iter < 20; iter++) {
             double euler[ROB_AXIS_NUM];
             std::copy(ref_euler, ref_euler + ROB_AXIS_NUM, euler);
             euler[2] = z_attempt;
@@ -747,14 +747,12 @@ bool generateCandidates(int robot_handle,
                         const double ref_joint[6],
                         const double z_values[3],
                         std::vector<PoseCandidate>& candidates) {
-    
-    const double ang_offsets[] = {-15.0, 0.0, 15.0};
-
     double euler[6], aa[6], joint[6];
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3;
+        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={30, 20, 15};
+        const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {
     for (double dy : xy_offsets) {

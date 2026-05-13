@@ -799,11 +799,12 @@ void auto_handeye_calibration() {
     
     checkAndRestoreRobotHand();   
 
-    double init_tcp_pose[6] = {209.396,	-38.517, -29.509,-43.52,95.22,239.616};
+    double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616};
     TCPMsg tcp_msg;
     bool confirmed = false;
-    // moveToJointPos(robotHandle, init_tcp_pose);   
-    // CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
+    cv::Mat frame = g_camera->captureOneFrame(1000);
+    moveToJointPos(robotHandle, init_tcp_pose);   
+    CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
         if (frame.empty()) continue;
