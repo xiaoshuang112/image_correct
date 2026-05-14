@@ -493,7 +493,7 @@ bool autoFindBestPose(int robot_handle,
                   << "/" << total_corners << ")" << std::endl;
         const double steps[] = {240, 120, 60};
         searchXYSteps(robot_handle, camera, dictionary, board,
-                       steps, 4, fixed_x, fixed_y, fixed_z, current_rz_deg, tcp_aa);
+                       steps, std::size(steps), fixed_x, fixed_y, fixed_z, current_rz_deg, tcp_aa);
     }
 
     // ================================================================
@@ -569,7 +569,7 @@ bool autoFindBestPose(int robot_handle,
     const double steps_fine[] = {60, 30, 15};
     
     searchXYSteps(robot_handle, camera, dictionary, board,
-                   steps_fine, 3, fixed_x, fixed_y, fixed_z, current_rz_deg, tcp_aa);
+                   steps_fine, std::size(steps_fine), fixed_x, fixed_y, fixed_z, current_rz_deg, tcp_aa);
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
