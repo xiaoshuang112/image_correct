@@ -1029,7 +1029,7 @@ int  open_camera(){
 
     for (size_t i = 0; i < m[3].size(); i++)
     {
-        dist_coeffs.at<double>(0, i) = m[3][i];
+        dist_coeffs.at<double>(i, 0) = m[3][i];
     }
     
     out << "camera_matrix" << camera_matrix;
