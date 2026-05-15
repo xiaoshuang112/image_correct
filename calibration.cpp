@@ -1027,6 +1027,11 @@ int  open_camera(){
     camera_matrix.at<double>(0, 2) = m[0][2];
     camera_matrix.at<double>(1, 2) = m[1][2];
 
+    for (size_t i = 0; i < m[3].size(); i++)
+    {
+        dist_coeffs.at<double>(0, i) = m[3][i];
+    }
+    
     out << "camera_matrix" << camera_matrix;
     out << "distortion_coefficients" << dist_coeffs;
 

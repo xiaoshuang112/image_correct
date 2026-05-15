@@ -410,6 +410,12 @@ std::vector<std::vector<float>> OrbbecCameraV2::getCameraIntrinsics(const int im
 
     matrix[2][2] = 1;
 
+
+    // # Distortion: k1:-0.0321069 k2:0.03709 k3:-0.0132376 k4:0 k5:0 k6:0 p1:-0.000181011 p2:0.000430064
+    std::vector<float> distortion = {-0.0321069, 0.03709,-0.000181011, 0.000430064, -0.0132376};
+
+    matrix.push_back(distortion);
+
     return matrix;
 }
 
