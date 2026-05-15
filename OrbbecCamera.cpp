@@ -547,6 +547,67 @@ bool OrbbecCameraV2::getExposureRange(int& minUs, int& maxUs) {
     }
 }
 
+bool OrbbecCameraV2::setColorGain(int gain) {
+    if (!m_isOpened || !m_device) {
+        std::cerr << "Camera not opened" << std::endl;
+        return false;
+    }
+    try {
+        if (!m_device->isPropertySupported(OB_PROP_COLOR_GAIN_INT, OB_PERMISSION_WRITE)) {
+            std::cerr << "Device does not support color gain setting" << std::endl;
+            return false;
+        }
+        m_device->setIntProperty(OB_PROP_COLOR_GAIN_INT, gain);
+        std::cout << "Color gain set to " << gain << std::endl;
+        return true;
+    }
+    catch (const ob::Error& e) {
+        std::cerr << "Set color gain error: " << e.getMessage() << std::endl;
+        return false;
+    }
+}
+
+int OrbbecCameraV2::getColorGain() {
+    if (!m_isOpened || !m_device) {
+        std::cerr << "Camera not opened" << std::endl;
+        return -1;
+    }
+    try {
+        if (!m_device->isPropertySupported(OB_PROP_COLOR_GAIN_INT, OB_PERMISSION_READ)) {
+            std::cerr << "Device does not support reading color gain" << std::endl;
+            return -1;
+        }
+        return m_device->getIntProperty(OB_PROP_COLOR_GAIN_INT);
+    }
+    catch (const ob::Error& e) {
+        std::cerr << "Get color gain error: " << e.getMessage() << std::endl;
+        return -1;
+    }
+}
+
+bool OrbbecCameraV2::getGainRange(int& min, int& max) {
+    if (!m_isOpened || !m_device) {
+        std::cerr << "Camera not opened" << std::endl;
+        min = 0; max = 255;
+        return true;
+    }
+    try {
+        if (!m_device->isPropertySupported(OB_PROP_COLOR_GAIN_INT, OB_PERMISSION_READ)) {
+            min = 0; max = 255;
+            return true;
+        }
+        auto range = m_device->getIntPropertyRange(OB_PROP_COLOR_GAIN_INT);
+        min = range.min;
+        max = range.max;
+        return true;
+    }
+    catch (const ob::Error& e) {
+        std::cerr << "Get gain range error: " << e.getMessage() << std::endl;
+        min = 0; max = 255;
+        return true;
+    }
+}
+
 // ========== 多曝光采集与融合 ==========
 
 // 实现多曝光采集的虚函数

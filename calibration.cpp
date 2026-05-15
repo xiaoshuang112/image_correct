@@ -7,6 +7,7 @@
 #include <sstream>
 #include <algorithm>
 #include <iomanip>
+#include <cstdlib>
 #include <filesystem>
 
 #ifdef _WIN32
@@ -774,6 +775,87 @@ void checkAndRestoreRobotHand(){
 }
 
 // ============================================================
+// 曝光采样：在当前位姿采集多张不同曝光值的图像
+// ============================================================
+static bool captureExposureSamples(
+    std::shared_ptr<AICamera>& camera,
+    const std::string& save_dir,
+    int num_samples = 10) {
+
+    int minGain, maxGain;
+    if (!camera->getGainRange(minGain, maxGain) || maxGain <= minGain) {
+        std::cerr << "[exposureSamples] 获取增益范围失败，使用默认 [0, 255]" << std::endl;
+        minGain = 0; maxGain = 255;
+    }
+    
+    // 保存当前曝光状态
+    bool was_auto = camera->getAutoExposure();
+    int orig_auto_was_on = was_auto;
+    int orig_gain = camera->getColorGain();
+
+    // 关闭自动曝光
+    camera->setAutoExposure(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+    // 创建保存目录
+    namespace fs = std::filesystem;
+    if (!fs::exists(save_dir))
+        fs::create_directories(save_dir);
+
+    // 生成线性间隔增益值
+    std::vector<int> gain_values(num_samples);
+    for (int i = 0; i < num_samples; i++)
+        gain_values[i] = minGain + (0.65 * maxGain - minGain) * i / (num_samples - 1);
+
+    std::cout << "\n========== 曝光采样开始 ==========" << std::endl;
+    std::cout << "增益范围: " << minGain << " ~ " << maxGain << ", "
+              << num_samples << " 级" << std::endl;
+
+    // 计算采集次数序号：扫描已有 *x*.jpg 文件取最大前两位序号 +1
+    int session = 1;
+    for (auto& entry : fs::directory_iterator(save_dir)) {
+        std::string name = entry.path().filename().string();
+        if (name.size() >= 7 && name.substr(name.size()-4) == ".jpg") {
+            int s = std::atoi(name.c_str());
+            if (s > 0) session = std::max(session, s + 1);
+        }
+    }
+
+    int captured = 0;
+    for (int i = 0; i < num_samples; i++) {
+        if (!camera->setColorGain(gain_values[i])) {
+            std::cerr << "[exposureSamples] 设置增益 " << gain_values[i] << " 失败" << std::endl;
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+        cv::Mat frame = camera->captureOneFrame(500);
+        if (frame.empty()) {
+            std::cerr << "[exposureSamples] 采集图像失败 (增益=" << gain_values[i] << ")" << std::endl;
+            continue;
+        }
+
+        std::string filename = save_dir + "/" +
+            (session < 10 ? "0" : "") + std::to_string(session) + "x" +
+            (i + 1 < 10 ? "0" : "") + std::to_string(i + 1) + ".jpg";
+        cv::imwrite(filename, frame);
+        std::cout << "  [" << i << "/" << num_samples << "] 增益="
+                  << gain_values[i] << " → " << filename << std::endl;
+        captured++;
+    }
+
+    // 恢复曝光状态
+    if (orig_auto_was_on) {
+        camera->setAutoExposure(true);
+    } else if (orig_gain >= 0) {
+        camera->setColorGain(orig_gain);
+    }
+
+    std::cout << "========== 曝光采样完成 (" << captured << "/" << num_samples << ") ==========\n" << std::endl;
+    return captured > 0;
+}
+
+// ============================================================
 // 自动手眼标定入口（菜单项 5）
 // ============================================================
 //void moveToJointPos(int robot_handle, const double joint[6]);
@@ -804,7 +886,16 @@ void auto_handeye_calibration() {
     
     checkAndRestoreRobotHand();   
 
-    double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616};
+    // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
+    double init_tcp_pose[6] = {196.377,-34.607,-46.971,-9.496,90.077,238.137}, euler_fixed[6];
+    // CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
+    // ret = cr_AxisAngle2Eule(init_tcp_pose, euler_fixed);
+    // if (ret == sucess) {        
+    //     euler_fixed[3] = -180.0;
+    //     euler_fixed[4] = 0.0;
+    //     double fixed_aa[ROB_AXIS_NUM];
+    //     ret = cr_Eule2AxisAngle(euler_fixed, init_tcp_pose);        
+    // }
     TCPMsg tcp_msg;
     bool confirmed = false;
     cv::Mat frame = g_camera->captureOneFrame(1000);
@@ -853,15 +944,18 @@ void auto_handeye_calibration() {
             return;
         }
     }
-
+    
     cv::destroyWindow("Auto Calibration");
 
     if (!confirmed) return;
 
     // 输出初始位姿
     std::cout << "[autoCalib] 初始 TCP 位姿 (轴角, mm/deg): ";
-    for (int i = 0; i < 6; i++)
-        std::cout << init_tcp_pose[i] << (i < 5 ? ", " : "\n");
+    // for (int i = 0; i < 6; i++)
+    //     std::cout << init_tcp_pose[i] << (i < 5 ? ", " : "\n");
+
+    // 在当前位姿采集曝光样本
+    // captureExposureSamples(g_camera, g_paramPath + "exposure/", 10);
 
     // 配置 ChArUco 板参数
     CharucoBoardConfig board_cfg;

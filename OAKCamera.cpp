@@ -420,6 +420,33 @@ bool OAKCamera::getExposureRange(int& minUs, int& maxUs) {
     return true;
 }
 
+bool OAKCamera::setColorGain(int gain) {
+    if (!m_isOpened || !m_camControlQueue) {
+        return false;
+    }
+    try {
+        int expUs = (m_exposureCached > 0) ? m_exposureCached : 10000;
+        auto ctrl = std::make_shared<dai::CameraControl>();
+        ctrl->setManualExposure(static_cast<uint32_t>(expUs), static_cast<uint32_t>(gain));
+        m_camControlQueue->send(ctrl);
+        return true;
+    }
+    catch (const std::exception& e) {
+        std::cerr << "Set color gain error: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+int OAKCamera::getColorGain() {
+    return -1; // OAK SDK does not support reading current gain
+}
+
+bool OAKCamera::getGainRange(int& min, int& max) {
+    min = 100;
+    max = 1600;
+    return true;
+}
+
 // ========== 多曝光采集与融合 ==========
 
 std::vector<cv::Mat> OAKCamera::captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) {

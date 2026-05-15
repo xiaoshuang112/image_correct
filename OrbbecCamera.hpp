@@ -31,6 +31,11 @@ public:
     bool getAutoExposure() override;
     bool getExposureRange(int& minUs, int& maxUs) override;
 
+    // 增益控制接口实现
+    bool setColorGain(int gain) override;
+    int getColorGain() override;
+    bool getGainRange(int& min, int& max) override;
+
     // 多曝光融合接口实现
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) override;
     cv::Mat captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,

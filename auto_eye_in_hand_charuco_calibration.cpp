@@ -726,9 +726,14 @@ static bool computeZValues(int robot_handle,
                 break;
             }
 
-            // 步长 30mm 调整：ratio 偏大 → 板太大 → 远离 → Z↑
-            //               ratio 偏小 → 板太小 → 靠近 → Z↓
-            z_attempt += (actual_ratio > ratios[i]) ? 30.0 : -30.0;
+            // 自适应步长：error > 0 → 板太大 → Z↑；error < 0 → 板太小 → Z↓
+            // 步长取 Z 的 30% × 误差比例，避免固定步长在近距区振荡
+            double error = actual_ratio / ratios[i] - 1.0;
+            double step = z_attempt * 0.3 * fabs(error);
+            step = std::max(step, 10.0);   // 最小步长 10mm
+            step = std::min(step, 100.0);  // 最大步长 100mm
+            z_attempt += (error > 0) ? step : -step;
+            z_attempt = std::max(z_attempt, -300.0); // 最小 Z
         }
 
         if (!converged) {
@@ -756,7 +761,7 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={30, 20, 15};
+        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={30, 20, 10};
         const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {

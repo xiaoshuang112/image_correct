@@ -95,6 +95,29 @@ public:
      */
     virtual bool getExposureRange(int& minUs, int& maxUs) = 0;
 
+    // ========== 增益（曝光度）控制接口 ==========
+
+    /**
+     * @brief 设置彩色相机增益
+     * @param gain 增益值（单位由设备定义）
+     * @return true 设置成功
+     */
+    virtual bool setColorGain(int gain) = 0;
+
+    /**
+     * @brief 获取当前彩色相机增益
+     * @return 增益值，失败返回 -1
+     */
+    virtual int getColorGain() = 0;
+
+    /**
+     * @brief 获取增益范围
+     * @param min 输出最小增益
+     * @param max 输出最大增益
+     * @return true 获取成功
+     */
+    virtual bool getGainRange(int& min, int& max) = 0;
+
     // ========== 多曝光融合接口 ==========
     
     /**
