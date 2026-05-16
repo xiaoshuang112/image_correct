@@ -3,11 +3,11 @@
 #include "AICamera.hpp"
 #ifdef useORB
 #include <OrbbecCamera.hpp>
-#endif // REL_DBG
+#endif // useORB
 
 #ifdef useOAK
 #include "OAKCamera.hpp"
-#endif // REL_DBG
+#endif // useOAK
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -26,6 +26,10 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+
+
+std::string g_save_dir = "";
+AI_det_callback g_callback = nullptr;
 
 // ============================================================
 // 内部数据结构
@@ -285,6 +289,25 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
     bool use_center) {
     cv::Mat f = camera->captureOneFrame(1500);
     if (f.empty()) return {0, 0, cv::Point2f(0, 0)};
+
+        if (nullptr!=g_callback) {
+            // 获取当前时间点
+            auto now = std::chrono::high_resolution_clock::now();
+
+            // 将时间转换为自纪元以来的纳秒数
+            auto duration = now.time_since_epoch();
+            auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+            
+            std::string file_id = std::to_string(nanoseconds);
+
+            std::string img_name = g_save_dir + "/" +  file_id  + ".jpg";
+            cv::imwrite(img_name, f);            
+
+            int call_ret = g_callback((char*)img_name.c_str(), (int)img_name.length(), 1);
+            
+        }     
+
+
     double cx = f.cols / 2.0;
     double cy = f.rows / 2.0;
     std::vector<cv::Point2f> c;
@@ -376,6 +399,17 @@ static double tryCandidatePoses(int robot_handle,
             std::copy(joint, joint + ROB_AXIS_NUM, best_j);
             found = true;
         }
+
+        if (nullptr!=g_callback) {
+            int call_ret = g_callback("", 0, 1);
+            if (-1==call_ret)
+            {
+                std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
+
+                return -1.0;
+            }            
+        }    
+
     }
 
     // 回到原始位置（由调用方决定是否运动到最佳位姿）
@@ -416,6 +450,17 @@ static void searchXYSteps(int robot_handle,
             cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
             ret = cr_AxisAngle2Eule(tcp_aa, eulePos);
         }
+
+        if (nullptr!=g_callback) {
+            int call_ret = g_callback("", 0, 1);
+            if (-1==call_ret)
+            {
+                std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
+
+                return;
+            }            
+        }           
+
     }
     moveToAnglePos(robot_handle, tcp_aa);    
 }
@@ -434,7 +479,9 @@ bool autoFindBestPose(int robot_handle,
                       const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                       const cv::Ptr<cv::aruco::CharucoBoard>& board,
                       double tcp_aa[6],        // in/out: TCP 轴角 (mm,deg)
-                      const double tcp_offset[6]) {
+                      const double tcp_offset[6],
+                      const std::string& save_dir,
+                      AI_det_callback callback) {
 
     const double TARGET_AREA_RATIO = 0.275;
     const int MAX_REFINE_ZRZ = 6;
@@ -461,6 +508,15 @@ bool autoFindBestPose(int robot_handle,
         board->checkboradSize;
 #endif
     int total_corners = (board_sz.width - 1) * (board_sz.height - 1);
+
+
+    {
+        namespace fs = std::filesystem;
+        if (fs::exists(save_dir))
+            fs::remove_all(save_dir);
+        fs::create_directories(save_dir);
+    }    
+
 
     // ================================================================
     // Phase 1: Z 搜索 — 码太少时向上找更好的高度
@@ -507,10 +563,10 @@ bool autoFindBestPose(int robot_handle,
                        steps, std::size(steps), tcp_aa);
     }
     frame = camera->captureOneFrame(1500);
+
     // ================================================================
     // Phase 3: Z+rz 拟合（不动 XY）
     // ================================================================
-
     for (int iter = 0; iter < MAX_REFINE_ZRZ; iter++) {
         cv::Mat frame = camera->captureOneFrame(1500);
         if (frame.empty()) {
@@ -518,6 +574,23 @@ bool autoFindBestPose(int robot_handle,
             return false;
         }
         
+        if (callback) {
+
+            std::string img_name = save_dir + "/" +
+                (iter < 10 ? "200" : iter < 100 ? "20" : "") +
+                std::to_string(iter) + ".jpg";
+            cv::imwrite(img_name, frame);            
+
+            int call_ret = callback((char*)img_name.c_str(), (int)img_name.length(), 1);
+            if (-1==call_ret)
+            {
+                std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
+
+                return false;
+            }
+            
+        }     
+
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
         if (!detectCharucoCorners(frame, dictionary, board, corners, ids) || ids.size() < 4) {
@@ -803,7 +876,7 @@ bool executeCollection(int robot_handle,
                        const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                        const cv::Ptr<cv::aruco::CharucoBoard>& board,
                        const std::vector<PoseCandidate>& candidates,
-                       const std::string& save_dir) {
+                       const std::string& save_dir,AI_det_callback callback) {
     int total = (int)candidates.size();
     int captured = 0;
 
@@ -826,6 +899,17 @@ bool executeCollection(int robot_handle,
         std::cout << "\r[autoCalib] 采集进度: " << (i + 1) << "/" << total
                   << " (有效: " << captured << ")"
                   << std::flush;
+    
+        int progress = 0;
+        {
+            int bar_width = 60;
+            int filled = (i + 1) * bar_width / total;
+            std::cout << "\n[";
+            for (int k = 0; k < bar_width; k++)
+                std::cout << (k < filled ? '#' : ' ');
+            progress = (i + 1) * 100 / total;
+            std::cout << "] " << progress << "%\r\033[A" << std::flush;
+        }
 
         moveToJointPos(robot_handle, candidates[i].joint);       
 
@@ -860,6 +944,16 @@ bool executeCollection(int robot_handle,
                 (captured < 10 ? "00" : captured < 100 ? "0" : "") +
                 std::to_string(captured) + ".jpg";
             cv::imwrite(img_name, frame);
+            if (callback) {
+                int call_ret = callback((char*)img_name.c_str(), (int)img_name.length(), progress);
+                if (-1==call_ret)
+                {
+                    std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
+
+                    return false;
+                }
+                
+            }       
         }
         // rob_pos.csv: 法兰轴角位姿 (mm, deg)
         {
@@ -1109,7 +1203,11 @@ bool autoEyeInHandCharucoCalibration(
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
     CalibrationResult& result,
-    const std::string& save_dir) {
+    const std::string& save_dir,
+    AI_det_callback callback) {
+
+    g_save_dir = save_dir;
+    g_callback = callback;
 
     std::cout << "\n========== 自动手眼标定开始 ==========" << std::endl;
 
@@ -1126,8 +1224,9 @@ bool autoEyeInHandCharucoCalibration(
 
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
     if (!autoFindBestPose(robot_handle, camera, dictionary, board,
-                           tcp_aa, tcp_offset)) {
+                           tcp_aa, tcp_offset,save_dir,callback)) {
         std::cerr << "[autoCalib] 自动寻找最佳位姿失败，使用初始位姿" << std::endl;
+        return false;
     }    
 
     // ---- Phase 2: IK 参考关节角 ----
@@ -1172,7 +1271,7 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 4: 逐点运动 + 采集（保存到磁盘） ----
     if (!executeCollection(robot_handle, camera, tcp_offset,
-                            dictionary, board, candidates, save_dir)) {
+                            dictionary, board, candidates, save_dir,callback)) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;

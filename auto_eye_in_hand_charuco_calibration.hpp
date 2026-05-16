@@ -7,6 +7,14 @@
 
 #include "AICamera.hpp"
 
+#ifdef XIALIAO
+#include "det.h"
+#else
+typedef int (*AI_det_callback)(char* msg, int msg_len, int flag);
+#endif // XIALIAO
+
+
+
 // 自动眼在手 ChArUco 标定结果
 struct CalibrationResult {
     bool success = false;
@@ -57,7 +65,8 @@ bool autoEyeInHandCharucoCalibration(
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
     CalibrationResult& result,
-    const std::string& save_dir = ""
+    const std::string& save_dir = "",
+    AI_det_callback callback=nullptr
 );
 void moveToJointPos(int robot_handle, const double joint[6]);
 
