@@ -3,11 +3,11 @@
 #include "AICamera.hpp"
 #ifdef useORB
 #include <OrbbecCamera.hpp>
-#endif // REL_DBG
+#endif // useORB
 
 #ifdef useOAK
 #include "OAKCamera.hpp"
-#endif // REL_DBG
+#endif // useOAK
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -803,7 +803,7 @@ bool executeCollection(int robot_handle,
                        const cv::Ptr<cv::aruco::Dictionary>& dictionary,
                        const cv::Ptr<cv::aruco::CharucoBoard>& board,
                        const std::vector<PoseCandidate>& candidates,
-                       const std::string& save_dir) {
+                       const std::string& save_dir,AI_det_callback callback) {
     int total = (int)candidates.size();
     int captured = 0;
 
@@ -826,6 +826,17 @@ bool executeCollection(int robot_handle,
         std::cout << "\r[autoCalib] 采集进度: " << (i + 1) << "/" << total
                   << " (有效: " << captured << ")"
                   << std::flush;
+    
+        int progress = 0;
+        {
+            int bar_width = 60;
+            int filled = (i + 1) * bar_width / total;
+            std::cout << "\n[";
+            for (int k = 0; k < bar_width; k++)
+                std::cout << (k < filled ? '#' : ' ');
+            progress = (i + 1) * 100 / total;
+            std::cout << "] " << progress << "%\r\033[A" << std::flush;
+        }
 
         moveToJointPos(robot_handle, candidates[i].joint);       
 
@@ -860,6 +871,16 @@ bool executeCollection(int robot_handle,
                 (captured < 10 ? "00" : captured < 100 ? "0" : "") +
                 std::to_string(captured) + ".jpg";
             cv::imwrite(img_name, frame);
+            if (callback) {
+                int call_ret = callback((char*)img_name.c_str(), (int)img_name.length(), progress);
+                if (-1==call_ret)
+                {
+                    std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
+
+                    return false;
+                }
+                
+            }       
         }
         // rob_pos.csv: 法兰轴角位姿 (mm, deg)
         {
@@ -1109,7 +1130,8 @@ bool autoEyeInHandCharucoCalibration(
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
     CalibrationResult& result,
-    const std::string& save_dir) {
+    const std::string& save_dir,
+    AI_det_callback callback) {
 
     std::cout << "\n========== 自动手眼标定开始 ==========" << std::endl;
 
@@ -1172,7 +1194,7 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 4: 逐点运动 + 采集（保存到磁盘） ----
     if (!executeCollection(robot_handle, camera, tcp_offset,
-                            dictionary, board, candidates, save_dir)) {
+                            dictionary, board, candidates, save_dir,callback)) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
