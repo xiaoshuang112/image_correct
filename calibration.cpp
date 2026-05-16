@@ -628,26 +628,17 @@ void do_type_calibration(int use_all_data, int minIdsNum, float thresh){
 void local_fit_demo()
 {
     std::cout << "\n========== 三级过滤对比标定 ==========" << std::endl;
-
-    std::vector<std::string> arr = {"9"};// "5", "6", "7", "8" };  
+    g_posPath = "/home/irobotic/work/caitu/build/param/";
+    std::vector<std::string> arr = {"calibration"};// "5", "6", "7", "8" };  
 
     // 第一步：用宽松条件收集所有有效检测的样本
-    HandEyeCalibration collector(g_posPath + "camera_params.yaml", 6, 0.5);
+    HandEyeCalibration collector(g_posPath + "camera_params.yaml", 12, 0.5);
     bool has_any = false;
     for (auto dir : arr) {
         std::string base = g_posPath + dir;
         std::string rob_pos_file = base + "/rob_pos.csv";
         auto pos = dir.find('/');
-        if (pos == std::string::npos) {
-            if (!fs::exists(base)) continue;
-            std::vector<std::string> sessions;
-            for (auto& entry : fs::directory_iterator(base))
-                if (entry.is_directory()) sessions.push_back(entry.path().filename().string());
-            if (sessions.empty()) continue;
-            std::sort(sessions.begin(), sessions.end());
-            base = base + "/" + sessions.back();
-            rob_pos_file = base + "/rob_pos.csv";
-        }
+        
         if (!fs::exists(rob_pos_file)) {
             std::cout << "跳过（无 rob_pos.csv）: " << base << std::endl;
             continue;
@@ -665,35 +656,26 @@ void local_fit_demo()
     const auto& counts = collector.getCornerCounts();
     int total = (int)counts.size();
     int gt8 = 0, gt12 = 0, gt16 = 0;
-    for (int c : counts) { if (c > 8) gt8++; if (c >= 12) gt12++; if (c >= 16) gt16++; }
+    for (int c : counts) { if (c > 12) gt8++; if (c >= 16) gt12++; if (c >= 18) gt16++; }
     std::cout << "\n角点分布: 总计 " << total << " 组"
-              << ", >8: " << gt8 << ", >=12: " << gt12 << ", >=16: " << gt16 << std::endl;
+              << ", >12: " << gt8 << ", >=16: " << gt12 << ", >=18: " << gt16 << std::endl;
 
     // 二级标定：角点数 > 8
-    std::cout << "\n--- 二级: 角点数 > 8 (" << gt8 << " 组) ---" << std::endl;
+    std::cout << "\n--- 二级: 角点数 > 12 (" << gt8 << " 组) ---" << std::endl;
     if (gt8 >= 3) {
-        collector.calibrate(cv::CALIB_HAND_EYE_TSAI, 9);
-        collector.evaluateCalibration("", 9);
+        collector.calibrate(cv::CALIB_HAND_EYE_TSAI, 12);
+        collector.evaluateCalibration("", 12);
     }
 
     // 三级标定：严格过滤
-    std::cout << "\n--- 三级: 严格过滤 (>=12角点, thresh=0.25) ---" << std::endl;
-    HandEyeCalibration strict_calib(g_posPath + "camera_params.yaml", 12, 0.25);
+    std::cout << "\n--- 三级: 严格过滤 (>=16角点, thresh=0.25) ---" << std::endl;
+    HandEyeCalibration strict_calib(g_posPath + "camera_params.yaml", 16, 0.25);
     bool has_strict = false;
     for (auto dir : arr) {
         std::string base = g_posPath + dir;
         std::string rob_pos_file = base + "/rob_pos.csv";
         auto pos = dir.find('/');
-        if (pos == std::string::npos) {
-            if (!fs::exists(base)) continue;
-            std::vector<std::string> sessions;
-            for (auto& entry : fs::directory_iterator(base))
-                if (entry.is_directory()) sessions.push_back(entry.path().filename().string());
-            if (sessions.empty()) continue;
-            std::sort(sessions.begin(), sessions.end());
-            base = base + "/" + sessions.back();
-            rob_pos_file = base + "/rob_pos.csv";
-        }
+       
         if (!fs::exists(rob_pos_file)) continue;
         strict_calib.loadChessboardDataset(base, rob_pos_file, !has_strict);
         has_strict = true;
@@ -1084,9 +1066,9 @@ int main() {
             if (-1==ret) break;
             example_full_calibration();
             break;
-        case 4:
+        case 4:         
             ret = open_camera();
-            if (-1==ret) break;
+            if (-1==ret) break;   
             auto_handeye_calibration();   
             break;
         case 5:
