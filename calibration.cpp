@@ -899,7 +899,7 @@ void auto_handeye_calibration() {
     TCPMsg tcp_msg;
     bool confirmed = false;
     cv::Mat frame = g_camera->captureOneFrame(1000);
-    moveToJointPos(robotHandle, init_tcp_pose);   
+    // moveToJointPos(robotHandle, init_tcp_pose);   
     CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
