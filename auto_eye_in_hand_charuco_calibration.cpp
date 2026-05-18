@@ -168,6 +168,79 @@ bool detectCharucoCorners(const cv::Mat& image,
     return !ids.empty();
 }
 
+
+void filterByCharucoReprojectionError(
+     const cv::Ptr<cv::aruco::CharucoBoard>& board,
+    const cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    std::vector<cv::Point2f>& charuco_corners,
+    std::vector<int>& charuco_ids,
+    const cv::Mat& rvec,
+    const cv::Mat& tvec, float thresh)  {
+
+    std::vector<cv::Point3f> object_points;
+    object_points.reserve(charuco_ids.size());
+
+    
+#if CV_MAJOR_VERSION >= 4 && CV_VERSION_MINOR >= 7
+    // OpenCV 4.7.0+：使用 getter 方法
+    const auto& board_object_points = board->getChessboardCorners();
+#else
+    // OpenCV 4.6.x 及以下：直接访问成员变量
+    const auto& board_object_points = board->chessboardCorners;
+#endif
+
+
+    for (size_t i = 0; i < charuco_ids.size(); ++i) {
+        const int id = charuco_ids[i];
+        if (id < 0 || static_cast<size_t>(id) >= board_object_points.size()) {
+            continue;
+        }
+        object_points.push_back(board_object_points[static_cast<size_t>(id)]);
+    }
+
+    if (object_points.size() != charuco_corners.size() || object_points.empty()) {
+        return;
+    }
+
+    std::vector<cv::Point2f> projected_points;
+    cv::projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs, projected_points);
+
+    double sum_err = 0.0;
+    double sum_sq_err = 0.0;
+    double max_err = 0.0;
+    std::vector<float> vError;
+    for (size_t i = 0; i < projected_points.size(); ++i) {
+        const cv::Point2f& p_det = charuco_corners[i];
+        const cv::Point2f& p_proj = projected_points[i];
+        const double err = cv::norm(p_det - p_proj);
+
+        sum_err += err;
+        sum_sq_err += err * err;
+        max_err = std::max(max_err, err);
+        vError.push_back(err);
+        // cv::circle(image_with_detection, p_proj, 3, cv::Scalar(0, 0, 255), -1);
+        // cv::line(image_with_detection, p_det, p_proj, cv::Scalar(0, 255, 255), 1);
+    }
+
+    const double mean_err = sum_err / static_cast<double>(projected_points.size());
+    const double rms_err = std::sqrt(sum_sq_err / static_cast<double>(projected_points.size()));
+
+    std::ostringstream oss;
+    oss << std::fixed << std::setprecision(2);
+    oss << "Reproj(px) mean=" << mean_err << " rms=" << rms_err << " max=" << max_err;
+    // cv::putText(image_with_detection, oss.str(), cv::Point(10, 120), cv::FONT_HERSHEY_SIMPLEX, 0.6, cv::Scalar(0, 0, 255), 2);
+     // filter outer
+    if (thresh > 0.01f && !charuco_ids.empty()){
+        for (int i = static_cast<int>(charuco_ids.size()) - 1; i >= 0; i--) {
+            if (vError[i] >= thresh) {
+                charuco_ids.erase(charuco_ids.begin() + i);
+                charuco_corners.erase(charuco_corners.begin() + i);                
+            }
+        }
+    }
+}
+
 // 检测 ChArUco 并估算位姿（需要相机内参）
 bool detectCharucoPose(const cv::Mat& image,
                        const cv::Ptr<cv::aruco::Dictionary>& dictionary,
@@ -179,7 +252,24 @@ bool detectCharucoPose(const cv::Mat& image,
                        std::vector<int>& ids, int minCornersNum ) {
     if (!detectCharucoCorners(image, dictionary, board, corners, ids))
         return false;
-    if (ids.size() < minCornersNum) return false;
+    if (ids.size() < minCornersNum) 
+        return false;
+
+    if(cv::aruco::estimatePoseCharucoBoard(
+        corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
+        filterByCharucoReprojectionError(
+        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, 0.3);
+        if (ids.size() < minCornersNum) 
+           return false;
+        }
+    
+    if(cv::aruco::estimatePoseCharucoBoard(
+        corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
+        filterByCharucoReprojectionError(
+        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, 0.20);
+        if (ids.size() < minCornersNum) 
+           return false;
+        }
 
     return cv::aruco::estimatePoseCharucoBoard(
         corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec);
@@ -745,7 +835,7 @@ static bool computeZValues(int robot_handle,
          return false; }
 
     double current_z = ref_euler[2];
-    const double ratios[3] = {0.1, 0.2, 0.49};
+    const double ratios[3] = {0.08, 0.2, 0.49};
 
     for (int i = 0; i < 3; i++) {
         double z_attempt = current_z * board_dim / (ratios[i] * img_dim);
@@ -754,6 +844,8 @@ static bool computeZValues(int robot_handle,
                   << ", 初始Z=" << z_attempt << std::endl;
 
         bool converged = false;
+        double best_z = z_attempt;
+        double best_ratio_err = 1e18;
         for (int iter = 0; iter < 20; iter++) {
             double euler[ROB_AXIS_NUM];
             double joint[ROB_AXIS_NUM];
@@ -781,6 +873,12 @@ static bool computeZValues(int robot_handle,
             float actual_w = vx2 - vx1;
             float actual_h = vy2 - vy1;
             float actual_ratio = std::min(actual_w / img_w, actual_h / img_h);
+
+            double ratio_err = fabs(actual_ratio - ratios[i]);
+            if (ratio_err < best_ratio_err) {
+                best_ratio_err = ratio_err;
+                best_z = z_attempt;
+            }
 
             std::cout << "[autoCalib]    iter" << iter << ": Z=" << z_attempt
                       << ", ratio=" << actual_ratio
@@ -813,8 +911,9 @@ static bool computeZValues(int robot_handle,
         }
 
         if (!converged) {
-            z_out[i] = z_attempt;
-            std::cout << "[autoCalib]    → 未收敛, 使用 Z=" << z_out[i] << std::endl;
+            z_out[i] = best_z;
+            std::cout << "[autoCalib]    → 未收敛, 使用最佳 Z=" << best_z
+                      << " (ratio_err=" << best_ratio_err << ")" << std::endl;
         }
     }
 
@@ -837,7 +936,7 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={30, 30, 30};
+        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={15, 20, 25};
         const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {
@@ -923,7 +1022,7 @@ bool executeCollection(int robot_handle,
         std::vector<int> ids;
         if (!detectCharucoCorners(frame, dictionary, board, corners, ids))
             continue;
-        if(ids.size() < 8)
+        if(ids.size() < 12)
            continue;
         double tcp_pose[ROB_AXIS_NUM];
         CRresult ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_pose);
@@ -1065,64 +1164,15 @@ static bool calibrateCameraFromDisk(const std::string& save_dir,
     return true;
 }
 
-// ============================================================
-// Phase 5b: 手眼标定（从目录读取图像 + 位姿）
-// ============================================================
-
-static bool calibrateHandEyeFromDisk(const std::string& save_dir,
-                                      const cv::Mat& camera_matrix,
-                                      const cv::Mat& dist_coeffs,
-                                      const cv::Ptr<cv::aruco::CharucoBoard>& board,
-                                      const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                                      CalibrationResult& result) {
-    // 读取法兰位姿
-    std::string pos_file = save_dir + "/rob_pos.csv";
-    std::ifstream pf(pos_file);
-    if (!pf.is_open()) {
-        std::cerr << "[autoCalib] 无法打开 " << pos_file << std::endl;
-        return false;
-    }
-    std::vector<cv::Mat> flange_poses;
-    std::string line;
-    while (std::getline(pf, line)) {
-        if (line.empty()) continue;
-        std::stringstream ss(line);
-        double pose[6];
-        for (int i = 0; i < 6; i++) {
-            std::string val;
-            if (!std::getline(ss, val, ',')) break;
-            pose[i] = std::stod(val);
-        }
-        flange_poses.push_back(axisAnglePoseToTransform(pose));
-    }
-
-    // 扫描图像文件
-    std::vector<std::string> img_files;
-    cv::Size image_size;
-    if (!loadImagesFromDisk(save_dir, img_files, image_size))
-        return false;
-
-    size_t n = std::min(img_files.size(), flange_poses.size());
-    std::vector<cv::Mat> robot_poses, camera_poses;
-
-    for (size_t i = 0; i < n; i++) {
-        cv::Mat img = cv::imread(img_files[i]);
-        if (img.empty()) continue;
-
-        cv::Mat rvec, tvec;
-        std::vector<cv::Point2f> corners;
-        std::vector<int> ids;
-
-        if (!detectCharucoPose(img, dictionary, board,
-                                camera_matrix, dist_coeffs,
-                                rvec, tvec, corners, ids, 12))
-            continue;
-
-        robot_poses.push_back(flange_poses[i]);
-        camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
-    }
-
-    int valid = (int)robot_poses.size();
+bool estimateHandEyeTrans(
+     const cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    std::vector<cv::Mat> &robot_poses, 
+    std::vector<cv::Mat> &camera_poses,
+    CalibrationResult& result, 
+    bool needFilter
+){
+     int valid = (int)robot_poses.size();
     if (valid < 5) {
         result.message = "有效帧数不足: " + std::to_string(valid) + " (need >=5)";
         std::cerr << "[autoCalib] " << result.message << std::endl;
@@ -1174,8 +1224,10 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
     mean_t /= valid;
 
     double sum_err = 0.0;
+    std::vector<double> vErr;
     for (int i = 0; i < valid; i++) {
         cv::Mat d = T_base_calibs[i](cv::Rect(3, 0, 1, 3)) - mean_t;
+        vErr.push_back(std::sqrt(d.dot(d)));
         sum_err += d.dot(d);
     }
     result.reproj_error = std::sqrt(sum_err / valid);
@@ -1185,7 +1237,78 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
 
     std::cout << "[autoCalib] " << result.message << std::endl;
     std::cout << "[autoCalib] T_flange_camera:\n" << T << std::endl;
+    if(needFilter){
+        for(int i=valid-1; i>=0; i--){
+            if(vErr[i] > 0.03){
+                robot_poses.erase(robot_poses.begin() + i);
+                camera_poses.erase(camera_poses.begin() + i);   
+            }
+       }
+    }
+
     return true;
+}
+
+// ============================================================
+// Phase 5b: 手眼标定（从目录读取图像 + 位姿）
+// ============================================================
+
+static bool calibrateHandEyeFromDisk(const std::string& save_dir,
+                                      const cv::Mat& camera_matrix,
+                                      const cv::Mat& dist_coeffs,
+                                      const cv::Ptr<cv::aruco::CharucoBoard>& board,
+                                      const cv::Ptr<cv::aruco::Dictionary>& dictionary,
+                                      CalibrationResult& result) {
+    // 读取法兰位姿
+    std::string pos_file = save_dir + "/rob_pos.csv";
+    std::ifstream pf(pos_file);
+    if (!pf.is_open()) {
+        std::cerr << "[autoCalib] 无法打开 " << pos_file << std::endl;
+        return false;
+    }
+    std::vector<cv::Mat> flange_poses;
+    std::string line;
+    while (std::getline(pf, line)) {
+        if (line.empty()) continue;
+        std::stringstream ss(line);
+        double pose[6];
+        for (int i = 0; i < 6; i++) {
+            std::string val;
+            if (!std::getline(ss, val, ',')) break;
+            pose[i] = std::stod(val);
+        }
+        flange_poses.push_back(axisAnglePoseToTransform(pose));
+    }
+
+    // 扫描图像文件
+    std::vector<std::string> img_files;
+    cv::Size image_size;
+    if (!loadImagesFromDisk(save_dir, img_files, image_size))
+        return false;
+
+    size_t n = std::min(img_files.size(), flange_poses.size());
+    std::vector<cv::Mat> robot_poses, camera_poses;
+
+    for (size_t i = 0; i < n; i++) {
+        cv::Mat img = cv::imread(img_files[i]);
+        if (img.empty()) continue;
+
+        cv::Mat rvec, tvec;
+        std::vector<cv::Point2f> corners;
+        std::vector<int> ids;
+
+        if (!detectCharucoPose(img, dictionary, board,
+                                camera_matrix, dist_coeffs,
+                                rvec, tvec, corners, ids, 16))
+            continue;
+
+        robot_poses.push_back(flange_poses[i]);
+        camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
+    }
+    bool ret = estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
+    
+    ret = estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);    
+    return ret;
 }
 
 } // anonymous namespace
@@ -1193,6 +1316,24 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
 // ============================================================
 // 公开 API
 // ============================================================
+
+bool calibrateHandEyeFromDisk(
+    const std::string& save_dir,
+    const cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    const CharucoBoardConfig& board_config,
+    CalibrationResult& result) {
+
+    cv::Ptr<cv::aruco::Dictionary> dictionary;
+    cv::Ptr<cv::aruco::CharucoBoard> board;
+    if (!createCharucoBoard(board_config, dictionary, board)) {
+        result.message = "创建 ChArUco 标定板失败";
+        return false;
+    }
+
+    return calibrateHandEyeFromDisk(save_dir, camera_matrix, dist_coeffs,
+                                     board, dictionary, result);
+}
 
 bool autoEyeInHandCharucoCalibration(
     int robot_handle,

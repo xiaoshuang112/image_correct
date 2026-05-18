@@ -625,7 +625,7 @@ void do_type_calibration(int use_all_data, int minIdsNum, float thresh){
         do_calibration(calibrator, has_data);  
 }
 
-void local_fit_demo()
+void local_fit_demo1()
 {
     std::cout << "\n========== 三级过滤对比标定 ==========" << std::endl;
     g_posPath = "/home/irobotic/work/caitu/build/param/";
@@ -697,6 +697,87 @@ void local_fit_demo()
 
     std::cout << "\n========== 三级过滤对比完成 ==========" << std::endl;
 }
+
+
+void local_fit_demo()
+{
+    std::cout << "\n========== 本地数据标定验证 ==========" << std::endl;
+    std::cout << "从磁盘读取已有采集数据，使用 CalibrateHandEyeFromDisk 重新标定" << std::endl;
+
+    std::string save_dir = "/home/irobotic/work/caitu/build/param/calibration";
+    // std::cout << "输入采集数据目录路径: ";
+    // std::cin >> save_dir;
+
+    if (save_dir.empty() || !fs::exists(save_dir)) {
+        std::cerr << "目录不存在: " << save_dir << std::endl;
+        return;
+    }
+
+    // 检查必要文件
+    std::string pos_file = save_dir + "/rob_pos.csv";
+    if (!fs::exists(pos_file)) {
+        std::cerr << "未找到法兰位姿文件: " << pos_file << std::endl;
+        return;
+    }
+
+    // 至少有一张图片
+    bool has_image = false;
+    for (auto& entry : fs::directory_iterator(save_dir)) {
+        std::string name = entry.path().filename().string();
+        if (name.size() >= 4 && name.substr(name.size() - 4) == ".jpg") {
+            has_image = true;
+            break;
+        }
+    }
+    if (!has_image) {
+        std::cerr << "目录中没有 .jpg 图像文件" << std::endl;
+        return;
+    }
+
+    // 加载相机内参
+    cv::Mat camera_matrix, dist_coeffs;
+    std::string cam_file = g_paramPath + "camera_params.yaml";
+    cv::FileStorage fs_cam(cam_file, cv::FileStorage::READ);
+    if (!fs_cam.isOpened()) {
+        std::cerr << "无法加载相机内参: " << cam_file << std::endl;
+        return;
+    }
+    fs_cam["camera_matrix"] >> camera_matrix;
+    fs_cam["distortion_coefficients"] >> dist_coeffs;
+    fs_cam.release();
+
+    if (camera_matrix.empty()) {
+        std::cerr << "相机内参矩阵为空" << std::endl;
+        return;
+    }
+
+    std::cout << "相机内参已加载" << std::endl;
+    std::cout << "数据目录: " << save_dir << std::endl;
+
+    CharucoBoardConfig board_cfg;
+    CalibrationResult result;
+
+    if (calibrateHandEyeFromDisk(save_dir, camera_matrix, dist_coeffs, board_cfg, result)) {
+        std::cout << "\n========== 标定结果 ==========" << std::endl;
+        std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
+        std::cout << "有效帧数: " << result.valid_frames << std::endl;
+        std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
+        std::cout << result.message << std::endl;
+
+        // 保存结果
+        cv::FileStorage out(g_appPath + "hand_eye_result.yaml", cv::FileStorage::WRITE);
+        out << "T_flange_camera" << result.T_flange_camera;
+        out << "camera_matrix" << result.camera_matrix;
+        out << "distortion_coefficients" << result.dist_coeffs;
+        out << "reprojection_error_mm" << (result.reproj_error * 1000.0);
+        out << "valid_frames" << result.valid_frames;
+        out.release();
+        std::cout << "结果已保存到: hand_eye_result.yaml" << std::endl;
+    } else {
+        std::cerr << "\n标定失败: " << result.message << std::endl;
+    }
+}
+
 
 void checkAndRestoreRobotHand(){
     // 检查机械臂是否上电
@@ -881,7 +962,7 @@ void auto_handeye_calibration() {
     TCPMsg tcp_msg;
     bool confirmed = false;
     cv::Mat frame = g_camera->captureOneFrame(1000);
-    // moveToJointPos(robotHandle, init_tcp_pose);   
+    moveToJointPos(robotHandle, init_tcp_pose);   
     CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);

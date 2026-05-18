@@ -68,6 +68,27 @@ bool autoEyeInHandCharucoCalibration(
     const std::string& save_dir = "",
     AI_det_callback callback=nullptr
 );
+
+/**
+ * @brief 从磁盘保存的数据重新运行手眼标定（无需连接机械臂）
+ *
+ * 读取 save_dir 下的图像和 rob_pos.csv，检测 ChArUco 角点后执行手眼标定。
+ * 需要预先提供相机内参。
+ *
+ * @param save_dir        数据目录（内含 *.jpg + rob_pos.csv）
+ * @param camera_matrix   相机内参矩阵 3x3
+ * @param dist_coeffs     畸变系数 5x1
+ * @param board_config    ChArUco 标定板参数
+ * @param result          标定结果
+ * @return true/false
+ */
+bool calibrateHandEyeFromDisk(
+    const std::string& save_dir,
+    const cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    const CharucoBoardConfig& board_config,
+    CalibrationResult& result);
+
 void moveToJointPos(int robot_handle, const double joint[6]);
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
