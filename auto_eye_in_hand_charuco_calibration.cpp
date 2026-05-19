@@ -254,11 +254,13 @@ bool detectCharucoPose(const cv::Mat& image,
         return false;
     if (ids.size() < minCornersNum) 
         return false;
+     auto threshes = (image.rows == 1280) ? std::array{0.3f, 0.2f} : std::array{0.6f, 0.4f}; 
+    
 
     if(cv::aruco::estimatePoseCharucoBoard(
         corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
         filterByCharucoReprojectionError(
-        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, 0.3);
+        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, threshes[0]); // 0.3 = 1280
         if (ids.size() < minCornersNum) 
            return false;
         }
@@ -266,7 +268,7 @@ bool detectCharucoPose(const cv::Mat& image,
     if(cv::aruco::estimatePoseCharucoBoard(
         corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
         filterByCharucoReprojectionError(
-        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, 0.20);
+        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, threshes[1]); // 0.2 = 1280
         if (ids.size() < minCornersNum) 
            return false;
         }
@@ -1191,59 +1193,116 @@ bool estimateHandEyeTrans(
         t_target2cam.push_back(camera_poses[i](cv::Rect(3, 0, 1, 3)).clone());
     }
 
-    cv::Mat R_cam_gripper, t_cam_gripper;
-    try {
-        cv::calibrateHandEye(R_gripper2base, t_gripper2base,
-                              R_target2cam, t_target2cam,
-                              R_cam_gripper, t_cam_gripper,
-                              cv::CALIB_HAND_EYE_TSAI);
-    } catch (const cv::Exception& e) {
-        result.message = "手眼标定异常: " + std::string(e.what());
+    // 运行多种手眼标定方法，选取平移一致性最好的结果
+    struct CalibMethodResult {
+        std::string name;
+        cv::Mat T;
+        double reproj_error;
+        std::vector<double> per_frame_errors;
+    };
+    std::vector<CalibMethodResult> calib_results;
+    std::vector<cv::HandEyeCalibrationMethod> calib_methods = {cv::CALIB_HAND_EYE_TSAI, cv::CALIB_HAND_EYE_PARK, cv::CALIB_HAND_EYE_HORAUD};
+    std::vector<std::string> calib_method_names = {"TSAI", "PARK", "HORAUD"};
+
+    for (size_t m = 0; m < calib_methods.size(); m++) {
+        cv::Mat R_cam_gripper, t_cam_gripper;
+        try {
+            cv::calibrateHandEye(R_gripper2base, t_gripper2base,
+                                  R_target2cam, t_target2cam,
+                                  R_cam_gripper, t_cam_gripper,
+                                  calib_methods[m]);
+        } catch (const cv::Exception& e) {
+            std::cerr << "[autoCalib] " << calib_method_names[m] << " 标定异常: " << e.what() << std::endl;
+            continue;
+        }
+
+        cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
+        R_cam_gripper.copyTo(T(cv::Rect(0, 0, 3, 3)));
+        t_cam_gripper.copyTo(T(cv::Rect(3, 0, 1, 3)));
+
+        // 评估平移一致性：T_base_calib = T_base_flange * X * T_camera_calib
+        std::vector<double> vErr;
+        double sum_err = 0.0;
+        cv::Mat mean_t(3, 1, CV_64F, cv::Scalar(0));
+        for (int i = 0; i < valid; i++)
+            mean_t += (robot_poses[i] * T * camera_poses[i])(cv::Rect(3, 0, 1, 3));
+        mean_t /= valid;
+        for (int i = 0; i < valid; i++) {
+            cv::Mat d = (robot_poses[i] * T * camera_poses[i])(cv::Rect(3, 0, 1, 3)) - mean_t;
+            vErr.push_back(std::sqrt(d.dot(d)));
+            sum_err += d.dot(d);
+        }
+        calib_results.push_back({calib_method_names[m], T, std::sqrt(sum_err / valid), vErr});
+
+        std::cout << "[autoCalib] " << calib_method_names[m]
+                  << " -> 平移一致性误差: " << (std::sqrt(sum_err / valid) * 1000.0)
+                  << " mm" << std::endl;
+    }
+
+    if (calib_results.empty()) {
+        result.message = "所有手眼标定方法均失败";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
     }
 
-    // 合成 4x4 矩阵
-    cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-    R_cam_gripper.copyTo(T(cv::Rect(0, 0, 3, 3)));
-    t_cam_gripper.copyTo(T(cv::Rect(3, 0, 1, 3)));
+    // 选取误差最小的结果
+    size_t best_idx = 0;
+    for (size_t i = 1; i < calib_results.size(); i++) {
+        if (calib_results[i].reproj_error < calib_results[best_idx].reproj_error)
+            best_idx = i;
+    }
+
+    cv::Mat T = calib_results[best_idx].T.clone();
+    std::vector<double>& vErr = calib_results[best_idx].per_frame_errors;
+    double rms_err = calib_results[best_idx].reproj_error;
 
     result.T_flange_camera = T.clone();
     result.camera_matrix = camera_matrix.clone();
     result.dist_coeffs = dist_coeffs.clone();
-
-    // 评估：T_base_calib = T_base_flange * X * T_camera_calib 的平移一致性
-    // 标定板相对基坐标系固定，各位姿下的 T_base_calib 应相同
-    std::vector<cv::Mat> T_base_calibs(valid);
-    for (int i = 0; i < valid; i++)
-        T_base_calibs[i] = robot_poses[i] * T * camera_poses[i];
-
-    cv::Mat mean_t(3, 1, CV_64F, cv::Scalar(0));
-    for (int i = 0; i < valid; i++)
-        mean_t += T_base_calibs[i](cv::Rect(3, 0, 1, 3));
-    mean_t /= valid;
-
-    double sum_err = 0.0;
-    std::vector<double> vErr;
-    for (int i = 0; i < valid; i++) {
-        cv::Mat d = T_base_calibs[i](cv::Rect(3, 0, 1, 3)) - mean_t;
-        vErr.push_back(std::sqrt(d.dot(d)));
-        sum_err += d.dot(d);
-    }
-    result.reproj_error = std::sqrt(sum_err / valid);
+    result.reproj_error = rms_err;
     result.success = true;
     result.message = "标定成功, 有效帧: " + std::to_string(valid) +
-                     ", 平均误差: " + std::to_string(result.reproj_error * 1000.0) + " mm";
+                     ", 平均误差: " + std::to_string(rms_err * 1000.0) + " mm"
+                     " (最优: " + calib_results[best_idx].name + ")";
 
     std::cout << "[autoCalib] " << result.message << std::endl;
+    std::cout << "[autoCalib] 最优方法: " << calib_results[best_idx].name << std::endl;
     std::cout << "[autoCalib] T_flange_camera:\n" << T << std::endl;
+
+    // 位姿分布分析
+    if (valid > 0) {
+        cv::Mat T0 = robot_poses[0] * T * camera_poses[0];
+        double x_min = T0.at<double>(0, 3) * 1000.0, x_max = x_min;
+        double y_min = T0.at<double>(1, 3) * 1000.0, y_max = y_min;
+        double z_min = T0.at<double>(2, 3) * 1000.0, z_max = z_min;
+        for (int i = 1; i < valid; i++) {
+            cv::Mat T_base = robot_poses[i] * T * camera_poses[i];
+            double x = T_base.at<double>(0, 3) * 1000.0;
+            double y = T_base.at<double>(1, 3) * 1000.0;
+            double z = T_base.at<double>(2, 3) * 1000.0;
+            if (x < x_min) x_min = x; if (x > x_max) x_max = x;
+            if (y < y_min) y_min = y; if (y > y_max) y_max = y;
+            if (z < z_min) z_min = z; if (z > z_max) z_max = z;
+        }
+        std::cout << "[autoCalib] 标定板在基坐标系下的空间分布:" << std::endl;
+        std::cout << "[autoCalib]   X: " << x_min << " ~ " << x_max << " mm, 跨度 " << (x_max - x_min) << " mm" << std::endl;
+        std::cout << "[autoCalib]   Y: " << y_min << " ~ " << y_max << " mm, 跨度 " << (y_max - y_min) << " mm" << std::endl;
+        std::cout << "[autoCalib]   Z: " << z_min << " ~ " << z_max << " mm, 跨度 " << (z_max - z_min) << " mm" << std::endl;
+    }
+
     if(needFilter){
+        int removed = 0;
         for(int i=valid-1; i>=0; i--){
-            if(vErr[i] > 0.03){
+            if(vErr[i] > 0.025){
                 robot_poses.erase(robot_poses.begin() + i);
-                camera_poses.erase(camera_poses.begin() + i);   
+                camera_poses.erase(camera_poses.begin() + i);
+                removed++;
             }
        }
+        if (removed > 0) {
+            std::cout << "[autoCalib] 离群剔除: " << removed
+                      << " 帧 (阈值 " << 20 << "mm), 剩余 " << robot_poses.size() << " 帧" << std::endl;
+        }
     }
 
     return true;
@@ -1254,7 +1313,7 @@ bool estimateHandEyeTrans(
 // ============================================================
 
 static bool calibrateHandEyeFromDisk(const std::string& save_dir,
-                                      const cv::Mat& camera_matrix,
+                                      cv::Mat& camera_matrix,
                                       const cv::Mat& dist_coeffs,
                                       const cv::Ptr<cv::aruco::CharucoBoard>& board,
                                       const cv::Ptr<cv::aruco::Dictionary>& dictionary,
@@ -1288,11 +1347,13 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
 
     size_t n = std::min(img_files.size(), flange_poses.size());
     std::vector<cv::Mat> robot_poses, camera_poses;
+    // camera_matrix = camera_matrix * 2; // scale for fine-resolution
+    // camera_matrix.at<double>(2, 2) = 1;
 
     for (size_t i = 0; i < n; i++) {
         cv::Mat img = cv::imread(img_files[i]);
         if (img.empty()) continue;
-
+        // cv::resize(img, img, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR); // scale for fine-resolution
         cv::Mat rvec, tvec;
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
@@ -1319,7 +1380,7 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
 
 bool calibrateHandEyeFromDisk(
     const std::string& save_dir,
-    const cv::Mat& camera_matrix,
+    cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
     CalibrationResult& result) {

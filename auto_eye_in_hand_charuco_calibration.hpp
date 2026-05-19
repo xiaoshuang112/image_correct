@@ -84,7 +84,7 @@ bool autoEyeInHandCharucoCalibration(
  */
 bool calibrateHandEyeFromDisk(
     const std::string& save_dir,
-    const cv::Mat& camera_matrix,
+    cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
     CalibrationResult& result);
