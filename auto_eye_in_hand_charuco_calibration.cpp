@@ -837,7 +837,7 @@ static bool computeZValues(int robot_handle,
          return false; }
 
     double current_z = ref_euler[2];
-    const double ratios[3] = {0.08, 0.2, 0.49};
+    const double ratios[3] = {0.08, 0.18, 0.35};
 
     for (int i = 0; i < 3; i++) {
         double z_attempt = current_z * board_dim / (ratios[i] * img_dim);
