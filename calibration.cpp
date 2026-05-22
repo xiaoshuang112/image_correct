@@ -1,5 +1,5 @@
-#include "hand_eye_calibration.hpp"
 #include "auto_eye_in_hand_charuco_calibration.hpp"
+#include "hand_eye_calibration.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
@@ -922,6 +922,7 @@ static bool captureExposureSamples(
 // 自动手眼标定入口（菜单项 5）
 // ============================================================
 //void moveToJointPos(int robot_handle, const double joint[6]);
+// extern bool moveToAnglePos(int robot_handle, double* anglePos);
 void auto_handeye_calibration() {
     // 尝试加载已有相机内参
     cv::Mat camera_matrix, dist_coeffs;
@@ -948,10 +949,11 @@ void auto_handeye_calibration() {
     std::cout << "----------------------------------------\n" << std::endl;
     
     checkAndRestoreRobotHand();   
-
+    CRresult ret;
     // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
-    double init_tcp_pose[6] = {196.377,-34.607,-46.971,-9.496,90.077,238.137}, euler_fixed[6];
-    // CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
+    //double init_tcp_pose[6] = {196.377,-34.607,-46.971,-9.496,90.077,238.137}, euler_fixed[6];
+     double init_tcp_pose[6] = {-753.377,113.607,178.971,6.5796, -4.09077, -78.0137}, euler_fixed[6];
+    //ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     // ret = cr_AxisAngle2Eule(init_tcp_pose, euler_fixed);
     // if (ret == sucess) {        
     //     euler_fixed[3] = -180.0;
@@ -961,9 +963,17 @@ void auto_handeye_calibration() {
     // }
     TCPMsg tcp_msg;
     bool confirmed = false;
+    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
     cv::Mat frame = g_camera->captureOneFrame(1000);
-    // moveToJointPos(robotHandle, init_tcp_pose);   
-    CRresult ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
+    // moveToJointPos(robotHandle, init_tcp_pose);  
+    // init_tcp_pose[0] += 200; 
+    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
+    // init_tcp_pose[1] += 200; 
+    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
+    // init_tcp_pose[2] -= 200; 
+    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
+    cv::Mat frame2 = g_camera->captureOneFrame(1000);
+    ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
         if (frame.empty()) continue;

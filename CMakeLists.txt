@@ -66,7 +66,7 @@ else()
     elseif(ARCH_TYPE STREQUAL "ARM64")
         set(ORBBEC_SDK_V2_DIR "/usr/local")
 
-        set(CGX_SDK_DIR  "/work/soft/CGXi/aarch64")
+        set(CGX_SDK_DIR  ${SRC_DIR}/libs/cr_sdk)
         include_directories(${CGX_SDK_DIR}/include)    
         set(CGX_SDK_LIBS
             ${CGX_SDK_DIR}/libs/libcr_sdk.so
@@ -94,8 +94,9 @@ SET(useOAK FALSE)
 
 
 SET(SRC_LISTS 
+hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
     calibration.cpp exposure_fusion.cpp  
-    hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
+    
     putText.cpp Util.cpp Texts.cpp
 )
 

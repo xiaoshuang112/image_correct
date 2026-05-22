@@ -90,5 +90,7 @@ bool calibrateHandEyeFromDisk(
     CalibrationResult& result);
 
 void moveToJointPos(int robot_handle, const double joint[6]);
+//bool moveToAnglePos(int robot_handle, double* anglePos);
+bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos);
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
