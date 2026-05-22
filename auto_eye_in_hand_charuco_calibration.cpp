@@ -830,8 +830,10 @@ static bool computeZValues(int robot_handle,
 
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
-    if (!detectCharucoCorners(frame, dictionary, board, corners, ids) || ids.size() < 4)
+    if (!detectCharucoCorners(frame, dictionary, board, corners, ids) || ids.size() < 4){
+        std::cout << "[computeZValues] ChArUco 初始图的角点过少" << std::endl;  
         return false;
+    }
 
     //{
         double avg_d = computeAvgDepth(depth, corners);
