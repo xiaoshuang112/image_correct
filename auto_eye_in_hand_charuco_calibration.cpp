@@ -525,8 +525,9 @@ static void searchXYSteps(int robot_handle,
         if (tryCandidatePoses(robot_handle, camera, dictionary, board,
                                false, xy_candidates, bestFlangeEule) > score) {
             moveToFlangeEulePos(robot_handle, bestFlangeEule);  
-            memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);            
+            //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
+            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);   
+            convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);         
         }
 
         if (nullptr!=g_callback) {
@@ -731,15 +732,17 @@ bool autoFindBestPose(int robot_handle,
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
-        double ref_j[ROB_AXIS_NUM];
-        if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) == sucess) {
-            double joint_best[ROB_AXIS_NUM];
-            if (cr_kineInverse((RobotHandle)robot_handle, tcp_aa, ref_j, joint_best) == sucess) {
-                moveToJointPos(robot_handle, joint_best);                
-                frame = camera->captureOneFrame(1500);
-                cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-            }
-        }
+        moveToTcpAxisPos(robot_handle, tcp_aa);
+        frame = camera->captureOneFrame(1500);
+        // double ref_j[ROB_AXIS_NUM];
+        // if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) == sucess) {
+        //     double joint_best[ROB_AXIS_NUM];
+        //     if (cr_kineInverse((RobotHandle)robot_handle, tcp_aa, ref_j, joint_best) == sucess) {
+        //         moveToJointPos(robot_handle, joint_best);                
+        //         frame = camera->captureOneFrame(1500);
+        //         cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+        //     }
+        // }
     }
 
     return true;
@@ -810,11 +813,11 @@ static bool computeZValues(int robot_handle,
     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
     const cv::Ptr<cv::aruco::CharucoBoard>& board,    
     double z_out[3]) {           // 输出 3 个验证后的 Z 值 (mm)
-    double tcp_aa[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM], oriFlangeAxisPos[ROB_AXIS_NUM];
+    double tcp_aa[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM];
     //double orig_joint[ROB_AXIS_NUM];
     cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangPos(robot_handle, tcp_aa, oriFlangeAxisPos);
-    cr_AxisAngle2Eule(oriFlangeAxisPos, oriFlangeEulePos);
+    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos);
+    //cr_AxisAngle2Eule(oriFlangeAxisPos, oriFlangeEulePos);
     //std::copy(ref_joint, ref_joint + ROB_AXIS_NUM, orig_joint);
 
     // 在当前位姿检测标定板像素尺寸
@@ -862,7 +865,7 @@ static bool computeZValues(int robot_handle,
          return false; }
 
     double current_z = oriFlangeEulePos[2];
-    const double ratios[3] = {0.08, 0.18, 0.35};
+    const double ratios[3] = {0.08, 0.16, 0.30};
     double z_board = current_z - avg_d;
 
     for (int i = 0; i < 3; i++) {
@@ -899,7 +902,7 @@ static bool computeZValues(int robot_handle,
             }
             float actual_w = vx2 - vx1;
             float actual_h = vy2 - vy1;
-            float actual_ratio = std::min(actual_w / img_w, actual_h / img_h);
+            float actual_ratio = std::max(actual_w / img_w, actual_h / img_h);
 
             double ratio_err = fabs(actual_ratio - ratios[i]);
             if (ratio_err < best_ratio_err) {
@@ -956,13 +959,15 @@ static bool computeZValues(int robot_handle,
 // ============================================================
 
 bool generateCandidates(int robot_handle,
+                        std::shared_ptr<AICamera>& camera,
                         const double z_values[3],
                         std::vector<PoseCandidate>& candidates) {
-    double euler[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM], flangeAxisPos[ROB_AXIS_NUM],  
+    double euler[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM], 
          flangeEulePos[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
     cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangPos(robot_handle, tcp_aa, flangeAxisPos);
-    cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
+    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+    cv::Mat frame = camera->captureOneFrame(1500);
+    //cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
@@ -982,7 +987,12 @@ bool generateCandidates(int robot_handle,
         euler[3] = flangeEulePos[3] + drx;
         euler[4] = flangeEulePos[4] + dry;
         euler[5] = flangeEulePos[5] + drz;
+
         if(convertFlangeOulePos2Joint(robot_handle, euler, joint)){        
+            // moveToFlangeEulePos(robot_handle, euler);
+            // frame = camera->captureOneFrame(1500);
+            // moveToJointPos(robot_handle, joint);
+            // frame = camera->captureOneFrame(1500);
             PoseCandidate cand;
             std::copy(joint, joint + 6, cand.joint);
             candidates.push_back(cand);
@@ -1425,9 +1435,7 @@ bool convertTcpAxisPos2FlangPos(int robotHandle, double *tcpAnglePos, double *fl
 bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double *joint){
      double flangeAxisPos[ROB_AXIS_NUM];
      if (cr_Eule2AxisAngle(flangeEulePos, flangeAxisPos) != sucess)
-            return false;
-     //double flangeAnglePos[ROB_AXIS_NUM];
-     //convertTcpAxisPos2FlangPos(robot_handle, tcpAnglePos, flangeAnglePos);
+            return false;    
      return convertFlangeAxisPos2Joint(robot_handle, flangeAxisPos, joint);
 }
 
@@ -1529,8 +1537,8 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // 轴角 → 欧拉参考位姿
-    double ref_euler[ROB_AXIS_NUM] = {0};
-    ret = cr_AxisAngle2Eule(tcp_aa, ref_euler);
+    double flangeEulePos[ROB_AXIS_NUM] = {0};
+    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
     if (ret != sucess) {
         result.message = "轴角转欧拉角失败";
         std::cerr << "[autoCalib] " << result.message << std::endl;
@@ -1538,7 +1546,7 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- 计算动态 Z 值（标定板边长占图像 20%, 40%, 60%） ----
-    double z_values[3] = {ref_euler[2] - 100.0, ref_euler[2]+100, ref_euler[2] + 300.0};
+    double z_values[3] = {flangeEulePos[2] - 100.0, flangeEulePos[2]+100, flangeEulePos[2] + 300.0};
     {
         double computed_z[3];
         if (computeZValues(robot_handle, camera, dictionary, board, computed_z)) {
@@ -1552,7 +1560,7 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 3: 生成候选 + IK 过滤 ----
     std::vector<PoseCandidate> candidates;
-    if (!generateCandidates(robot_handle, z_values, candidates)) {
+    if (!generateCandidates(robot_handle, camera, z_values, candidates)) {
         result.message = "无 IK 可达位姿";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
