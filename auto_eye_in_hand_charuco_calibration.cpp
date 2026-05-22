@@ -905,12 +905,12 @@ static bool computeZValues(int robot_handle,
                       << " (w=" << actual_w/img_w << ", h=" << actual_h/img_h << ")"
                       << std::endl;
 
-            if (std::abs(actual_ratio - ratios[i]) <= 0.03f) {
+            if (ratio_err <= 0.03f) {
                 double pose[ROB_AXIS_NUM];
-                double eul[ROB_AXIS_NUM];
+                double flangeEule[ROB_AXIS_NUM];
                 if (cr_get_tcpActualPose((RobotHandle)robot_handle, pose) == sucess &&
-                    cr_AxisAngle2Eule(pose, eul) == sucess) {
-                    z_out[i] = eul[2];
+                    convertTcpAxisPos2FlangeEule(robot_handle, pose, flangeEule) == sucess) {
+                    z_out[i] = flangeEule[2];
                     std::cout << "[autoCalib]    → 收敛, Z=" << z_out[i] << std::endl;
                 } else {
                     z_out[i] = z_attempt;
