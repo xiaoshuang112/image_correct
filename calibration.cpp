@@ -963,7 +963,7 @@ void auto_handeye_calibration() {
     // }
     TCPMsg tcp_msg;
     bool confirmed = false;
-    //moveToTcpAxisPos(robotHandle, init_tcp_pose);
+    moveToTcpAxisPos(robotHandle, init_tcp_pose);
     cv::Mat frame = g_camera->captureOneFrame(1000);
     // moveToJointPos(robotHandle, init_tcp_pose);  
     // init_tcp_pose[0] += 200; 

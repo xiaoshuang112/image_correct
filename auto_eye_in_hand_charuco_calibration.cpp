@@ -524,7 +524,8 @@ static void searchXYSteps(int robot_handle,
         double bestFlangeEule[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, dictionary, board,
                                false, xy_candidates, bestFlangeEule) > score) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEule);                        
+            moveToFlangeEulePos(robot_handle, bestFlangeEule);  
+            memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
             cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);            
         }
 
@@ -612,11 +613,11 @@ bool autoFindBestPose(int robot_handle,
             z_candidates.push_back({flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + idx * Z_STEP,
                                     flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
 
-        double best_j[ROB_AXIS_NUM];
+        double bestFlangeEule[ROB_AXIS_NUM];
         double best_s = tryCandidatePoses(robot_handle, camera, dictionary, board,
-                                           false, z_candidates, best_j);
+                                           false, z_candidates, bestFlangeEule);
         if (best_s > cur_score) {
-            moveToJointPos(robot_handle, best_j);            
+            moveToFlangeEulePos(robot_handle, bestFlangeEule);            
             cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
             std::cout << "[autoFindBestPose] Phase1 选定 Z=" << tcp_aa[2] << std::endl;
         }
@@ -703,13 +704,13 @@ bool autoFindBestPose(int robot_handle,
             zrz_candidates.push_back({flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + dZ * frac,
                                       flangeEulePos[3], flangeEulePos[4], bound_camera_angle(flangeEulePos[5] + dRz_deg * frac)});
 
-        double best_j[ROB_AXIS_NUM];
+        double bestFlangeEulePos[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, dictionary, board,
-                               false, zrz_candidates, best_j) > cur_s) {
-            moveToJointPos(robot_handle, best_j);            
+                               false, zrz_candidates, bestFlangeEulePos) > cur_s) {
+            moveToFlangeEulePos(robot_handle, bestFlangeEulePos);            
             cv::Mat frame = camera->captureOneFrame(1500);            
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);                        
-            if (convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos) == sucess)
+            if(cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) == sucess)                        
+                convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
                 flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
         } else {
             std::cout << "[autoFindBestPose] Z+rz 无改善, iter=" << iter << std::endl;
@@ -818,8 +819,14 @@ static bool computeZValues(int robot_handle,
 
     // 在当前位姿检测标定板像素尺寸
     cv::Mat frame, depth; 
-    camera->captureOneFrameWithDepth(frame, depth);
-    if (frame.empty()) return false;
+    for(int i = 0; i < 3; i++){
+      camera->captureOneFrameWithDepth(frame, depth);
+      if(depth.cols > 0 ) break;
+    }
+    if (frame.empty() || depth.empty()){
+       std::cout << "[computeZValues] ChArUco 获取深度图像失败" << std::endl;  
+       return false;
+    } 
 
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
@@ -908,8 +915,9 @@ static bool computeZValues(int robot_handle,
             if (ratio_err <= 0.03f) {
                 double pose[ROB_AXIS_NUM];
                 double flangeEule[ROB_AXIS_NUM];
-                if (cr_get_tcpActualPose((RobotHandle)robot_handle, pose) == sucess &&
-                    convertTcpAxisPos2FlangeEule(robot_handle, pose, flangeEule) == sucess) {
+                if (cr_get_tcpActualPose((RobotHandle)robot_handle, pose) == sucess)
+                {
+                    convertTcpAxisPos2FlangeEule(robot_handle, pose, flangeEule);
                     z_out[i] = flangeEule[2];
                     std::cout << "[autoCalib]    → 收敛, Z=" << z_out[i] << std::endl;
                 } else {
@@ -1530,7 +1538,7 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- 计算动态 Z 值（标定板边长占图像 20%, 40%, 60%） ----
-    double z_values[3] = {ref_euler[2] - 300.0, ref_euler[2], ref_euler[2] + 300.0};
+    double z_values[3] = {ref_euler[2] - 100.0, ref_euler[2]+100, ref_euler[2] + 300.0};
     {
         double computed_z[3];
         if (computeZValues(robot_handle, camera, dictionary, board, computed_z)) {
