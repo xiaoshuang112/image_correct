@@ -52,7 +52,7 @@ struct CapturedFrame {
 // ============================================================
 
 // 运动到目标关节角（等效 goto_jointpos）
-bool moveToJointPos(int robot_handle, const double joint[6]) {
+CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     double pose[6] = {0, 0, 0, 0, 0, 0};
     cr_get_jointActualPos(robot_handle, pose);
     PointControlParaSimple simple;
@@ -74,15 +74,15 @@ bool moveToJointPos(int robot_handle, const double joint[6]) {
     if (ret != sucess) {
         std::cerr << "[autoCalib] cr_move_pointControlPara_transfer failed: "
                   << ret << std::endl;
-        return false;
+        return ret;
     }
     ret = cr_move_joint((RobotHandle)robot_handle, para, TRUE);
     if (ret != sucess) {
         std::cerr << "[autoCalib] cr_move_joint failed: " << ret << std::endl;
-        return false;
+        return ret;
     }
     std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    return true;
+    return ret;
 }
 
 // 这些函数定义在匿名命名空间之后（全局作用域），此处前向声明
@@ -982,7 +982,7 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={25, 20, 15};
+        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={20, 20, 15};
         const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {
@@ -1075,16 +1075,19 @@ bool executeCollection(int robot_handle,
             progress = (i + 1) * 100 / total;
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
         }
-
-        if(false == moveToJointPos(robot_handle, candidates[i].joint)){
+        CRresult  ret0 = moveToJointPos(robot_handle, candidates[i].joint);
+        if(success != ret0){
         //    double init_tcp_pose[6] = {-753.377,113.607,178.971, 6.5796, -4.09077, -78.0137}, euler_fixed[6];  
         //     moveToTcpAxisPos(robot_handle, init_tcp_pose);
         //     cv::Mat frame = camera->captureOneFrame(1000);
             //int waitingTime = 60000;
-            std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;
+            
             //std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));           
-            robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
-            freeRobotHandle = 1;
+            if(ret0 == operate_timeout){
+                std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;
+                robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
+                freeRobotHandle = 1;
+            }
             continue;
         }       
 

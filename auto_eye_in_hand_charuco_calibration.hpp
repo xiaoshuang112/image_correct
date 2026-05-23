@@ -7,6 +7,9 @@
 
 #include "AICamera.hpp"
 
+#include "robotapi.h"
+#include "basestruct.h"
+
 #ifdef XIALIAO
 #include "det.h"
 #else
@@ -90,7 +93,7 @@ bool calibrateHandEyeFromDisk(
     const CharucoBoardConfig& board_config,
     CalibrationResult& result);
 
-bool moveToJointPos(int robot_handle, const double joint[6]);
+CRresult moveToJointPos(int robot_handle, const double joint[6]);
 //bool moveToAnglePos(int robot_handle, double* anglePos);
 bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos);
 
