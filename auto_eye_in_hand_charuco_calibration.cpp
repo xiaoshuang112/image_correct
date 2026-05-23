@@ -1022,7 +1022,7 @@ int reconnectRobotHandle(int old_handle, char* pchRobotIP){
     int waitingTime = 120000, try_time=0;
     while(result != sucess){
         
-       std::cout << "\n[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect" << std::flush;
+       std::cout << "\n[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect\n" << std::flush;
        std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));          
        result = cr_create_robot(&old_handle, pchRobotIP, 2323, "123");  // 机械臂连接        
        try_time ++;
