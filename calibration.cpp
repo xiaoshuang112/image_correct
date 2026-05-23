@@ -923,7 +923,7 @@ static bool captureExposureSamples(
 // ============================================================
 //void moveToJointPos(int robot_handle, const double joint[6]);
 // extern bool moveToAnglePos(int robot_handle, double* anglePos);
-void auto_handeye_calibration() {
+void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
     // 尝试加载已有相机内参
     cv::Mat camera_matrix, dist_coeffs;
     std::string cam_file = g_paramPath + "camera_params.yaml";
@@ -952,7 +952,7 @@ void auto_handeye_calibration() {
     CRresult ret;
     // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
     //double init_tcp_pose[6] = {196.377,-34.607,-46.971,-9.496,90.077,238.137}, euler_fixed[6];
-     double init_tcp_pose[6] = {-753.377,113.607,178.971,6.5796, -4.09077, -78.0137}, euler_fixed[6];
+     double init_tcp_pose[6] = {-753.377,113.607,178.971, 6.5796, -4.09077, -78.0137}, euler_fixed[6];  
     //ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     // ret = cr_AxisAngle2Eule(init_tcp_pose, euler_fixed);
     // if (ret == sucess) {        
@@ -965,14 +965,8 @@ void auto_handeye_calibration() {
     bool confirmed = false;
     moveToTcpAxisPos(robotHandle, init_tcp_pose);
     cv::Mat frame = g_camera->captureOneFrame(1000);
-    // moveToJointPos(robotHandle, init_tcp_pose);  
-    // init_tcp_pose[0] += 200; 
-    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
-    // init_tcp_pose[1] += 200; 
-    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
-    // init_tcp_pose[2] -= 200; 
-    // moveToTcpAxisPos(robotHandle, init_tcp_pose);
-    cv::Mat frame2 = g_camera->captureOneFrame(1000);
+   
+    //cv::Mat frame2 = g_camera->captureOneFrame(1000);
     ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
@@ -1038,12 +1032,14 @@ void auto_handeye_calibration() {
     CalibrationResult result;
     bool ok = autoEyeInHandCharucoCalibration(
         robotHandle,
-        init_tcp_pose,
+        pchRobotIP,
+        //init_tcp_pose,
         tcp_msg.tcpOffset,
         g_camera,
         board_cfg,
         camera_matrix,
         dist_coeffs,
+        cameraToTcpEnd,
         result,
         g_calibrationPath
     );
@@ -1130,7 +1126,8 @@ int main() {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    CRresult result = cr_create_robot(&robotHandle, "192.168.6.6", 2323, "123");  // 机械臂连接 
+    char *pchRobotIp = "192.168.6.6";
+    CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
     if (result != sucess)
         return -1;
 
@@ -1160,7 +1157,7 @@ int main() {
         case 4:         
             ret = open_camera();
             if (-1==ret) break;   
-            auto_handeye_calibration();   
+            auto_handeye_calibration(100, pchRobotIp);   
             break;
         case 5:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;

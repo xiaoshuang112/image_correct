@@ -57,13 +57,14 @@ struct CharucoBoardConfig {
  * @return true/false
  */
 bool autoEyeInHandCharucoCalibration(
-    int robot_handle,
-    const double init_tcp_pose[6],
+    int robot_handle,    
+    char* pchRobotIP,
     const double tcp_offset[6],
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
+    int cameraToTcpEnd,
     CalibrationResult& result,
     const std::string& save_dir = "",
     AI_det_callback callback=nullptr
@@ -89,7 +90,7 @@ bool calibrateHandEyeFromDisk(
     const CharucoBoardConfig& board_config,
     CalibrationResult& result);
 
-void moveToJointPos(int robot_handle, const double joint[6]);
+bool moveToJointPos(int robot_handle, const double joint[6]);
 //bool moveToAnglePos(int robot_handle, double* anglePos);
 bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos);
 
