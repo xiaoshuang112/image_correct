@@ -1076,7 +1076,7 @@ bool executeCollection(int robot_handle,
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
         }
         CRresult  ret0 = moveToJointPos(robot_handle, candidates[i].joint);
-        if(success != ret0){
+        if(CRresult::sucess != ret0){
         //    double init_tcp_pose[6] = {-753.377,113.607,178.971, 6.5796, -4.09077, -78.0137}, euler_fixed[6];  
         //     moveToTcpAxisPos(robot_handle, init_tcp_pose);
         //     cv::Mat frame = camera->captureOneFrame(1000);
