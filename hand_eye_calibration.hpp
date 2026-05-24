@@ -11,8 +11,14 @@
 #include <algorithm>
 #include <iomanip>
 #include <filesystem>
+#include "my_base.h"
+
+#ifdef useORB
 // SDK v2 核心头文件
 #include "libobsensor/ObSensor.hpp"
+#endif
+
+extern AICameraIntrinsic g_cam_param;
 
 struct DEPTH_INFO {
     uint32_t  width = 0;
@@ -20,25 +26,6 @@ struct DEPTH_INFO {
     float     scale = 0;
     uint32_t  data_len = 0;
     uint16_t* data = nullptr;
-
-    int from_depthFrame(std::shared_ptr<ob::Frame>& depthFrame)
-    {
-        if (depthFrame) {
-            auto depthVideoFrame = depthFrame->as<const ob::DepthFrame>();
-            width = depthVideoFrame->getWidth();
-            height = depthVideoFrame->getHeight();
-            scale = depthVideoFrame->getValueScale();
-            data_len = width * height;
-            data = (uint16_t*)depthVideoFrame->getData();
-            return 0;
-        }
-        else {
-            std::cerr << "Failed to get depth frame (is depth stream enabled?)" << std::endl;
-
-            return -1;
-        }
-
-    }
 
     int from_depthMat(const cv::Mat& depthMat)
     {
@@ -58,6 +45,28 @@ struct DEPTH_INFO {
 
     }
 
+
+#ifdef useORB
+    int from_depthFrame(std::shared_ptr<ob::Frame>& depthFrame)
+    {
+        if (depthFrame) {
+            auto depthVideoFrame = depthFrame->as<const ob::DepthFrame>();
+            width = depthVideoFrame->getWidth();
+            height = depthVideoFrame->getHeight();
+            scale = depthVideoFrame->getValueScale();
+            data_len = width * height;
+            data = (uint16_t*)depthVideoFrame->getData();
+            return 0;
+        }
+        else {
+            std::cerr << "Failed to get depth frame (is depth stream enabled?)" << std::endl;
+
+            return -1;
+        }
+        
+    }
+
+
     static void saveDepthFrame(const std::shared_ptr<ob::DepthFrame>& depthFrame, const std::string& depthName) {
         std::vector<int> params;
         params.push_back(cv::IMWRITE_PNG_COMPRESSION);
@@ -71,14 +80,20 @@ struct DEPTH_INFO {
     }
 
 
-    void get_world_xy_by_z(OBCameraIntrinsic& cam_param, int img_x, int img_y,
+
+#endif // REL_DBG
+
+
+
+
+    void get_world_xy_by_z(int img_x, int img_y,
         float& x, float& y, float z)
     {
         if (z > 0) { // 有效的深度点
 
             // 10. 将像素坐标 (u,v) 和深度值转换为三维坐标 (x,y,z)
-            x = (img_x - cam_param.cx) * z / cam_param.fx;
-            y = (img_y - cam_param.cy) * z / cam_param.fy;
+            x = (img_x - g_cam_param.cx) * z / g_cam_param.fx;
+            y = (img_y - g_cam_param.cy) * z / g_cam_param.fy;
         }
     }
 
@@ -93,9 +108,12 @@ struct DEPTH_INFO {
         if (depth_pos >= data_len) return;
 
         z = data[depth_pos] * scale;
+
+        if (z>3000) z = -1;
+        
     }
 
-    void get_world_xyz(OBCameraIntrinsic& cam_param, int img_x, int img_y,
+    void get_world_xyz(int img_x,int img_y,
         float& x, float& y, float& z)
     {
         x = y = z = -1;
@@ -108,18 +126,13 @@ struct DEPTH_INFO {
         if (z > 0) { // 有效的深度点
 
             // 10. 将像素坐标 (u,v) 和深度值转换为三维坐标 (x,y,z)
-            get_world_xy_by_z(cam_param, img_x, img_y, x, y, z);
+            get_world_xy_by_z(img_x, img_y,x,y,z);
 
             std::cout << "3D Coordinate at (" << img_x << ", " << img_y << "): ";
             std::cout << "X=" << x << " mm, Y=" << y << " mm, Z=" << z << " mm" << std::endl;
         }
     }
-
-
-
 };
-
-
 
 
 class VectorWriter {

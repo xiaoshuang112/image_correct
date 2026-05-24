@@ -19,7 +19,7 @@ extern std::string g_paramPath;
 
 extern std::shared_ptr<OrbbecCameraV2> g_camera;
 extern RobotHandle robotHandle;
-extern OBCameraIntrinsic g_cam_param;
+extern AICameraIntrinsic g_cam_param;
 
 extern std::string string_format(const char* format, ...);
 

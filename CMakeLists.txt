@@ -6,6 +6,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+
+SET(useORB TRUE)
+SET(useOAK FALSE)
+SET(useMVS FALSE)
+
+
 set(CMAKE_BUILD_TYPE "Debug")
 # set(CMAKE_BUILD_TYPE "Release")
 
@@ -88,9 +94,17 @@ link_directories(${ORBBEC_SDK_V2_DIR}/lib)
 include_directories(${depthai_DIR}/include)
 link_directories(${depthai_DIR}/lib)
 
+# MVS SDK
+if(useMVS)
+    set(MVS_SDK_DIR "/opt/MVS")
+    include_directories(${MVS_SDK_DIR}/include)
+    if(ARCH_TYPE STREQUAL "x86_64")
+        link_directories(${MVS_SDK_DIR}/lib/64)
+    else()
+        link_directories(${MVS_SDK_DIR}/lib/32)
+    endif()
+endif()
 
-SET(useORB TRUE)
-SET(useOAK FALSE)
 
 
 SET(SRC_LISTS 
@@ -120,6 +134,16 @@ if(useOAK)
     )
     list(APPEND SRC_LIBS
         depthai-core
+    )
+endif()
+
+if(useMVS)
+    add_definitions(-DuseMVS)
+    list(APPEND SRC_LISTS
+        MVSCamera.cpp
+    )
+    list(APPEND SRC_LIBS
+        MvCameraControl
     )
 endif()
 
