@@ -951,25 +951,20 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
     checkAndRestoreRobotHand();   
     CRresult ret;
     // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
-    //double init_tcp_pose[6] = {196.377,-34.607,-46.971,-9.496,90.077,238.137}, euler_fixed[6];
-     double init_tcp_pose[6] = {1397.2532435719727, 260.75445080100502,-91.973921159448253, -3.6466529758518207, -5.7891331417314156, 178.30042319158133}, euler_fixed[6];  
-
+    //double init_tcp_pose[6] = {-502.377, 204.607, 207.971,1.76, -0.918, -47.680}, euler_fixed[6];// offseted
+    double init_flangeAxisPos[6]={-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780}; // no-offset
+    double init_tcp_pose[6] = {-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780}, euler_fixed[6];// no-offseted
     
-    //ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
-    // ret = cr_AxisAngle2Eule(init_tcp_pose, euler_fixed);
-    // if (ret == sucess) {        
-    //     euler_fixed[3] = -180.0;
-    //     euler_fixed[4] = 0.0;
-    //     double fixed_aa[ROB_AXIS_NUM];
-    //     ret = cr_Eule2AxisAngle(euler_fixed, init_tcp_pose);        
-    // }
+   
     TCPMsg tcp_msg;
     bool confirmed = false;
-    moveToTcpAxisPos(robotHandle, init_tcp_pose);
+   // moveToTcpAxisPos(robotHandle, init_tcp_pose);
     cv::Mat frame = g_camera->captureOneFrame(1000);
    
     //cv::Mat frame2 = g_camera->captureOneFrame(1000);
     ret = cr_get_tcpActualPose(robotHandle, init_tcp_pose);
+    convertTcpAxisPos2FlangPos(robotHandle, init_tcp_pose, init_flangeAxisPos);
+
     while (true) {
         cv::Mat frame = g_camera->captureOneFrame(1000);
         if (frame.empty()) continue;
@@ -1020,9 +1015,7 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
 
     // 输出初始位姿
     std::cout << "[autoCalib] 初始 TCP 位姿 (轴角, mm/deg): ";
-    // for (int i = 0; i < 6; i++)
-    //     std::cout << init_tcp_pose[i] << (i < 5 ? ", " : "\n");
-
+   
     // 在当前位姿采集曝光样本
     // captureExposureSamples(g_camera, g_paramPath + "exposure/", 10);
 
@@ -1035,8 +1028,6 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
     bool ok = autoEyeInHandCharucoCalibration(
         robotHandle,
         pchRobotIP,
-        //init_tcp_pose,
-        tcp_msg.tcpOffset,
         g_camera,
         board_cfg,
         camera_matrix,
@@ -1128,7 +1119,7 @@ int main() {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    char *pchRobotIp = "192.168.3.6";
+    char *pchRobotIp = "192.168.6.6";
     CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
     if (result != sucess)
         return -1;

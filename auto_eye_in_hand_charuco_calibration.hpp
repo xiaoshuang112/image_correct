@@ -62,7 +62,7 @@ struct CharucoBoardConfig {
 bool autoEyeInHandCharucoCalibration(
     int robot_handle,    
     char* pchRobotIP,
-    const double tcp_offset[6],
+   // const double tcp_offset[6],
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
@@ -96,5 +96,13 @@ bool calibrateHandEyeFromDisk(
 CRresult moveToJointPos(int robot_handle, const double joint[6]);
 //bool moveToAnglePos(int robot_handle, double* anglePos);
 bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos);
+
+
+// 这些函数定义在匿名命名空间之后（全局作用域），此处前向声明
+bool moveToTcpAxisPos(int robot_handle, double* anglePos);
+bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double *joint);
+bool moveToFlangeEulePos(int robotHandle, double *flangeEulePos);
+bool convertTcpAxisPos2FlangPos(int robotHandle, double *tcpAnglePos, double *flangeAnglePos);
+bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos);
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
