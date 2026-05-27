@@ -985,9 +985,9 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
     
     for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={15, 20, 15};
+        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={10, 15, 15};
         const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
-        const double ang_offsetsZ[] = {-30, 0.0, 30};
+        const double ang_offsetsZ[] = {-20, 0.0, 20};
         const double xy_offsets[] = {-dlt, 0.0, dlt};
     for (double dx : xy_offsets) {
     for (double dy : xy_offsets) {
@@ -1085,9 +1085,8 @@ bool executeCollection(int robot_handle,
         //     moveToTcpAxisPos(robot_handle, init_tcp_pose);
         //     cv::Mat frame = camera->captureOneFrame(1000);
             //int waitingTime = 60000;
-            std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;
-            //std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime)); 
-            if(operate_timeout == ret_move){          
+            if(operate_timeout == ret_move){   
+                 std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;       
                 robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
                 freeRobotHandle = 1;
             }
