@@ -266,7 +266,7 @@ bool detectCharucoPose(const cv::Mat& image,
         return false;
     if (ids.size() < minCornersNum) 
         return false;
-     auto threshes = (image.rows == 800) ? std::array{0.3f, 0.2f} : std::array{0.6f, 0.4f}; 
+     auto threshes = (image.rows == 800) ? std::array{0.4f, 0.3f} : std::array{0.6f, 0.4f}; 
      cv::Mat imageCorners;
      image.copyTo(imageCorners);
 
