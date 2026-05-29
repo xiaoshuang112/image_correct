@@ -5,7 +5,8 @@
 #include <string>
 #include <vector>
 
-#include "AICamera.hpp"
+#include "cameras/AICamera.hpp"
+#include "charuco_detector.hpp"
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -16,8 +17,6 @@
 typedef int (*AI_det_callback)(char* msg, int msg_len, int flag);
 #endif // XIALIAO
 
-
-
 // 自动眼在手 ChArUco 标定结果
 struct CalibrationResult {
     bool success = false;
@@ -27,15 +26,6 @@ struct CalibrationResult {
     int valid_frames = 0;      // 参与标定的有效帧数
     double reproj_error = 0.0; // 重投影误差
     std::string message;       // 状态/错误信息
-};
-
-// ChArUco 标定板参数
-struct CharucoBoardConfig {
-    int squares_x = 7;          // 横向方格数
-    int squares_y = 5;          // 纵向方格数
-    float square_length = 0.04f;   // 方格边长 (m)
-    float marker_length = 0.028f;  // 标记边长 (m)
-    int dictionary_id = 4;          // cv::aruco::DICT_5X5_250
 };
 
 /**

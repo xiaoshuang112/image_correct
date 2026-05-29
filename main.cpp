@@ -1,4 +1,4 @@
-#include "OrbbecCamera.hpp"
+#include "cameras/OrbbecCamera.hpp"
 #include <iostream>
 
 int main() {

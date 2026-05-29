@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB TRUE)
+SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS FALSE)
+SET(useMVS TRUE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -107,11 +107,11 @@ endif()
 
 
 
-SET(SRC_LISTS 
-hand_eye_calibration.cpp auto_eye_in_hand_charuco_calibration.cpp 
-    calibration.cpp exposure_fusion.cpp  
-    
-    putText.cpp Util.cpp Texts.cpp
+SET(SRC_LISTS
+charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp
+    calibration.cpp exposure_fusion.cpp
+    circlesampler/CircleSampler.cpp circlesampler/Config.cpp
+    utils/putText.cpp utils/Util.cpp utils/Texts.cpp
 )
 
 SET(SRC_LIBS 
@@ -120,7 +120,7 @@ SET(SRC_LIBS
 if(useORB)
     add_definitions(-DuseORB)
     list(APPEND SRC_LISTS
-        OrbbecCamera.cpp
+        cameras/OrbbecCamera.cpp
     )
     list(APPEND SRC_LIBS
         OrbbecSDK
@@ -130,7 +130,7 @@ endif()
 if(useOAK)
     add_definitions(-DuseOAK)
     list(APPEND SRC_LISTS
-        OAKCamera.cpp    
+        cameras/OAKCamera.cpp
     )
     list(APPEND SRC_LIBS
         depthai-core
@@ -140,7 +140,7 @@ endif()
 if(useMVS)
     add_definitions(-DuseMVS)
     list(APPEND SRC_LISTS
-        MVSCamera.cpp
+        cameras/MVSCamera.cpp
     )
     list(APPEND SRC_LIBS
         MvCameraControl

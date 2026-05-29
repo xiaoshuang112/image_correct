@@ -1,18 +1,17 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 
-#include "AICamera.hpp"
+#include "cameras/AICamera.hpp"
 #ifdef useORB
-#include <OrbbecCamera.hpp>
+#include "cameras/OrbbecCamera.hpp"
 #endif // useORB
 
 #ifdef useOAK
-#include "OAKCamera.hpp"
+#include "cameras/OAKCamera.hpp"
 #endif // useOAK
 
 #include "robotapi.h"
 #include "basestruct.h"
 
-#include <opencv2/aruco/charuco.hpp>
 #include <opencv2/calib3d.hpp>
 #include <iostream>
 #include <vector>
@@ -85,6 +84,68 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     return ret;
 }
 
+// ============================================================
+// 辅助函数（全局可见）
+// ============================================================
+
+bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint){
+    double ref_j[ROB_AXIS_NUM];
+    if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) != sucess)
+            return false;
+    if (cr_kineInverse((RobotHandle)robot_handle, flangeAnglePos, ref_j, joint) != sucess)
+            return false;
+    return true;
+}
+
+bool convertTcpAxisPos2FlangPos(int robotHandle, double *tcpAnglePos, double *flangeAnglePos){
+    TCPMsg tcpMsgList;
+    if( cr_get_currentTCPmsg(robotHandle, &tcpMsgList) == sucess )   {
+      if(cr_TcpToFlangePose(tcpAnglePos, tcpMsgList.tcpOffset, flangeAnglePos) == sucess)
+        return true;
+    }
+    return false;
+}
+
+bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double *joint){
+     double flangeAxisPos[ROB_AXIS_NUM];
+     if (cr_Eule2AxisAngle(flangeEulePos, flangeAxisPos) != sucess)
+            return false;    
+     return convertFlangeAxisPos2Joint(robot_handle, flangeAxisPos, joint);
+}
+
+bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos){
+    double flangeAxisPos[ROB_AXIS_NUM];
+    if( convertTcpAxisPos2FlangPos(robot_handle, tcpAxisPos, flangeAxisPos) ){
+      cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
+      return true;
+    }
+    return false;
+}
+
+bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos){
+   double joint[6];
+   if(convertFlangeAxisPos2Joint(robot_handle, axisAnglePos, joint)){
+      moveToJointPos(robot_handle, (double*)joint);
+      return true;
+   }
+   return false;
+}
+
+bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos){    
+    double flangeAxisAnglePos[6];
+    if(convertTcpAxisPos2FlangPos(robotHandle, tcpAnglePos, flangeAxisAnglePos) )
+       return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
+    return false;
+}
+
+bool moveToFlangeEulePos(int robotHandle, double *flangeEulePos){
+   double flangeAxisAnglePos[6];
+   cr_Eule2AxisAngle(flangeEulePos, flangeAxisAnglePos);
+   return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
+   //return true;
+}
+
+
 
 namespace {
 
@@ -92,203 +153,6 @@ namespace {
 cv::Mat axisAnglePoseToTransform(const double pose[6]);
 
 
-// 创建 ChArUco 标定板
-bool createCharucoBoard(const CharucoBoardConfig& cfg,
-                        cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                        cv::Ptr<cv::aruco::CharucoBoard>& board) {
-    int dict_id;
-    switch (cfg.dictionary_id) {
-        case 0:  dict_id = cv::aruco::DICT_4X4_250;  break;
-        case 1:  dict_id = cv::aruco::DICT_4X4_1000; break;
-        case 2:  dict_id = cv::aruco::DICT_5X5_100;  break;
-        case 3:  dict_id = cv::aruco::DICT_5X5_1000; break;
-        case 4:  dict_id = cv::aruco::DICT_5X5_250;  break;
-        case 5:  dict_id = cv::aruco::DICT_6X6_250;  break;
-        default: dict_id = cv::aruco::DICT_5X5_250;  break;
-    }
-
-    dictionary = cv::makePtr<cv::aruco::Dictionary>(
-        cv::aruco::getPredefinedDictionary(dict_id));
-
-#if CV_VERSION_MAJOR >= 4 && CV_VERSION_MINOR >= 7
-    board = cv::makePtr<cv::aruco::CharucoBoard>(
-        cv::Size(cfg.squares_x, cfg.squares_y),
-        cfg.square_length, cfg.marker_length, *dictionary);
-#else
-    board = cv::aruco::CharucoBoard::create(
-        cfg.squares_x, cfg.squares_y,
-        cfg.square_length, cfg.marker_length, dictionary);
-#endif
-    return true;
-}
-
-
-
-// 检测 ChArUco 角点（无需相机内参）
-bool detectCharucoCorners(const cv::Mat& image,
-                          const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                          const cv::Ptr<cv::aruco::CharucoBoard>& board,
-                          std::vector<cv::Point2f>& corners,
-                          std::vector<int>& ids) {
-    cv::Mat gray;
-    if (image.channels() == 3)
-        cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    else
-        gray = image.clone();
-
-    std::vector<std::vector<cv::Point2f>> markerCorners;
-    std::vector<int> markerIds;
-
-    cv::aruco::DetectorParameters detectorParams;
-    cv::aruco::CharucoParameters charucoParams;
-    detectorParams.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
-    charucoParams.minMarkers = 1;
-    charucoParams.tryRefineMarkers = true;
-
-#if CV_VERSION_MAJOR >= 4 && CV_VERSION_MINOR >= 7
-    cv::aruco::CharucoDetector detector(*board, charucoParams, detectorParams);
-    detector.detectBoard(gray, corners, ids, markerCorners, markerIds);
-#else
-    cv::aruco::detectMarkers(gray, dictionary, markerCorners, markerIds, detectorParams);
-    if (!markerIds.empty()) {
-        cv::aruco::interpolateCornersCharuco(
-            markerCorners, markerIds, gray, board,
-            corners, ids, cv::noArray(), cv::noArray(), 1);
-    }
-#endif
-
-    if (ids.empty() && !markerIds.empty()) {
-        cv::aruco::interpolateCornersCharuco(
-            markerCorners, markerIds, gray, board,
-            corners, ids, cv::noArray(), cv::noArray(), 1);
-    }
-    if (ids.empty()) {
-        cv::aruco::detectMarkers(gray, dictionary, markerCorners, markerIds);
-        if (!markerIds.empty()) {
-            cv::aruco::interpolateCornersCharuco(
-                markerCorners, markerIds, gray, board,
-                corners, ids, cv::noArray(), cv::noArray(), 1);
-        }
-    }
-
-    return !ids.empty();
-}
-
-
-void filterByCharucoReprojectionError(
-     const cv::Ptr<cv::aruco::CharucoBoard>& board,
-    const cv::Mat& camera_matrix,
-    const cv::Mat& dist_coeffs,
-    std::vector<cv::Point2f>& charuco_corners,
-    std::vector<int>& charuco_ids,
-    const cv::Mat& rvec,
-    const cv::Mat& tvec, float thresh, 
-    cv::Mat &imageCorners)  {
-
-    std::vector<cv::Point3f> object_points;
-    object_points.reserve(charuco_ids.size());
-
-    
-#if CV_MAJOR_VERSION >= 4 && CV_VERSION_MINOR >= 7
-    // OpenCV 4.7.0+：使用 getter 方法
-    const auto& board_object_points = board->getChessboardCorners();
-#else
-    // OpenCV 4.6.x 及以下：直接访问成员变量
-    const auto& board_object_points = board->chessboardCorners;
-#endif
-
-
-    for (size_t i = 0; i < charuco_ids.size(); ++i) {
-        const int id = charuco_ids[i];
-        if (id < 0 || static_cast<size_t>(id) >= board_object_points.size()) {
-            continue;
-        }
-        object_points.push_back(board_object_points[static_cast<size_t>(id)]);
-    }
-
-    if (object_points.size() != charuco_corners.size() || object_points.empty()) {
-        return;
-    }
-
-    std::vector<cv::Point2f> projected_points;
-    cv::projectPoints(object_points, rvec, tvec, camera_matrix, dist_coeffs, projected_points);
-
-    double sum_err = 0.0;
-    double sum_sq_err = 0.0;
-    double max_err = 0.0;
-    std::vector<float> vError;
-    for (size_t i = 0; i < projected_points.size(); ++i) {
-        const cv::Point2f& p_det = charuco_corners[i];
-        const cv::Point2f& p_proj = projected_points[i];
-        const double err = cv::norm(p_det - p_proj);
-
-        sum_err += err;
-        sum_sq_err += err * err;
-        max_err = std::max(max_err, err);
-        vError.push_back(err);
-        if(imageCorners.cols > 0){
-            cv::circle(imageCorners, p_proj, 3, cv::Scalar(0, 0, 255), -1);
-            cv::line(imageCorners, p_det, p_proj, cv::Scalar(0, 255, 255), 1);
-        }
-    }
-    if(imageCorners.cols > 0)
-        cv::aruco::drawDetectedCornersCharuco(imageCorners, charuco_corners, charuco_ids);
-
-    const double mean_err = sum_err / static_cast<double>(projected_points.size());
-    const double rms_err = std::sqrt(sum_sq_err / static_cast<double>(projected_points.size()));
-
-    std::ostringstream oss;
-    oss << std::fixed << std::setprecision(2);
-    oss << "Reproj(px) mean=" << mean_err << " rms=" << rms_err << " max=" << max_err;
-
-     // filter outer
-    if (thresh > 0.001f && !charuco_ids.empty()){
-        for (int i = static_cast<int>(charuco_ids.size()) - 1; i >= 0; i--) {
-            if (vError[i] >= thresh) {
-                charuco_ids.erase(charuco_ids.begin() + i);
-                charuco_corners.erase(charuco_corners.begin() + i);                
-            }
-        }
-    }
-    
-}
-
-// 检测 ChArUco 并估算位姿（需要相机内参）
-bool detectCharucoPose(const cv::Mat& image,
-                       const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                       const cv::Ptr<cv::aruco::CharucoBoard>& board,
-                       const cv::Mat& camera_matrix,
-                       const cv::Mat& dist_coeffs,
-                       cv::Mat& rvec, cv::Mat& tvec,
-                       std::vector<cv::Point2f>& corners,
-                       std::vector<int>& ids, int minCornersNum ) {
-    if (!detectCharucoCorners(image, dictionary, board, corners, ids))
-        return false;
-    if (ids.size() < minCornersNum) 
-        return false;
-     auto threshes = (image.rows == 800) ? std::array{0.4f, 0.3f} : std::array{0.6f, 0.4f}; 
-     cv::Mat imageCorners;
-     image.copyTo(imageCorners);
-
-    if(cv::aruco::estimatePoseCharucoBoard(
-        corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
-        filterByCharucoReprojectionError(
-        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, threshes[0], imageCorners); // 0.3 = 1280
-        if (ids.size() < minCornersNum) 
-           return false;
-        }
-    image.copyTo(imageCorners);
-    if(cv::aruco::estimatePoseCharucoBoard(
-        corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec)){
-        filterByCharucoReprojectionError(
-        board, camera_matrix, dist_coeffs, corners, ids,  rvec, tvec, threshes[1], imageCorners); // 0.2 = 1280
-        if (ids.size() < minCornersNum) 
-           return false;
-        }
-     
-    return cv::aruco::estimatePoseCharucoBoard(
-        corners, ids, board, camera_matrix, dist_coeffs, rvec, tvec);
-}
 
 // ============================================================
 // 视觉伺服：公式直接反算最佳位姿
@@ -389,42 +253,33 @@ void transformToAxisAnglePose(const cv::Mat& T, double pose[6]) {
 // use_center=false: score = ids.size() * 1000000 + 凸包面积
 static std::tuple<double, int, cv::Point2f> evaluatePose(
     std::shared_ptr<AICamera>& camera,
-    const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-    const cv::Ptr<cv::aruco::CharucoBoard>& board,
+    CharucoDetector& detector,
     bool use_center) {
     cv::Mat f = camera->captureOneFrame(1500);
     if (f.empty()) return {0, 0, cv::Point2f(0, 0)};
 
         if (nullptr!=g_callback) {
-            // 获取当前时间点
             auto now = std::chrono::high_resolution_clock::now();
-
-            // 将时间转换为自纪元以来的纳秒数
             auto duration = now.time_since_epoch();
             auto nanoseconds = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
-            
+
             std::string file_id = std::to_string(nanoseconds);
 
             std::string img_name = g_save_dir + "/" +  file_id  + ".jpg";
-            cv::imwrite(img_name, f);            
+            cv::imwrite(img_name, f);
 
             int call_ret = g_callback((char*)img_name.c_str(), (int)img_name.length(), 1);
-            
-        }     
+
+        }
 
 
     double cx = f.cols / 2.0;
     double cy = f.rows / 2.0;
     std::vector<cv::Point2f> c;
     std::vector<int> i;
-    if (!detectCharucoCorners(f, dictionary, board, c, i))
+    if (!detector.detectCorners(f, c, i))
         return {0, (int)i.size(), cv::Point2f(0, 0)};
-    cv::Size board_sz;
-#if CV_VERSION_MAJOR >= 4 && CV_VERSION_MINOR >= 7
-    board_sz = board->getChessboardSize();
-#else
-    board_sz = board->checkboradSize;
-#endif
+    cv::Size board_sz = detector.getChessboardSize();
 
     std::vector<cv::Point2f> h;
     cv::convexHull(c, h);
@@ -453,8 +308,7 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
 // 注意：函数会临时运动到候选位姿做评估，返回前会回到原始位置
 static double tryCandidatePoses(int robot_handle,
     std::shared_ptr<AICamera>& camera,
-    const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-    const cv::Ptr<cv::aruco::CharucoBoard>& board,
+    CharucoDetector& detector,
     bool use_center,
     const std::vector<std::array<double, 6>>& candidates,
     double bestFlangeEule[6]) {
@@ -475,7 +329,7 @@ static double tryCandidatePoses(int robot_handle,
             continue;        
 
         double s; int n; cv::Point2f bc;
-        std::tie(s, n, bc) = evaluatePose(camera, dictionary, board, use_center);
+        std::tie(s, n, bc) = evaluatePose(camera, detector, use_center);
         if (s > best_s) {
             best_s = s;
             std::copy(euler.data(), euler.data() + ROB_AXIS_NUM, bestFlangeEule_j);
@@ -506,29 +360,27 @@ static double tryCandidatePoses(int robot_handle,
 // 多步长 XY 搜索（Phase 2 / Phase 4 共用）
 static void searchXYSteps(int robot_handle,
     std::shared_ptr<AICamera>& camera,
-    const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-    const cv::Ptr<cv::aruco::CharucoBoard>& board,
-    const double* steps, int num_steps,    
+    CharucoDetector& detector,
+    const double* steps, int num_steps,
     double tcp_aa[6]) {
     cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
 
-    double flangeEulePos[ROB_AXIS_NUM];    
+    double flangeEulePos[ROB_AXIS_NUM];
     convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
-    // CRresult ret = cr_AxisAngle2Eule(tcp_aa, flangeEulePos);
-    
+
     for (int i = 0; i < num_steps; i++) {
         double step = steps[i];
         double score; int n; cv::Point2f bc;
-        std::tie(score, n, bc) = evaluatePose(camera, dictionary, board, false);        
+        std::tie(score, n, bc) = evaluatePose(camera, detector, false);
         std::vector<std::array<double, 6>> xy_candidates;
         for (int sx : {-1, 0, 1}) for (int sy : {-1, 0, 1}) {
-            if (sx == 0 && sy == 0) 
+            if (sx == 0 && sy == 0)
                continue;
             xy_candidates.push_back({flangeEulePos[0] + sx*step, flangeEulePos[1] + sy*step, flangeEulePos[2],
                                       flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
         }
         double bestFlangeEule[ROB_AXIS_NUM];
-        if (tryCandidatePoses(robot_handle, camera, dictionary, board,
+        if (tryCandidatePoses(robot_handle, camera, detector,
                                false, xy_candidates, bestFlangeEule) > score) {
             moveToFlangeEulePos(robot_handle, bestFlangeEule);  
             //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
@@ -575,10 +427,7 @@ bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
 // 一次公式反算找最佳位姿：板居中、面积 25-30%、长边平行
 bool autoFindBestPose(int robot_handle,
                       std::shared_ptr<AICamera>& camera,
-                      const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                      const cv::Ptr<cv::aruco::CharucoBoard>& board,
-                   //   double tcp_aa[6],        // in/out: TCP 轴角 (mm,deg)
-                    //  const double tcp_offset[6],
+                      CharucoDetector& detector,
                       const std::string& save_dir,
                       AI_det_callback callback) {
 
@@ -588,17 +437,12 @@ bool autoFindBestPose(int robot_handle,
     const double Z_MAX_OFFSET = 600.0;
 
     // ---- 固定 rx=-180°, ry=0°（标定板水平），保留 rz ----
-    double flangeEulePos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];   
-    rotateFlangeToHorizon(robot_handle, flangeEulePos);    
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
+    double flangeEulePos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
+    rotateFlangeToHorizon(robot_handle, flangeEulePos);
+    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
 
     // 标定板总角点数
-    cv::Size board_sz =
-#if CV_VERSION_MAJOR >= 4 && CV_VERSION_MINOR >= 7
-        board->getChessboardSize();
-#else
-        board->checkboradSize;
-#endif
+    cv::Size board_sz = detector.getChessboardSize();
     int total_corners = (board_sz.width - 1) * (board_sz.height - 1);
 
 
@@ -618,7 +462,7 @@ bool autoFindBestPose(int robot_handle,
     double cur_score;
     int cur_codes;
     cv::Point2f cur_bc;
-    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, dictionary, board, false);
+    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
     //if (cur_codes > 0 && cur_codes < total_corners) 
     {
@@ -631,7 +475,7 @@ bool autoFindBestPose(int robot_handle,
                                     flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
 
         double bestFlangeEule[ROB_AXIS_NUM];
-        double best_s = tryCandidatePoses(robot_handle, camera, dictionary, board,
+        double best_s = tryCandidatePoses(robot_handle, camera, detector,
                                            false, z_candidates, bestFlangeEule);
         if (best_s > cur_score) {
             moveToFlangeEulePos(robot_handle, bestFlangeEule);            
@@ -645,14 +489,14 @@ bool autoFindBestPose(int robot_handle,
     // Phase 2: XY 搜索 — 码不全时找更好的水平位置
     // ================================================================
     
-    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, dictionary, board, false);
+    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
     //if (cur_codes > 0 && cur_codes < total_corners)
      {
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
         const double steps[] = {240, 120, 60};
-        searchXYSteps(robot_handle, camera, dictionary, board,
+        searchXYSteps(robot_handle, camera, detector,
                        steps, std::size(steps), tcp_aa);
     }
     frame = camera->captureOneFrame(1500);
@@ -686,7 +530,7 @@ bool autoFindBestPose(int robot_handle,
 
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
-        if (!detectCharucoCorners(frame, dictionary, board, corners, ids) || ids.size() < 4) {
+        if (!detector.detectCorners(frame, corners, ids) || ids.size() < 4) {
             if (iter == 0) {
                 std::cerr << "[autoFindBestPose] 初始帧检测失败" << std::endl;
                 return false;
@@ -714,7 +558,7 @@ bool autoFindBestPose(int robot_handle,
 
         // 在 0.2~1.0 比例下尝试 Z+rz 组合，选评分最高的
         double cur_s; int n; cv::Point2f bc;
-        std::tie(cur_s, n, bc) = evaluatePose(camera, dictionary, board, false);
+        std::tie(cur_s, n, bc) = evaluatePose(camera, detector, false);
 
         std::vector<std::array<double, 6>> zrz_candidates;
         for (double frac = 0.5; frac <= 1.0 + 1e-9; frac += 0.5)
@@ -722,7 +566,7 @@ bool autoFindBestPose(int robot_handle,
                                       flangeEulePos[3], flangeEulePos[4], bound_camera_angle(flangeEulePos[5] + dRz_deg * frac)});
 
         double bestFlangeEulePos[ROB_AXIS_NUM];
-        if (tryCandidatePoses(robot_handle, camera, dictionary, board,
+        if (tryCandidatePoses(robot_handle, camera, detector,
                                false, zrz_candidates, bestFlangeEulePos) > cur_s) {
             moveToFlangeEulePos(robot_handle, bestFlangeEulePos);            
             cv::Mat frame = camera->captureOneFrame(1500);            
@@ -742,7 +586,7 @@ bool autoFindBestPose(int robot_handle,
 
     std::cout << "[autoFindBestPose] Phase4: XY 精细搜索..." << std::endl;
     const double steps_fine[] = {60, 30, 15};    
-    searchXYSteps(robot_handle, camera, dictionary, board, steps_fine, std::size(steps_fine), tcp_aa);
+    searchXYSteps(robot_handle, camera, detector, steps_fine, std::size(steps_fine), tcp_aa);
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
@@ -816,9 +660,8 @@ static double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2
 static bool computeZValues(int robot_handle,
     std::shared_ptr<AICamera>& camera,
     int cameraToTcpEnd,
-    const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-    const cv::Ptr<cv::aruco::CharucoBoard>& board,    
-    double z_out_[3]) {           // 输出 3 个验证后的 Z 值 (mm)
+    CharucoDetector& detector,
+    double z_out_[3]) {
     double tcp_aa[ROB_AXIS_NUM], tcpEulePos[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM], outZ[3];
     //double orig_joint[ROB_AXIS_NUM];
     cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
@@ -843,8 +686,8 @@ static bool computeZValues(int robot_handle,
 
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
-    if (!detectCharucoCorners(frame, dictionary, board, corners, ids) || ids.size() < 4){
-        std::cout << "[computeZValues] ChArUco 初始图的角点过少" << std::endl;  
+    if (!detector.detectCorners(frame, corners, ids) || ids.size() < 4){
+        std::cout << "[computeZValues] ChArUco 初始图的角点过少" << std::endl;
         return false;
     }
 
@@ -904,7 +747,7 @@ static bool computeZValues(int robot_handle,
 
             std::vector<cv::Point2f> vc;
             std::vector<int> vi;
-            if (!detectCharucoCorners(vf, dictionary, board, vc, vi) || vi.size() < 4)
+            if (!detector.detectCorners(vf, vc, vi) || vi.size() < 4)
                 continue;
 
             float vx1 = std::numeric_limits<float>::max(), vx2 = -std::numeric_limits<float>::max();
@@ -1041,9 +884,7 @@ int reconnectRobotHandle(int old_handle, char* pchRobotIP){
 bool executeCollection(int robot_handle,
                        char* pchRobotIP,
                        std::shared_ptr<AICamera>& camera,
-                       //const double tcp_offset[6],
-                       const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                       const cv::Ptr<cv::aruco::CharucoBoard>& board,
+                       CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,
                        const std::string& save_dir,AI_det_callback callback) {
     int total = (int)candidates.size();
@@ -1101,7 +942,7 @@ bool executeCollection(int robot_handle,
 
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
-        if (!detectCharucoCorners(frame, dictionary, board, corners, ids))
+        if (!detector.detectCorners(frame, corners, ids))
             continue;
         if(ids.size() < 12)
            continue;
@@ -1184,17 +1025,11 @@ static bool loadImagesFromDisk(const std::string& save_dir,
 }
 
 static bool calibrateCameraFromDisk(const std::string& save_dir,
-                                     const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                                     const cv::Ptr<cv::aruco::CharucoBoard>& board,
+                                     CharucoDetector& detector,
                                      cv::Mat& camera_matrix,
                                      cv::Mat& dist_coeffs) {
 
-    std::vector<cv::Point3f> board_points;
-#if CV_VERSION_MAJOR >= 4 && CV_VERSION_MINOR >= 7
-    board_points = board->getChessboardCorners();
-#else
-    board_points = board->chessboardCorners;
-#endif
+    const auto& board_points = detector.getChessboardCorners3D();
 
     std::vector<std::string> img_files;
     cv::Size image_size;
@@ -1210,7 +1045,7 @@ static bool calibrateCameraFromDisk(const std::string& save_dir,
 
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
-        if (!detectCharucoCorners(img, dictionary, board, corners, ids))
+        if (!detector.detectCorners(img, corners, ids))
             continue;
 
         std::vector<cv::Point3f> pts3;
@@ -1389,21 +1224,34 @@ bool estimateHandEyeTrans(
     return true;
 }
 
+} // anonymous namespace
+
+
+
 // ============================================================
-// Phase 5b: 手眼标定（从目录读取图像 + 位姿）
+// 公开 API
 // ============================================================
 
-static bool calibrateHandEyeFromDisk(const std::string& save_dir,
-                                      cv::Mat& camera_matrix,
-                                      const cv::Mat& dist_coeffs,
-                                      const cv::Ptr<cv::aruco::CharucoBoard>& board,
-                                      const cv::Ptr<cv::aruco::Dictionary>& dictionary,
-                                      CalibrationResult& result) {
+// ============================================================
+// 公开 API
+// ============================================================
+
+bool calibrateHandEyeFromDisk(
+    const std::string& save_dir,
+    cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    const CharucoBoardConfig& board_config,
+    CalibrationResult& result) {
+
+    CharucoDetector detector(board_config);
+    detector.setCameraParams(camera_matrix, dist_coeffs);
+
     // 读取法兰位姿
     std::string pos_file = save_dir + "/rob_pos.csv";
     std::ifstream pf(pos_file);
     if (!pf.is_open()) {
-        std::cerr << "[autoCalib] 无法打开 " << pos_file << std::endl;
+        result.message = "无法打开 " + pos_file;
+        std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
     }
     std::vector<cv::Mat> flange_poses;
@@ -1428,121 +1276,28 @@ static bool calibrateHandEyeFromDisk(const std::string& save_dir,
 
     size_t n = std::min(img_files.size(), flange_poses.size());
     std::vector<cv::Mat> robot_poses, camera_poses;
-    // camera_matrix = camera_matrix * 2; // scale for fine-resolution
-    // camera_matrix.at<double>(2, 2) = 1;
 
     for (size_t i = 0; i < n; i++) {
         cv::Mat img = cv::imread(img_files[i]);
         if (img.empty()) continue;
-        // cv::resize(img, img, cv::Size(), 2.0, 2.0, cv::INTER_LINEAR); // scale for fine-resolution
         cv::Mat rvec, tvec;
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
 
-        if (!detectCharucoPose(img, dictionary, board,
-                                camera_matrix, dist_coeffs,
-                                rvec, tvec, corners, ids, 16))
+        if (!detector.detectPose(img, rvec, tvec, corners, ids, 16))
             continue;
 
         robot_poses.push_back(flange_poses[i]);
         camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
     }
-    bool ret = estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
-    
-    ret = estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);    
-    return ret;
-}
-
-} // anonymous namespace
-
-// ============================================================
-// 辅助函数（全局可见）
-// ============================================================
-
-bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint){
-    double ref_j[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) != sucess)
-            return false;
-    if (cr_kineInverse((RobotHandle)robot_handle, flangeAnglePos, ref_j, joint) != sucess)
-            return false;
+    estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
+    estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
     return true;
 }
 
-bool convertTcpAxisPos2FlangPos(int robotHandle, double *tcpAnglePos, double *flangeAnglePos){
-    TCPMsg tcpMsgList;
-    if( cr_get_currentTCPmsg(robotHandle, &tcpMsgList) == sucess )   {
-      if(cr_TcpToFlangePose(tcpAnglePos, tcpMsgList.tcpOffset, flangeAnglePos) == sucess)
-        return true;
-    }
-    return false;
-}
-
-bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double *joint){
-     double flangeAxisPos[ROB_AXIS_NUM];
-     if (cr_Eule2AxisAngle(flangeEulePos, flangeAxisPos) != sucess)
-            return false;    
-     return convertFlangeAxisPos2Joint(robot_handle, flangeAxisPos, joint);
-}
-
-bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos){
-    double flangeAxisPos[ROB_AXIS_NUM];
-    if( convertTcpAxisPos2FlangPos(robot_handle, tcpAxisPos, flangeAxisPos) ){
-      cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
-      return true;
-    }
-    return false;
-}
-
-bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos){
-   double joint[6];
-   if(convertFlangeAxisPos2Joint(robot_handle, axisAnglePos, joint)){
-      moveToJointPos(robot_handle, (double*)joint);
-      return true;
-   }
-   return false;
-}
-
-bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos){    
-    double flangeAxisAnglePos[6];
-    if(convertTcpAxisPos2FlangPos(robotHandle, tcpAnglePos, flangeAxisAnglePos) )
-       return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
-    return false;
-}
-
-bool moveToFlangeEulePos(int robotHandle, double *flangeEulePos){
-   double flangeAxisAnglePos[6];
-   cr_Eule2AxisAngle(flangeEulePos, flangeAxisAnglePos);
-   return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
-   //return true;
-}
-
-
-// ============================================================
-// 公开 API
-// ============================================================
-
-bool calibrateHandEyeFromDisk(
-    const std::string& save_dir,
-    cv::Mat& camera_matrix,
-    const cv::Mat& dist_coeffs,
-    const CharucoBoardConfig& board_config,
-    CalibrationResult& result) {
-
-    cv::Ptr<cv::aruco::Dictionary> dictionary;
-    cv::Ptr<cv::aruco::CharucoBoard> board;
-    if (!createCharucoBoard(board_config, dictionary, board)) {
-        result.message = "创建 ChArUco 标定板失败";
-        return false;
-    }
-
-    return calibrateHandEyeFromDisk(save_dir, camera_matrix, dist_coeffs,
-                                     board, dictionary, result);
-}
-
 bool autoEyeInHandCharucoCalibration(
-    int robot_handle,    
+    int robot_handle,
     char* pchRobotIP,
-   // const double tcp_offset[6],
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
@@ -1557,31 +1312,23 @@ bool autoEyeInHandCharucoCalibration(
 
     std::cout << "\n========== 自动手眼标定开始 ==========" << std::endl;
 
-    cv::Ptr<cv::aruco::Dictionary> dictionary;
-    cv::Ptr<cv::aruco::CharucoBoard> board;
-    if (!createCharucoBoard(board_config, dictionary, board)) {
-        result.message = "创建 ChArUco 标定板失败";
+    CharucoDetector detector(board_config);
+
+    // ---- Phase 1b: 自动寻找最佳位姿 ----
+    double tcp_aa[ROB_AXIS_NUM];   
+    rotateFlangeToHorizon(robot_handle, NULL);
+    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
+    if (!autoFindBestPose(robot_handle, camera, detector,
+                            save_dir, callback)) {
+        std::cerr << "[autoCalib] 自动寻找最佳位姿失败" << std::endl;
         return false;
     }
 
-    // ---- Phase 1b: 自动寻找最佳位姿 ----
-    double tcp_aa[ROB_AXIS_NUM];
-    //std::copy(init_tcp_pose, init_tcp_pose + ROB_AXIS_NUM, tcp_aa);
-    rotateFlangeToHorizon(robot_handle, NULL);    
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
-    std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
-    if (!autoFindBestPose(robot_handle, camera, dictionary, board,
-                            save_dir,callback)) { // tcp_offset,  tcp_aa,
-        std::cerr << "[autoCalib] 自动寻找最佳位姿失败，使用初始位姿" << std::endl;
-        return false;
-    }    
-
-    // ---- Phase 2: IK 参考关节角 ----    
-    
-    // ---- 计算动态 Z 值（标定板边长占图像 20%, 40%, 60%） ----
-    double z_values[3];// = {flangeEulePos[2] - 100.0, flangeEulePos[2]+100, flangeEulePos[2] + 300.0};
+    // ---- Phase 2: 计算动态 Z 值 ----
+    double z_values[3];
     {
-        if (computeZValues(robot_handle, camera, cameraToTcpEnd, dictionary, board, z_values)) {    
+        if (computeZValues(robot_handle, camera, cameraToTcpEnd, detector, z_values)) {
             std::cout << "[autoCalib] 动态 Z 值: "
                       << z_values[0] << ", " << z_values[1] << ", " << z_values[2] << std::endl;
         } else {
@@ -1597,9 +1344,9 @@ bool autoEyeInHandCharucoCalibration(
         return false;
     }
 
-    // ---- Phase 4: 逐点运动 + 采集（保存到磁盘） ----
-    if (!executeCollection(robot_handle, pchRobotIP, camera, //tcp_offset,
-                            dictionary, board, candidates, save_dir,callback)) {
+    // ---- Phase 4: 逐点运动 + 采集 ----
+    if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
+                            candidates, save_dir, callback)) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
@@ -1609,7 +1356,7 @@ bool autoEyeInHandCharucoCalibration(
     cv::Mat K, D;
     if (camera_matrix.empty() || dist_coeffs.empty()) {
         std::cout << "[autoCalib] 相机内参未知，从磁盘标定..." << std::endl;
-        if (!calibrateCameraFromDisk(save_dir, dictionary, board, K, D)) {
+        if (!calibrateCameraFromDisk(save_dir, detector, K, D)) {
             result.message = "相机内参标定失败";
             std::cerr << "[autoCalib] " << result.message << std::endl;
             return false;
@@ -1620,7 +1367,7 @@ bool autoEyeInHandCharucoCalibration(
         std::cout << "[autoCalib] 使用已有相机内参" << std::endl;
     }
 
-    if (!calibrateHandEyeFromDisk(save_dir, K, D, board, dictionary, result))
+    if (!calibrateHandEyeFromDisk(save_dir, K, D, board_config, result))
         return false;
 
     K.copyTo(camera_matrix);
