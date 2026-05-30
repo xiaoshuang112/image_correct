@@ -463,25 +463,29 @@ int  open_camera(){
     // 读取相机内参
     auto m = g_camera->getCameraIntrinsics(g_cfg.cam_width, g_cfg.cam_height);        
 
-    // 保存相机参数到文件
-    cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
-    cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
-    cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
-
-    camera_matrix.at<double>(0, 0) = m[0][0];
-    camera_matrix.at<double>(1, 1) = m[1][1];
-    camera_matrix.at<double>(2, 2) = 1.0;
-
-    camera_matrix.at<double>(0, 2) = m[0][2];
-    camera_matrix.at<double>(1, 2) = m[1][2];
-
-    for (size_t i = 0; i < m[3].size(); i++)
+    if (!m.empty())
     {
-        dist_coeffs.at<double>(i, 0) = m[3][i];
+        // 保存相机参数到文件
+        cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
+        cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
+        cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+
+        camera_matrix.at<double>(0, 0) = m[0][0];
+        camera_matrix.at<double>(1, 1) = m[1][1];
+        camera_matrix.at<double>(2, 2) = 1.0;
+
+        camera_matrix.at<double>(0, 2) = m[0][2];
+        camera_matrix.at<double>(1, 2) = m[1][2];
+
+        for (size_t i = 0; i < m[3].size(); i++)
+        {
+            dist_coeffs.at<double>(i, 0) = m[3][i];
+        }
+        
+        out << "camera_matrix" << camera_matrix;
+        out << "distortion_coefficients" << dist_coeffs;
     }
     
-    out << "camera_matrix" << camera_matrix;
-    out << "distortion_coefficients" << dist_coeffs;
 
     return 0;
 }
@@ -583,9 +587,10 @@ int main() {
 
     // 初始化机器人
     char *pchRobotIp = "192.168.6.6";
-    CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
-    if (result != sucess)
-        return -1;
+    CRresult result;
+    // CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
+    // if (result != sucess)
+    //     return -1;
 
     // 使用默认配置
 
@@ -595,7 +600,6 @@ int main() {
 #else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
 #endif
-    // 打开相机   
     
     while (true) {
         display_menu();

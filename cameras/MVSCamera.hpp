@@ -39,6 +39,7 @@ protected:
 
 private:
     bool m_isOpened = false;
+    bool m_isGrabbing = false;
     void* m_handle = nullptr;
     unsigned char* m_pData = nullptr;
     unsigned int m_nDataSize = 0;

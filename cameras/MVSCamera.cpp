@@ -15,9 +15,9 @@ unsigned int ipToInt(const std::string& ip) {
     in_addr ip_addr;
     if (inet_pton(AF_INET, ip.c_str(), &ip_addr) != 1) {
         std::cerr << "Invalid IP address" << std::endl;
-        return -1; // 或者其他错误处理方式
+        return -1;
     }
-    return ntohl(ip_addr.s_addr); // ntohl 用于转换回主机字节顺序（如果有需要的话）
+    return ntohl(ip_addr.s_addr);
 }
 
 bool MVSCamera::open() {
@@ -39,7 +39,6 @@ bool MVSCamera::open() {
     }
 
     int nIndex = -1;
-    // 如果配置了序列号，查找匹配设备
     if (!m_config.cam_sn.empty()) {
         bool found = false;
         for (unsigned int i = 0; i < stDeviceList.nDeviceNum; i++) {
@@ -56,7 +55,7 @@ bool MVSCamera::open() {
             std::cerr << "[MVSCamera] Camera with SN '" << m_config.cam_sn << "' not found, using first device" << std::endl;
         }
     }
-   
+
     if (!m_config.cam_ip.empty()) {
         unsigned int cfg_ip = ipToInt(m_config.cam_ip);
         bool found = false;
@@ -70,13 +69,13 @@ bool MVSCamera::open() {
         if (!found) {
             std::cerr << "[MVSCamera] Camera with SN '" << m_config.cam_sn << "' not found, using first device" << std::endl;
         }
-    }    
+    }
 
     if (nIndex<0)
     {
         return false;
     }
-    
+
 
     nRet = MV_CC_CreateHandle(&m_handle, stDeviceList.pDeviceInfo[nIndex]);
     if (MV_OK != nRet) {
@@ -94,16 +93,15 @@ bool MVSCamera::open() {
         return false;
     }
 
-    // 设置触发模式为 off（连续采集）
+    // 在取流前完成所有参数配置，取流后这些寄存器会变为只读
     MV_CC_SetEnumValue(m_handle, "TriggerMode", 0);
+    MV_CC_SetEnumValue(m_handle, "ExposureAuto", 0);
 
-    // 设置分辨率
     if (m_config.cam_width > 0 && m_config.cam_height > 0) {
         MV_CC_SetIntValueEx(m_handle, "Width", m_config.cam_width);
         MV_CC_SetIntValueEx(m_handle, "Height", m_config.cam_height);
     }
 
-    // 获取实际分辨率
     MVCC_INTVALUE_EX stWidth;
     if (MV_OK == MV_CC_GetIntValueEx(m_handle, "Width", &stWidth))
         m_width = (int)stWidth.nCurValue;
@@ -116,7 +114,6 @@ bool MVSCamera::open() {
         m_height = m_config.cam_height > 0 ? m_config.cam_height : 800;
     }
 
-    // 开始取流
     nRet = MV_CC_StartGrabbing(m_handle);
     if (MV_OK != nRet) {
         std::cerr << "[MVSCamera] MV_CC_StartGrabbing fail! nRet [0x" << std::hex << nRet << "]" << std::endl;
@@ -127,10 +124,10 @@ bool MVSCamera::open() {
         return false;
     }
 
-    // 分配图像缓存
     m_nDataSize = m_width * m_height * 3;
     m_pData = new unsigned char[m_nDataSize];
 
+    m_isGrabbing = true;
     m_isOpened = true;
     std::cout << "[MVSCamera] opened, resolution: " << m_width << "x" << m_height << std::endl;
     return true;
@@ -145,6 +142,7 @@ void MVSCamera::close() {
         MV_CC_DestroyHandle(m_handle);
         m_handle = nullptr;
     }
+    m_isGrabbing = false;
     MV_CC_Finalize();
 
     if (m_pData) {
@@ -184,11 +182,27 @@ int MVSCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
 
 bool MVSCamera::setColorExposureTime(int exposureUs) {
     if (!m_isOpened || !m_handle) return false;
+
+    bool wasGrabbing = m_isGrabbing;
+    if (wasGrabbing) {
+        MV_CC_StopGrabbing(m_handle);
+        m_isGrabbing = false;
+    }
+
     int nRet = MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)exposureUs);
+
+    if (wasGrabbing) {
+        MV_CC_StartGrabbing(m_handle);
+        m_isGrabbing = true;
+    }
+
     if (MV_OK == nRet) {
         m_exposureCached = exposureUs;
         return true;
     }
+
+    std::cerr << "[MVSCamera] setColorExposureTime(" << exposureUs << ") fail! nRet [0x"
+              << std::hex << nRet << "]" << std::endl;
     return false;
 }
 
@@ -202,12 +216,27 @@ int MVSCamera::getColorExposureTime() {
 
 bool MVSCamera::setAutoExposure(bool enable) {
     if (!m_isOpened || !m_handle) return false;
-    unsigned int mode = enable ? 2 : 0; // Continuous : Off
+
+    bool wasGrabbing = m_isGrabbing;
+    if (wasGrabbing) {
+        MV_CC_StopGrabbing(m_handle);
+        m_isGrabbing = false;
+    }
+
+    unsigned int mode = enable ? 2 : 0;
     int nRet = MV_CC_SetEnumValue(m_handle, "ExposureAuto", mode);
+
+    if (wasGrabbing) {
+        MV_CC_StartGrabbing(m_handle);
+        m_isGrabbing = true;
+    }
+
     if (MV_OK == nRet) {
         m_autoExposureCached = enable;
         return true;
     }
+    std::cerr << "[MVSCamera] setAutoExposure(" << enable << ") fail! nRet [0x"
+              << std::hex << nRet << "]" << std::endl;
     return false;
 }
 
@@ -285,18 +314,31 @@ std::vector<cv::Mat> MVSCamera::captureMultiExposureImagesImpl(const std::vector
     std::vector<cv::Mat> images;
     if (!m_isOpened) return images;
 
+    bool wasGrabbing = m_isGrabbing;
+    if (wasGrabbing) {
+        MV_CC_StopGrabbing(m_handle);
+        m_isGrabbing = false;
+    }
+
     bool wasAuto = getAutoExposure();
-    setAutoExposure(false);
+    MV_CC_SetEnumValue(m_handle, "ExposureAuto", 0);
     int prevExposure = getColorExposureTime();
 
     for (int exposure : exposureValuesUs) {
-        setColorExposureTime(exposure);
+        MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)exposure);
+        MV_CC_StartGrabbing(m_handle);
         cv::Mat frame = captureOneFrame(500);
+        MV_CC_StopGrabbing(m_handle);
         if (!frame.empty()) images.push_back(frame);
     }
 
-    setColorExposureTime(prevExposure);
-    if (wasAuto) setAutoExposure(true);
+    MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)prevExposure);
+    if (wasAuto) MV_CC_SetEnumValue(m_handle, "ExposureAuto", 2);
+
+    if (wasGrabbing) {
+        MV_CC_StartGrabbing(m_handle);
+        m_isGrabbing = true;
+    }
     return images;
 }
 
