@@ -130,6 +130,16 @@ bool MVSCamera::open() {
     m_isGrabbing = true;
     m_isOpened = true;
     std::cout << "[MVSCamera] opened, resolution: " << m_width << "x" << m_height << std::endl;
+
+
+    // 打开相机后，立即设置心跳超时时间为更大的值（单位：毫秒）
+    // 60000 = 60秒，足够你在断点处停留思考
+    nRet = MV_CC_SetIntValue(m_handle, "GevHeartbeatTimeout", 60000);
+    if (nRet != MV_OK)
+    {
+        printf("Warning: Set GevHeartbeatTimeout fail nRet [0x%x]!\n", nRet);
+    }
+
     return true;
 }
 
