@@ -465,7 +465,6 @@ int  open_camera(){
 
     if (!m.empty())
     {
-
         // 保存相机参数到文件
         cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
         cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
@@ -485,7 +484,6 @@ int  open_camera(){
         
         out << "camera_matrix" << camera_matrix;
         out << "distortion_coefficients" << dist_coeffs;
-
     }
     
 
@@ -589,12 +587,13 @@ int main() {
 
     // 初始化机器人
     char *pchRobotIp = "192.168.6.6";
-    CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
-    if (result != sucess){
-        std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
-        return -1;
-    }
 
+    CRresult result;
+    // result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
+    // if (result != sucess){
+    //     std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
+    //     return -1;
+    // }
     // 使用默认配置
 
 #ifdef useORB
@@ -603,7 +602,6 @@ int main() {
 #else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
 #endif
-    // 打开相机   
     
     while (true) {
         display_menu();

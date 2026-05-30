@@ -93,8 +93,8 @@ int CircleSampler::captureExposures(const std::string& prefix) {
     }
 
     // Disable auto exposure
-    m_camera->setAutoExposure(false);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    // m_camera->setAutoExposure(false);
+    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     int n = m_config.num_exposures;
     if (n < 2) n = 2;
@@ -114,7 +114,7 @@ int CircleSampler::captureExposures(const std::string& prefix) {
     for (int i = 0; i < n; i++) {
         int exp = exp_values[i];
 
-        if (!m_camera->setColorExposureTime(exp)) {
+        if (!m_camera->setColorExposureTime(5000)) {
             std::cerr << "[Sampler] Set exposure " << exp << " us failed" << std::endl;
             continue;
         }
@@ -225,10 +225,10 @@ int CircleSampler::run() {
                           << "°  pos=(" << std::fixed << std::setprecision(1)
                           << pose[0] << "," << pose[1] << "," << pose[2] << ")" << std::endl;
 
-                if ( sucess !=moveToFlangeAxisPos(pose)) {
-                    std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
-                    continue;
-                }
+                // if ( sucess !=moveToFlangeAxisPos(pose)) {
+                //     std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
+                //     continue;
+                // }
 
                 std::ostringstream prefix;
                 prefix << sessionDir << "/screw_"
@@ -240,11 +240,11 @@ int CircleSampler::run() {
                        << "_p"
                        << std::setw(3) << std::setfill('0') << theta;
 
-                // int captured = captureExposures(prefix.str());
-                // totalImages += captured;
-                // std::cout << "  Captured " << captured << "/"
-                //           << m_config.num_exposures << " exposures" << std::endl;
-                 totalImages += captureGains(prefix.str());
+                int captured = captureExposures(prefix.str());
+                totalImages += captured;
+                std::cout << "  Captured " << captured << "/"
+                          << m_config.num_exposures << " exposures" << std::endl;
+                //  totalImages += captureGains(prefix.str());
             }
         }
 
