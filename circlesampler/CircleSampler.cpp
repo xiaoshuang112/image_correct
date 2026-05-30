@@ -9,44 +9,9 @@
 #include <sys/stat.h>
 #include "robotapi.h"
 #include "basestruct.h"
+#include "utils/robot_util.hpp"
 
 extern RobotHandle robotHandle;
-
-// ============================================================
-// 内部：运动到目标关节角
-// ============================================================
-static bool moveToJointPos(const double joint[6]) {
-    double pose[6] = {0, 0, 0, 0, 0, 0};
-    cr_get_jointActualPos(robotHandle, pose);
-
-    PointControlParaSimple simple;
-    for (int i = 0; i < ROB_AXIS_NUM; i++) {
-        simple.pose[i] = pose[i];
-        simple.jointpos[i] = joint[i];
-        simple.tcpOffset[i] = 0;
-        simple.coordinatePose[i] = 0;
-        simple.speed[i] = 30;
-        simple.acc[i] = 30;
-    }
-    simple.coordinateType = jointCoordinate;
-    simple.pointTransType = pointTransStop;
-    simple.motiontriggerMode = MovetriggerbyOnlyRpc;
-
-    PointControlPara para;
-    CRresult ret = cr_move_pointControlPara_transfer(robotHandle, simple, &para);
-    if (ret != sucess) {
-        std::cerr << "[CircleSampler] cr_move_pointControlPara_transfer failed: "
-                  << ret << std::endl;
-        return false;
-    }
-    ret = cr_move_joint(robotHandle, para, TRUE);
-    if (ret != sucess) {
-        std::cerr << "[CircleSampler] cr_move_joint failed: " << ret << std::endl;
-        return false;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    return true;
-}
 
 // ============================================================
 // CircleSampler 实现
@@ -59,13 +24,13 @@ CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const ScrewSampl
     m_T_f_c = config.T_flange_camera;
 }
 
-bool CircleSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
+CRresult CircleSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
     double ref_j[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
     if (cr_get_jointActualPos(robotHandle, ref_j) != sucess)
-        return false;
+        return error;
     if (cr_kineInverse(robotHandle, axisAnglePos, ref_j, joint) != sucess)
-        return false;
-    return moveToJointPos(joint);
+        return error;
+    return moveToJointPos(robotHandle, joint);
 }
 
 bool CircleSampler::computeLookAtPose(double cx, double cy, double cz,
@@ -120,44 +85,97 @@ bool CircleSampler::computeLookAtPose(double cx, double cy, double cz,
 int CircleSampler::captureExposures(const std::string& prefix) {
     int count = 0;
 
-    int minGain = 0, maxGain = 255;
-    if (!m_camera->getGainRange(minGain, maxGain) || maxGain <= minGain) {
-        std::cerr << "[CircleSampler] Failed to get gain range, using [0, 255]" << std::endl;
-        minGain = 0; maxGain = 255;
+    // Query exposure time range
+    int minExp = 0, maxExp = 1000000;
+    if (!m_camera->getExposureRange(minExp, maxExp) || maxExp <= minExp) {
+        std::cerr << "[Sampler] Failed to get exposure range, using [100, 100000] us" << std::endl;
+        minExp = 100; maxExp = 100000;
     }
+
+    // Disable auto exposure
+    m_camera->setAutoExposure(false);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     int n = m_config.num_exposures;
     if (n < 2) n = 2;
 
-    int gainMax = minGain + (int)(0.45 * (maxGain - minGain));
-
-    std::vector<int> gain_values(n);
+    // Generate logarithmically spaced exposure values to cover a wide range
+    std::vector<int> exp_values(n);
+    double logMin = std::log10(minExp + 1.0);
+    double logMax = std::log10(maxExp);
     for (int i = 0; i < n; i++) {
-        gain_values[i] = minGain + (gainMax - minGain) * i / (n - 1);
+        double logVal = logMin + (logMax - logMin) * i / (n - 1);
+        exp_values[i] = (int)std::round(std::pow(10.0, logVal));
     }
 
-    std::cout << "  Gain range: " << minGain << " ~ " << maxGain << ", using "
-              << n << " values: " << gain_values.front() << " ~ " << gain_values.back() << std::endl;
-
-    m_camera->setAutoExposure(false);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    std::cout << "  Exposure range: " << minExp << " ~ " << maxExp << " us, using "
+              << n << " log-spaced values: " << exp_values.front() << " ~ " << exp_values.back() << " us" << std::endl;
 
     for (int i = 0; i < n; i++) {
-        int gain = gain_values[i];
-        if (!m_camera->setColorGain(gain)) {
-            std::cerr << "[CircleSampler] Set gain " << gain << " failed" << std::endl;
+        int exp = exp_values[i];
+
+        if (!m_camera->setColorExposureTime(exp)) {
+            std::cerr << "[Sampler] Set exposure " << exp << " us failed" << std::endl;
             continue;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
 
         cv::Mat frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
         if (frame.empty()) {
-            std::cerr << "[CircleSampler] Empty frame at gain " << gain << std::endl;
+            std::cerr << "[Sampler] Empty frame at exposure " << exp << " us" << std::endl;
+            continue;
+        }
+
+        // Build filename: prefix_{exposure_idx}.jpg
+        std::ostringstream filename;
+        filename << prefix << "_" << i << ".jpg";
+
+        cv::imwrite(filename.str(), frame);
+        count++;
+    }
+
+    return count;
+}
+
+int CircleSampler::captureGains(const std::string& prefix) {
+    int count = 0;
+
+    // Query gain range
+    int minGain = 0, maxGain = 24;
+    if (!m_camera->getGainRange(minGain, maxGain) || maxGain <= minGain) {
+        std::cerr << "[Sampler] Failed to get gain range, using [0, 24] dB" << std::endl;
+        minGain = 0; maxGain = 24;
+    }
+
+    int n = m_config.num_exposures;
+    if (n < 2) n = 2;
+
+    // Generate linearly spaced gain values
+    std::vector<int> gain_values(n);
+    for (int i = 0; i < n; i++) {
+        gain_values[i] = minGain + (maxGain - minGain) * i / (n - 1);
+    }
+
+    std::cout << "  Gain range: " << minGain << " ~ " << maxGain << " dB, using "
+              << n << " linearly spaced values: " << gain_values.front() << " ~ " << gain_values.back() << " dB" << std::endl;
+
+    for (int i = 0; i < n; i++) {
+        int gain = gain_values[i];
+
+        if (!m_camera->setColorGain(gain)) {
+            std::cerr << "[Sampler] Set gain " << gain << " dB failed" << std::endl;
+            continue;
+        }
+
+        cv::Mat frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
+        if (frame.empty()) {
+            std::cerr << "[Sampler] Empty frame at gain " << gain << " dB" << std::endl;
             continue;
         }
 
         std::ostringstream filename;
-        filename << prefix << "_" << i << ".jpg";
+        filename << prefix << "_gain_" << i << ".jpg";
+
         cv::imwrite(filename.str(), frame);
         count++;
     }
@@ -207,7 +225,7 @@ int CircleSampler::run() {
                           << "°  pos=(" << std::fixed << std::setprecision(1)
                           << pose[0] << "," << pose[1] << "," << pose[2] << ")" << std::endl;
 
-                if (!moveToFlangeAxisPos(pose)) {
+                if ( sucess !=moveToFlangeAxisPos(pose)) {
                     std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
                     continue;
                 }
@@ -222,11 +240,11 @@ int CircleSampler::run() {
                        << "_p"
                        << std::setw(3) << std::setfill('0') << theta;
 
-                int captured = captureExposures(prefix.str());
-                totalImages += captured;
-
-                std::cout << "  Captured " << captured << "/"
-                          << m_config.num_exposures << " exposures" << std::endl;
+                // int captured = captureExposures(prefix.str());
+                // totalImages += captured;
+                // std::cout << "  Captured " << captured << "/"
+                //           << m_config.num_exposures << " exposures" << std::endl;
+                 totalImages += captureGains(prefix.str());
             }
         }
 

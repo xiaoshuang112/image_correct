@@ -111,7 +111,7 @@ SET(SRC_LISTS
 charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp
     calibration.cpp exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
-    utils/putText.cpp utils/Util.cpp utils/Texts.cpp
+    utils/putText.cpp utils/Util.cpp utils/Texts.cpp utils/robot_util.cpp
 )
 
 SET(SRC_LIBS 
@@ -130,7 +130,8 @@ endif()
 if(useOAK)
     add_definitions(-DuseOAK)
     list(APPEND SRC_LISTS
-        cameras/OAKCamera.cpp
+       cameras/OAKCamera.cpp
+        # cameras/OrbbecCamera.cpp
     )
     list(APPEND SRC_LIBS
         depthai-core

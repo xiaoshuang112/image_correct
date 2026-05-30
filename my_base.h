@@ -12,12 +12,12 @@
 #ifdef useMVS
 struct CONFIG {
     std::string cam_sn = "";
-    std::string cam_ip = "192.168.1.11";
+    std::string cam_ip = "192.168.1.12";
     uint16_t cam_port = 8090;
 
     // 4056 x 3040
-    int cam_width = 2448;
-    int cam_height = 2048;
+    int cam_width = 1280;
+    int cam_height = 1024;
     int fps = 15;
     bool enableDepth = false;
     int grid_num_heng = 9; // # 棋盘格 横向格子数

@@ -26,6 +26,8 @@
 #include <iomanip>
 #include <filesystem>
 
+#include "utils/robot_util.hpp"
+
 
 std::string g_save_dir = "";
 AI_det_callback g_callback = nullptr;
@@ -50,100 +52,6 @@ struct CapturedFrame {
 // 内部工具函数
 // ============================================================
 
-// 运动到目标关节角（等效 goto_jointpos）
-CRresult moveToJointPos(int robot_handle, const double joint[6]) {
-    double pose[6] = {0, 0, 0, 0, 0, 0};
-    cr_get_jointActualPos(robot_handle, pose);
-    PointControlParaSimple simple;
-    for (int i = 0; i < ROB_AXIS_NUM; i++) {
-        simple.pose[i] = pose[i];
-        simple.jointpos[i] = joint[i];
-        simple.tcpOffset[i] = 0;
-        simple.coordinatePose[i] = 0;
-        simple.speed[i] = 30;
-        simple.acc[i] = 30;
-    }
-    simple.coordinateType = jointCoordinate;
-    simple.pointTransType = pointTransStop;
-    simple.motiontriggerMode = MovetriggerbyOnlyRpc;
-
-    PointControlPara para;
-    CRresult ret = cr_move_pointControlPara_transfer(
-        (RobotHandle)robot_handle, simple, &para);
-    if (ret != sucess) {
-        std::cerr << "[autoCalib] cr_move_pointControlPara_transfer failed: "
-                  << ret << std::endl;
-        return ret;
-    }
-    ret = cr_move_joint((RobotHandle)robot_handle, para, TRUE);
-    if (ret != sucess) {
-        std::cerr << "[autoCalib] cr_move_joint failed: " << ret << std::endl;
-        return ret;
-    }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-    return ret;
-}
-
-// ============================================================
-// 辅助函数（全局可见）
-// ============================================================
-
-bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint){
-    double ref_j[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) != sucess)
-            return false;
-    if (cr_kineInverse((RobotHandle)robot_handle, flangeAnglePos, ref_j, joint) != sucess)
-            return false;
-    return true;
-}
-
-bool convertTcpAxisPos2FlangPos(int robotHandle, double *tcpAnglePos, double *flangeAnglePos){
-    TCPMsg tcpMsgList;
-    if( cr_get_currentTCPmsg(robotHandle, &tcpMsgList) == sucess )   {
-      if(cr_TcpToFlangePose(tcpAnglePos, tcpMsgList.tcpOffset, flangeAnglePos) == sucess)
-        return true;
-    }
-    return false;
-}
-
-bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double *joint){
-     double flangeAxisPos[ROB_AXIS_NUM];
-     if (cr_Eule2AxisAngle(flangeEulePos, flangeAxisPos) != sucess)
-            return false;    
-     return convertFlangeAxisPos2Joint(robot_handle, flangeAxisPos, joint);
-}
-
-bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos){
-    double flangeAxisPos[ROB_AXIS_NUM];
-    if( convertTcpAxisPos2FlangPos(robot_handle, tcpAxisPos, flangeAxisPos) ){
-      cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
-      return true;
-    }
-    return false;
-}
-
-bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos){
-   double joint[6];
-   if(convertFlangeAxisPos2Joint(robot_handle, axisAnglePos, joint)){
-      moveToJointPos(robot_handle, (double*)joint);
-      return true;
-   }
-   return false;
-}
-
-bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos){    
-    double flangeAxisAnglePos[6];
-    if(convertTcpAxisPos2FlangPos(robotHandle, tcpAnglePos, flangeAxisAnglePos) )
-       return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
-    return false;
-}
-
-bool moveToFlangeEulePos(int robotHandle, double *flangeEulePos){
-   double flangeAxisAnglePos[6];
-   cr_Eule2AxisAngle(flangeEulePos, flangeAxisAnglePos);
-   return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
-   //return true;
-}
 
 
 
@@ -846,11 +754,7 @@ bool generateCandidates(int robot_handle,
         euler[4] = flangeEulePos[4] + dry;
         euler[5] = flangeEulePos[5] + drz;
 
-        if(convertFlangeOulePos2Joint(robot_handle, euler, joint)){        
-            // moveToFlangeEulePos(robot_handle, euler);
-            // frame = camera->captureOneFrame(1500);
-            // moveToJointPos(robot_handle, joint);
-            // frame = camera->captureOneFrame(1500);
+        if(convertFlangeOulePos2Joint(robot_handle, euler, joint)){                  
             PoseCandidate cand;
             std::copy(joint, joint + 6, cand.joint);
             candidates.push_back(cand);
@@ -869,11 +773,13 @@ int reconnectRobotHandle(int old_handle, char* pchRobotIP){
     int waitingTime = 120000, try_time=0;
     while(result != sucess){
         
-       std::cout << "\n[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect\n" << std::flush;
+       std::cout << "[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect\n" << std::flush;
        std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));          
        result = cr_create_robot(&old_handle, pchRobotIP, 2323, "123");  // 机械臂连接        
        try_time ++;
-    }
+    }    
+    if( result == sucess)
+        std::cout << "[reconnectRobotHandle] success!!\n" << std::flush;
     return old_handle;
 }
 
@@ -921,10 +827,7 @@ bool executeCollection(int robot_handle,
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
         }
         CRresult  ret_move = moveToJointPos(robot_handle, candidates[i].joint);        
-        if(sucess != ret_move){
-        //    double init_tcp_pose[6] = {-753.377,113.607,178.971, 6.5796, -4.09077, -78.0137}, euler_fixed[6];  
-        //     moveToTcpAxisPos(robot_handle, init_tcp_pose);
-        //     cv::Mat frame = camera->captureOneFrame(1000);
+        if(sucess != ret_move){       
             //int waitingTime = 60000;
             if(operate_timeout == ret_move){   
                  std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;       
@@ -1225,12 +1128,6 @@ bool estimateHandEyeTrans(
 }
 
 } // anonymous namespace
-
-
-
-// ============================================================
-// 公开 API
-// ============================================================
 
 // ============================================================
 // 公开 API

@@ -463,25 +463,31 @@ int  open_camera(){
     // 读取相机内参
     auto m = g_camera->getCameraIntrinsics(g_cfg.cam_width, g_cfg.cam_height);        
 
-    // 保存相机参数到文件
-    cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
-    cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
-    cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
-
-    camera_matrix.at<double>(0, 0) = m[0][0];
-    camera_matrix.at<double>(1, 1) = m[1][1];
-    camera_matrix.at<double>(2, 2) = 1.0;
-
-    camera_matrix.at<double>(0, 2) = m[0][2];
-    camera_matrix.at<double>(1, 2) = m[1][2];
-
-    for (size_t i = 0; i < m[3].size(); i++)
+    if (!m.empty())
     {
-        dist_coeffs.at<double>(i, 0) = m[3][i];
+
+        // 保存相机参数到文件
+        cv::FileStorage out(g_paramPath + "camera_params.yaml", cv::FileStorage::WRITE);
+        cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
+        cv::Mat dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+
+        camera_matrix.at<double>(0, 0) = m[0][0];
+        camera_matrix.at<double>(1, 1) = m[1][1];
+        camera_matrix.at<double>(2, 2) = 1.0;
+
+        camera_matrix.at<double>(0, 2) = m[0][2];
+        camera_matrix.at<double>(1, 2) = m[1][2];
+
+        for (size_t i = 0; i < m[3].size(); i++)
+        {
+            dist_coeffs.at<double>(i, 0) = m[3][i];
+        }
+        
+        out << "camera_matrix" << camera_matrix;
+        out << "distortion_coefficients" << dist_coeffs;
+
     }
     
-    out << "camera_matrix" << camera_matrix;
-    out << "distortion_coefficients" << dist_coeffs;
 
     return 0;
 }
@@ -516,17 +522,17 @@ static void screw_sampling() {
     }
 
     // 从手眼标定结果加载 T_flange_camera（覆盖配置文件中的值）
-    std::string calib_file = g_appPath + "hand_eye_result.yaml";
-    cv::FileStorage fs(calib_file, cv::FileStorage::READ);
-    if (fs.isOpened()) {
-        fs["T_flange_camera"] >> sscfg.T_flange_camera;
-        fs.release();
-    }
-    if (sscfg.T_flange_camera.empty()) {
-        std::cerr << "未找到有效手眼标定结果: " << calib_file << std::endl;
-        std::cerr << "请先执行手眼标定（菜单 3 或 4）" << std::endl;
-        return;
-    }
+    // std::string calib_file = g_appPath + "hand_eye_result.yaml";
+    // cv::FileStorage fs(calib_file, cv::FileStorage::READ);
+    // if (fs.isOpened()) {
+    //     fs["T_flange_camera"] >> sscfg.T_flange_camera;
+    //     fs.release();
+    // }
+    // if (sscfg.T_flange_camera.empty()) {
+    //     std::cerr << "未找到有效手眼标定结果: " << calib_file << std::endl;
+    //     std::cerr << "请先执行手眼标定（菜单 3 或 4）" << std::endl;
+    //     return;
+    // }
 
     sscfg.output_dir = g_paramPath + "screw_samples";
 
@@ -584,8 +590,10 @@ int main() {
     // 初始化机器人
     char *pchRobotIp = "192.168.6.6";
     CRresult result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
-    if (result != sucess)
+    if (result != sucess){
+        std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
         return -1;
+    }
 
     // 使用默认配置
 

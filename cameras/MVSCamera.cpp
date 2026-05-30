@@ -163,7 +163,8 @@ cv::Mat MVSCamera::captureOneFrame(int timeoutMs) {
 
     int nRet = MV_CC_GetImageForBGR(m_handle, m_pData, m_nDataSize, &stFrameInfo, timeoutMs);
     if (MV_OK != nRet) {
-        std::cerr << "[MVSCamera] MV_CC_GetImageForBGR fail! nRet [0x" << std::hex << nRet << "]" << std::endl;
+        if (MV_E_NODATA == nRet)
+            MV_CC_ClearImageBuffer(m_handle);
         return cv::Mat();
     }
 
@@ -184,6 +185,8 @@ int MVSCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, 
 
 bool MVSCamera::setColorExposureTime(int exposureUs) {
     if (!m_isOpened || !m_handle) return false;
+
+    MV_CC_SetEnumValue(m_handle, "ExposureAuto", 0);
     int nRet = MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)exposureUs);
     if (MV_OK == nRet) {
         m_exposureCached = exposureUs;
@@ -222,13 +225,22 @@ bool MVSCamera::getAutoExposure() {
 bool MVSCamera::getExposureRange(int& minUs, int& maxUs) {
     if (!m_isOpened || !m_handle) return false;
     MVCC_FLOATVALUE stValue;
-    int nRet = MV_CC_GetFloatValue(m_handle, "ExposureTime", &stValue);
+    
+    MVCC_INTVALUE_EX stIntValue_lower = { 0 };
+    int nRet = MV_CC_GetIntValueEx(m_handle, "AutoExposureTimeLowerLimit", &stIntValue_lower);
     if (MV_OK == nRet) {
-        minUs = (int)stValue.fMin;
-        maxUs = (int)stValue.fMax;
-        return true;
+        minUs = stIntValue_lower.nCurValue;
+        maxUs = 1000000;//stIntValue_lower.nMax;
+    }else{
+        minUs =11;
+        maxUs = 1000000;
     }
-    return false;
+
+   
+    
+    return true;
+    
+
 }
 
 bool MVSCamera::setColorGain(int gain) {
