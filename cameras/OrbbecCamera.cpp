@@ -134,10 +134,11 @@ bool OrbbecCameraV2::open() {
             colorProfile = colorProfiles->getProfile(OB_PROFILE_DEFAULT)
                 ->as<ob::VideoStreamProfile>();
         }
-        
+
         if (colorProfile) {
             m_configPtr->enableStream(colorProfile);
             auto videoProfile = colorProfile->as<ob::VideoStreamProfile>();
+            m_videoStreamProfile = videoProfile;
             std::cout << "Using color: " << videoProfile->width() << "x" << videoProfile->height() 
                       << " @ " << videoProfile->fps() << "fps, Format: " << videoProfile->format() << std::endl;
         } else {
@@ -307,7 +308,7 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
     try {
         std::shared_ptr<ob::Frame> colorFrame = nullptr;
         std::shared_ptr<ob::Frame> depthFrame = nullptr;
-        for (size_t loop = 0; loop < 3; loop++)
+        for (size_t loop = 0; loop < 5; loop++)
         {
             // 等待帧集合
             auto frameSet = m_pipeline->waitForFrameset(timeoutMs);
@@ -321,39 +322,43 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
             {
                 colorFrame = frameSet->getFrame(OB_FRAME_COLOR);
 
-                // Convert the color frame to RGB format.
-                if (colorFrame->format() != OB_FORMAT_RGB) {
-                    if (colorFrame->format() == OB_FORMAT_MJPG) {
-                        m_formatConverter->setFormatConvertType(FORMAT_MJPG_TO_RGB);
+                if (nullptr!=colorFrame)
+                {
+                    // Convert the color frame to RGB format.
+                    if (colorFrame->format() != OB_FORMAT_RGB) {
+                        if (colorFrame->format() == OB_FORMAT_MJPG) {
+                            m_formatConverter->setFormatConvertType(FORMAT_MJPG_TO_RGB);
+                        }
+                        else if (colorFrame->format() == OB_FORMAT_UYVY) {
+                            m_formatConverter->setFormatConvertType(FORMAT_UYVY_TO_RGB);
+                        }
+                        else if (colorFrame->format() == OB_FORMAT_YUYV) {
+                            m_formatConverter->setFormatConvertType(FORMAT_YUYV_TO_RGB);
+                        }
+                        else {
+                            std::cout << "Color format is not support!" << std::endl;
+                        }
+                        colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
                     }
-                    else if (colorFrame->format() == OB_FORMAT_UYVY) {
-                        m_formatConverter->setFormatConvertType(FORMAT_UYVY_TO_RGB);
+                    // Processed the color frames to BGR format, use OpenCV to save to disk.
+
+                    // m_formatConverter->setFormatConvertType(FORMAT_RGB_TO_BGR);
+                    // colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
+
+                    if (colorFrame) {
+                        auto videoFrame = colorFrame->as<const ob::VideoFrame>();
+                        int width = videoFrame->getWidth();
+                        int height = videoFrame->getHeight();
+                        void* data = videoFrame->getData();
+
+                        if (data && width > 0 && height > 0) {
+                            cv::Mat rgbImage(cv::Size(width, height), CV_8UC3, data);
+                            // rgbImage = rgbImage.clone();
+                            cv::cvtColor(rgbImage, bgrImage, cv::COLOR_RGB2BGR);
+                        }
                     }
-                    else if (colorFrame->format() == OB_FORMAT_YUYV) {
-                        m_formatConverter->setFormatConvertType(FORMAT_YUYV_TO_RGB);
-                    }
-                    else {
-                        std::cout << "Color format is not support!" << std::endl;
-                    }
-                    colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
                 }
-                // Processed the color frames to BGR format, use OpenCV to save to disk.
-
-                // m_formatConverter->setFormatConvertType(FORMAT_RGB_TO_BGR);
-                // colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
-
-                if (colorFrame) {
-                    auto videoFrame = colorFrame->as<const ob::VideoFrame>();
-                    int width = videoFrame->getWidth();
-                    int height = videoFrame->getHeight();
-                    void* data = videoFrame->getData();
-
-                    if (data && width > 0 && height > 0) {
-                        cv::Mat rgbImage(cv::Size(width, height), CV_8UC3, data);
-                        // rgbImage = rgbImage.clone();
-                        cv::cvtColor(rgbImage, bgrImage, cv::COLOR_RGB2BGR);
-                    }
-                }
+                
             }
 
             // 获取深度帧
@@ -369,11 +374,19 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
             else
             {
                 std::shared_ptr<ob::DepthFrame> depthData = depthFrame->as<ob::DepthFrame>();
-                cv::Mat depthMat(depthData->height(), depthData->width(), CV_16UC1, depthData->data());
-                // float scale = depthData->getValueScale();
-                // std::cout<< "scale  "<< scale<<std::endl;
-                depthImage = depthMat.clone();
-                break;
+                if (nullptr==depthData)
+                {
+                    depthFrame = nullptr;
+                }
+                else
+                {
+                    cv::Mat depthMat(depthData->height(), depthData->width(), CV_16UC1, depthData->data());
+                    // float scale = depthData->getValueScale();
+                    // std::cout<< "scale  "<< scale<<std::endl;
+                    depthImage = depthMat.clone();
+                    break;
+                }           
+
             }
         }
         return 0;
@@ -382,6 +395,10 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
         std::cerr << "Capture with depth error: " << e.getMessage() << std::endl;
         return -1;
     }
+    catch (...) {
+        std::cerr << "Capture with depth error: " << std::endl;
+        return -1;
+    }    
 }
 
 
@@ -402,19 +419,41 @@ std::vector<std::vector<float>> OrbbecCameraV2::getCameraIntrinsics(const int im
     //# [0,      608.21,   392.18 ]
     //# [0,        0,        1    ]
 
-    matrix[0][0] = 608.212;
-    matrix[1][1] = 608.21;
 
-    matrix[0][2] = 648.738;
-    matrix[1][2] = 392.18;
+    if (nullptr==m_videoStreamProfile)
+    {
+        matrix[0][0] = 608.212;
+        matrix[1][1] = 608.21;
 
-    matrix[2][2] = 1;
+        matrix[0][2] = 648.738;
+        matrix[1][2] = 392.18;
+
+        matrix[2][2] = 1;
 
 
-    // # Distortion: k1:-0.0321069 k2:0.03709 k3:-0.0132376 k4:0 k5:0 k6:0 p1:-0.000181011 p2:0.000430064
-    std::vector<float> distortion = {-0.0321069, 0.03709,-0.000181011, 0.000430064, -0.0132376};
+        // # Distortion: k1:-0.0321069 k2:0.03709 k3:-0.0132376 k4:0 k5:0 k6:0 p1:-0.000181011 p2:0.000430064
+        std::vector<float> distortion = {-0.0321069, 0.03709,-0.000181011, 0.000430064, -0.0132376};
 
-    matrix.push_back(distortion);
+        matrix.push_back(distortion);
+    }
+    else
+    {
+        auto intrinsics = m_videoStreamProfile->getIntrinsic();
+        matrix[0][0] = intrinsics.fx;
+        matrix[1][1] = intrinsics.fy;
+
+        matrix[0][2] = intrinsics.cx;
+        matrix[1][2] = intrinsics.cy;
+
+        matrix[2][2] = 1;
+
+        auto d = m_videoStreamProfile->getDistortion();  
+        
+        // # Distortion: k1:-0.0321069 k2:0.03709 k3:-0.0132376 k4:0 k5:0 k6:0 p1:-0.000181011 p2:0.000430064
+        std::vector<float> distortion = {d.k1, d.k2,d.p1, d.p2, d.k3};
+        matrix.push_back(distortion);
+        
+    }
 
     return matrix;
 }

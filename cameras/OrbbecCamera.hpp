@@ -59,6 +59,7 @@ private:
     std::shared_ptr<ob::Pipeline> m_pipeline;
     std::shared_ptr<ob::Config> m_configPtr;
     std::shared_ptr<ob::FormatConvertFilter> m_formatConverter;
+    std::shared_ptr<ob::VideoStreamProfile> m_videoStreamProfile = nullptr;
 };
 
 #endif // ORBBEC_CAMERA_V2_HPP
