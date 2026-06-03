@@ -6,7 +6,7 @@
 #include <opencv2/opencv.hpp>
 
 struct ScrewSamplingConfig {
-    double cx = 0.0, cy = 0.0, cz = 0.0;
+    std::vector<cv::Point3d> positions;
     std::vector<double> radii;
     std::string background_type = "default";
     int num_exposures = 10;

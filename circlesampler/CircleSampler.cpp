@@ -82,16 +82,14 @@ bool CircleSampler::computeLookAtPose(double cx, double cy, double cz,
     return true;
 }
 
-int CircleSampler::captureExposures(const std::string& prefix) {
-    int count = 0;
-
-    // Query exposure time range
+void CircleSampler::genExposures(){
+     // Query exposure time range
     int minExp = 0, maxExp = 1000000;
-    if (!m_camera->getExposureRange(minExp, maxExp) || maxExp <= minExp) {
-        std::cerr << "[Sampler] Failed to get exposure range, using [100, 100000] us" << std::endl;
-        minExp = 100; maxExp = 100000;
-    }
-
+    // if (!m_camera->getExposureRange(minExp, maxExp) || maxExp <= minExp) {
+    //     std::cerr << "[Sampler] Failed to get exposure range, using [100, 100000] us" << std::endl;
+    //     minExp = 100; maxExp = 100000;
+    // }
+    minExp = 4662; maxExp = 41592;
     // Disable auto exposure
     // m_camera->setAutoExposure(false);
     // std::this_thread::sleep_for(std::chrono::milliseconds(100));
@@ -100,21 +98,29 @@ int CircleSampler::captureExposures(const std::string& prefix) {
     if (n < 2) n = 2;
 
     // Generate logarithmically spaced exposure values to cover a wide range
-    std::vector<int> exp_values(n);
+    //std::vector<int> exp_values(n);
+    _exp_values = std::vector<int>(n);
     double logMin = std::log10(minExp + 1.0);
     double logMax = std::log10(maxExp);
     for (int i = 0; i < n; i++) {
         double logVal = logMin + (logMax - logMin) * i / (n - 1);
-        exp_values[i] = (int)std::round(std::pow(10.0, logVal));
+        _exp_values[i] = (int)std::round(std::pow(10.0, logVal));
     }
 
     std::cout << "  Exposure range: " << minExp << " ~ " << maxExp << " us, using "
-              << n << " log-spaced values: " << exp_values.front() << " ~ " << exp_values.back() << " us" << std::endl;
+              << n << " log-spaced values: " << _exp_values.front() << " ~ " << _exp_values.back() << " us" << std::endl;
+}
 
-    for (int i = 0; i < n; i++) {
-        int exp = exp_values[i];
+int CircleSampler::captureExposures(const std::string& prefix) {
+    int count = 0;
 
-        if (!m_camera->setColorExposureTime(5000)) {
+   
+  //  m_camera->setColorExposureTime(524);
+    //m_camera->setColorExposureTime(1846);
+    for (int i = 0; i < _exp_values.size(); i++) {
+        int exp = _exp_values[i];
+
+        if (!m_camera->setColorExposureTime(exp)) {
             std::cerr << "[Sampler] Set exposure " << exp << " us failed" << std::endl;
             continue;
         }
@@ -192,65 +198,74 @@ int CircleSampler::run() {
         std::cerr << "[CircleSampler] num_exposures must be >= 1" << std::endl;
         return 0;
     }
-
+    if (m_config.positions.empty()) {
+        std::cerr << "[CircleSampler] No positions configured" << std::endl;
+        return 0;
+    }
+    genExposures();
     int totalImages = 0;
 
-    for (double r : m_config.radii) {
-        std::time_t now = std::time(nullptr);
-        std::tm* tm = std::localtime(&now);
-        std::ostringstream dirName;
-        dirName << m_config.output_dir << "/screw_"
-                << m_config.background_type << "_"
-                << r << "_"
-                << m_config.cx << "_"
-                << m_config.cy << "_"
-                << std::put_time(tm, "%Y-%m-%d_%H-%M-%S");
-        std::string sessionDir = dirName.str();
+    for (size_t pi = 0; pi < m_config.positions.size(); pi++) {
+        double cx = m_config.positions[pi].x;
+        double cy = m_config.positions[pi].y;
+        double cz = m_config.positions[pi].z;
 
-        mkdir(sessionDir.c_str(), 0755);
+        std::cout << "\n========== Position " << pi << ": ("
+                  << cx << ", " << cy << ", " << cz << ") mm ==========" << std::endl;
 
-        std::cout << "\n========== Radius r=" << r << " mm ==========" << std::endl;
-        std::cout << "Session: " << sessionDir << std::endl;
+        for (double r : m_config.radii) {
+            std::time_t now = std::time(nullptr);
+            std::tm* tm = std::localtime(&now);
+            std::ostringstream dirName;
+            dirName << m_config.output_dir << "/screw_"
+                    << m_config.background_type << "_"
+                    << r << "_p" << pi << "_"
+                    << std::put_time(tm, "%Y-%m-%d_%H-%M-%S");
+            std::string sessionDir = dirName.str();
 
-        for (int yaw : m_config.yaw_angles) {
-            for (int theta = 0; theta < 360; theta++) {
-                double pose[6];
-                if (!computeLookAtPose(m_config.cx, m_config.cy, m_config.cz,
-                                       r, yaw, theta, pose)) {
-                    std::cerr << "[CircleSampler] Failed to compute pose at θ=" << theta << std::endl;
-                    continue;
+            mkdir(sessionDir.c_str(), 0755);
+
+            std::cout << "\n========== Radius r=" << r << " mm ==========" << std::endl;
+            std::cout << "Session: " << sessionDir << std::endl;
+
+            for (int yaw : m_config.yaw_angles) {
+                for (int theta = 0; theta < 360; theta += 2) {
+                    double pose[6];
+                    if (!computeLookAtPose(cx, cy, cz,
+                                           r, yaw, theta, pose)) {
+                        std::cerr << "[CircleSampler] Failed to compute pose at θ=" << theta << std::endl;
+                        continue;
+                    }
+
+                    std::cout << "[" << (theta + 1) << "/180] Moving to θ=" << theta
+                              << "°  pos=(" << std::fixed << std::setprecision(1)
+                              << pose[0] << "," << pose[1] << "," << pose[2] << ")" << std::endl;
+
+                    if ( sucess !=moveToFlangeAxisPos(pose)) {
+                        std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
+                        continue;
+                    }
+
+                    std::ostringstream prefix;
+                    prefix << sessionDir << "/screw_"
+                           << m_config.background_type << "_"
+                           << r << "_p" << pi << "_y"
+                           << std::setw(3) << std::setfill('0') << yaw
+                           << "_p"
+                           << std::setw(3) << std::setfill('0') << theta;
+                    //m_camera->setColorExposureTime(149);
+                    int captured = captureExposures(prefix.str());
+                    totalImages += captured;
+                    std::cout << "  Captured " << captured << "/"
+                              << m_config.num_exposures << " exposures" << std::endl;
+                    //  totalImages += captureGains(prefix.str());
                 }
-
-                std::cout << "[" << (theta + 1) << "/360] Moving to θ=" << theta
-                          << "°  pos=(" << std::fixed << std::setprecision(1)
-                          << pose[0] << "," << pose[1] << "," << pose[2] << ")" << std::endl;
-
-                // if ( sucess !=moveToFlangeAxisPos(pose)) {
-                //     std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
-                //     continue;
-                // }
-
-                std::ostringstream prefix;
-                prefix << sessionDir << "/screw_"
-                       << m_config.background_type << "_"
-                       << r << "_"
-                       << m_config.cx << "_"
-                       << m_config.cy << "_y"
-                       << std::setw(3) << std::setfill('0') << yaw
-                       << "_p"
-                       << std::setw(3) << std::setfill('0') << theta;
-
-                int captured = captureExposures(prefix.str());
-                totalImages += captured;
-                std::cout << "  Captured " << captured << "/"
-                          << m_config.num_exposures << " exposures" << std::endl;
-                //  totalImages += captureGains(prefix.str());
             }
-        }
 
-        std::cout << "\nRadius " << r << " done. Total this radius: "
-                  << (360 * (int)m_config.yaw_angles.size() * m_config.num_exposures) << " expected, "
-                  << totalImages << " captured" << std::endl;
+            std::cout << "\nRadius " << r << " done. Total this radius: "
+                      << (180 * (int)m_config.yaw_angles.size() * m_config.num_exposures) << " expected, "
+                      << totalImages << " captured" << std::endl;
+        }
     }
 
     std::cout << "\n========== Sampling Complete ==========" << std::endl;

@@ -494,8 +494,7 @@ int  open_camera(){
 // 螺纹圆形采样入口（菜单项 5）
 // ============================================================
 static void screw_sampling() {
-    if (open_camera() != 0) return;
-
+    
     ScrewSamplingConfig sscfg;
     std::string cfg_path = g_appPath + "circlesampler/screw_sampling_config.yaml";
     bool have_cfg = loadScrewSamplingConfig(cfg_path, sscfg);
@@ -504,10 +503,13 @@ static void screw_sampling() {
         std::cout << "已加载配置: " << cfg_path << std::endl;
     } else {
         std::cout << "未找到配置文件，使用交互式输入" << std::endl;
-        double cx, cy, cz;
-        std::cout << "\n目标点坐标 (cx cy cz, mm): ";
-        std::cin >> cx >> cy >> cz;
-        sscfg.cx = cx; sscfg.cy = cy; sscfg.cz = cz;
+        std::cout << "\n目标点坐标 (x y z mm, 每行一组, 输入 0 0 0 完成):" << std::endl;
+        double x, y, z;
+        while (std::cin >> x >> y >> z) {
+            if (x == 0.0 && y == 0.0 && z == 0.0) break;
+            sscfg.positions.push_back(cv::Point3d(x, y, z));
+        }
+        std::cin.clear();
 
         std::cout << "采样半径 (输入 0 结束, 空格分隔, 如: 80 100 120 0): ";
         double r;
@@ -519,23 +521,13 @@ static void screw_sampling() {
         std::cin >> sscfg.background_type;
     }
 
-    // 从手眼标定结果加载 T_flange_camera（覆盖配置文件中的值）
-    // std::string calib_file = g_appPath + "hand_eye_result.yaml";
-    // cv::FileStorage fs(calib_file, cv::FileStorage::READ);
-    // if (fs.isOpened()) {
-    //     fs["T_flange_camera"] >> sscfg.T_flange_camera;
-    //     fs.release();
-    // }
-    // if (sscfg.T_flange_camera.empty()) {
-    //     std::cerr << "未找到有效手眼标定结果: " << calib_file << std::endl;
-    //     std::cerr << "请先执行手眼标定（菜单 3 或 4）" << std::endl;
-    //     return;
-    // }
-
     sscfg.output_dir = g_paramPath + "screw_samples";
 
     std::cout << "\n配置确认:";
-    std::cout << "\n  目标点: (" << sscfg.cx << ", " << sscfg.cy << ", " << sscfg.cz << ") mm";
+    for (size_t i = 0; i < sscfg.positions.size(); i++) {
+        std::cout << "\n  目标点 " << i << ": (" << sscfg.positions[i].x << ", "
+                  << sscfg.positions[i].y << ", " << sscfg.positions[i].z << ") mm";
+    }
     std::cout << "\n  半径: [";
     for (size_t i = 0; i < sscfg.radii.size(); i++) {
         if (i) std::cout << ", ";
@@ -550,20 +542,35 @@ static void screw_sampling() {
     std::cout << "]";
     std::cout << "\n  曝光数/位姿: " << sscfg.num_exposures;
     std::cout << "\n  输出目录: " << sscfg.output_dir;
-    std::cout << "\n  总采样数: " << (sscfg.radii.size() * sscfg.yaw_angles.size() * 360 * sscfg.num_exposures) << std::endl;
+    std::cout << "\n  总采样数: " << (sscfg.positions.size() * sscfg.radii.size() * sscfg.yaw_angles.size() * 180 * sscfg.num_exposures) << std::endl;
 
-    std::cout << "\n开始采样? (y/n): ";
-    char confirm = 'n';
-    std::cin >> confirm;
-    if (confirm != 'y' && confirm != 'Y') {
-        std::cout << "已取消" << std::endl;
-        return;
-    }
+    // std::cout << "\n开始采样? (y/n): ";
+    // char confirm = 'n';
+    // std::cin >> confirm;
+    // if (confirm != 'y' && confirm != 'Y') {
+    //     std::cout << "已取消" << std::endl;
+    //     return;
+    // }
 
     {
         CircleSampler sampler(g_camera, sscfg);
+        //g_camera->setColorExposureTime(42);    
         int total = sampler.run();
         std::cout << "\n采样完成，共 " << total << " 张图像" << std::endl;
+    }
+}
+
+void try_camera_exposure(){
+     for (size_t i = 0; i < 100; i++)
+    {
+        bool bRet = g_camera->setColorExposureTime(5000+i*2);
+
+        if (!bRet)
+        {
+            std::cout<< "error "<<std::endl;
+        }
+        
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));   
     }
 }
 
@@ -589,11 +596,11 @@ int main() {
     char *pchRobotIp = "192.168.6.6";
 
     CRresult result;
-    // result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
-    // if (result != sucess){
-    //     std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
-    //     return -1;
-    // }
+    result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
+    if (result != sucess){
+        std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
+        return -1;
+    }
     // 使用默认配置
 
 #ifdef useORB
@@ -602,7 +609,12 @@ int main() {
 #else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
 #endif
-    
+
+    // int cam = open_camera();
+
+    //bool bRet = g_camera->setColorExposureTime(12);
+   // try_camera_exposure();
+        
     while (true) {
         display_menu();
         std::cin >> choice;

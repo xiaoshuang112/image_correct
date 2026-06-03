@@ -18,6 +18,7 @@ private:
     int captureExposures(const std::string& prefix);
     int captureGains(const std::string& prefix);
     CRresult moveToFlangeAxisPos(double axisAnglePos[6]);
+    void genExposures();
 
     std::shared_ptr<AICamera>& m_camera;
     ScrewSamplingConfig m_config;
@@ -25,6 +26,7 @@ private:
     cv::Mat m_R_f_c;
     cv::Mat m_t_f_c;
     cv::Matx44d m_T_f_c;
+    std::vector<int> _exp_values;
 };
 
 #endif

@@ -10,9 +10,19 @@ bool loadScrewSamplingConfig(const std::string& path, ScrewSamplingConfig& cfg) 
 
     cv::FileNode sampling = fs["sampling"];
     if (!sampling.empty()) {
-        sampling["cx"] >> cfg.cx;
-        sampling["cy"] >> cfg.cy;
-        sampling["cz"] >> cfg.cz;
+        cv::FileNode pos_node = sampling["position"];
+        if (pos_node.type() == cv::FileNode::SEQ) {
+            cfg.positions.clear();
+            auto it = pos_node.begin();
+            while (it != pos_node.end()) {
+                double x = (double)*it; ++it;
+                if (it == pos_node.end()) break;
+                double y = (double)*it; ++it;
+                if (it == pos_node.end()) break;
+                double z = (double)*it; ++it;
+                cfg.positions.push_back(cv::Point3d(x, y, z));
+            }
+        }
 
         cv::FileNode radii_node = sampling["radii"];
         if (radii_node.type() == cv::FileNode::SEQ) {
