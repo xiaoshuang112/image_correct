@@ -6,7 +6,9 @@
 #include <chrono>
 #include <cmath>
 #include <ctime>
+#include <filesystem>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include "robotapi.h"
 #include "basestruct.h"
 #include "utils/robot_util.hpp"
@@ -17,8 +19,21 @@ extern RobotHandle robotHandle;
 // CircleSampler 实现
 // ============================================================
 
+// --- Screw mode constructor (unchanged) ---
 CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const ScrewSamplingConfig& config)
-    : m_camera(camera), m_config(config) {
+    : m_camera(camera), m_config(config), m_test_mode(false) {
+    m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
+    m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
+    m_T_f_c = config.T_flange_camera;
+}
+
+// --- Test mode constructor ---
+CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const CircleTestConfig& config)
+    : m_camera(camera), m_test_config(config), m_test_mode(true) {
+    // Borrow fields from test config for genExposures / capture timeout
+    m_config.num_exposures = config.num_exposures;
+    m_config.capture_timeout_ms = config.capture_timeout_ms;
+
     m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
     m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
     m_T_f_c = config.T_flange_camera;
@@ -83,22 +98,12 @@ bool CircleSampler::computeLookAtPose(double cx, double cy, double cz,
 }
 
 void CircleSampler::genExposures(){
-     // Query exposure time range
     int minExp = 0, maxExp = 1000000;
-    // if (!m_camera->getExposureRange(minExp, maxExp) || maxExp <= minExp) {
-    //     std::cerr << "[Sampler] Failed to get exposure range, using [100, 100000] us" << std::endl;
-    //     minExp = 100; maxExp = 100000;
-    // }
     minExp = 4662; maxExp = 41592;
-    // Disable auto exposure
-    // m_camera->setAutoExposure(false);
-    // std::this_thread::sleep_for(std::chrono::milliseconds(100));
 
     int n = m_config.num_exposures;
     if (n < 2) n = 2;
 
-    // Generate logarithmically spaced exposure values to cover a wide range
-    //std::vector<int> exp_values(n);
     _exp_values = std::vector<int>(n);
     double logMin = std::log10(minExp + 1.0);
     double logMax = std::log10(maxExp);
@@ -111,84 +116,356 @@ void CircleSampler::genExposures(){
               << n << " log-spaced values: " << _exp_values.front() << " ~ " << _exp_values.back() << " us" << std::endl;
 }
 
+// --- captureExposures: all exposures (screw mode, unchanged) ---
 int CircleSampler::captureExposures(const std::string& prefix) {
     int count = 0;
-
-   
-  //  m_camera->setColorExposureTime(524);
-    //m_camera->setColorExposureTime(1846);
     for (int i = 0; i < _exp_values.size(); i++) {
         int exp = _exp_values[i];
-
         if (!m_camera->setColorExposureTime(exp)) {
             std::cerr << "[Sampler] Set exposure " << exp << " us failed" << std::endl;
             continue;
         }
         std::this_thread::sleep_for(std::chrono::milliseconds(1000));
-
         cv::Mat frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
         if (frame.empty()) {
             std::cerr << "[Sampler] Empty frame at exposure " << exp << " us" << std::endl;
             continue;
         }
-
-        // Build filename: prefix_{exposure_idx}.jpg
         std::ostringstream filename;
         filename << prefix << "_" << i << ".jpg";
-
         cv::imwrite(filename.str(), frame);
         count++;
     }
-
     return count;
 }
 
+// --- captureExposures: specific exposure indices (test mode) ---
+int CircleSampler::captureExposures(const std::string& prefix, const std::vector<int>& indices) {
+    int count = 0;
+    for (int exp_idx : indices) {
+        if (exp_idx < 0 || exp_idx >= (int)_exp_values.size()) {
+            std::cerr << "[captureExposures] Index out of range: " << exp_idx
+                      << " (valid 0~" << (_exp_values.size() - 1) << "), skip" << std::endl;
+            continue;
+        }
+        int exp = _exp_values[exp_idx];
+        if (!m_camera->setColorExposureTime(exp)) {
+            std::cerr << "[captureExposures] Set exposure " << exp << " us failed" << std::endl;
+            continue;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+        // Retry empty frame up to 2 times
+        cv::Mat frame;
+        for (int retry = 0; retry < 2; retry++) {
+            frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
+            if (!frame.empty()) break;
+            std::cerr << "[captureExposures] Retry " << (retry + 1) << "/2 at exposure "
+                      << exp << " us" << std::endl;
+        }
+        if (frame.empty()) {
+            std::cerr << "[captureExposures] Empty frame at exposure " << exp << " us" << std::endl;
+            continue;
+        }
+
+        std::ostringstream filename;
+        filename << prefix << "_E" << exp_idx << ".jpg";
+        cv::imwrite(filename.str(), frame);
+        count++;
+    }
+    return count;
+}
+
+// --- No gain capture in test mode (unchanged, kept for reference) ---
 int CircleSampler::captureGains(const std::string& prefix) {
     int count = 0;
-
-    // Query gain range
     int minGain = 0, maxGain = 24;
     if (!m_camera->getGainRange(minGain, maxGain) || maxGain <= minGain) {
         std::cerr << "[Sampler] Failed to get gain range, using [0, 24] dB" << std::endl;
         minGain = 0; maxGain = 24;
     }
-
     int n = m_config.num_exposures;
     if (n < 2) n = 2;
-
-    // Generate linearly spaced gain values
     std::vector<int> gain_values(n);
-    for (int i = 0; i < n; i++) {
+    for (int i = 0; i < n; i++)
         gain_values[i] = minGain + (maxGain - minGain) * i / (n - 1);
-    }
 
     std::cout << "  Gain range: " << minGain << " ~ " << maxGain << " dB, using "
               << n << " linearly spaced values: " << gain_values.front() << " ~ " << gain_values.back() << " dB" << std::endl;
 
     for (int i = 0; i < n; i++) {
         int gain = gain_values[i];
-
-        if (!m_camera->setColorGain(gain)) {
-            std::cerr << "[Sampler] Set gain " << gain << " dB failed" << std::endl;
-            continue;
-        }
-
+        if (!m_camera->setColorGain(gain)) { std::cerr << "[Sampler] Set gain " << gain << " dB failed" << std::endl; continue; }
         cv::Mat frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
-        if (frame.empty()) {
-            std::cerr << "[Sampler] Empty frame at gain " << gain << " dB" << std::endl;
-            continue;
-        }
-
+        if (frame.empty()) { std::cerr << "[Sampler] Empty frame at gain " << gain << " dB" << std::endl; continue; }
         std::ostringstream filename;
         filename << prefix << "_gain_" << i << ".jpg";
-
         cv::imwrite(filename.str(), frame);
         count++;
     }
-
     return count;
 }
 
+// ============================================================
+// Progress bar
+// ============================================================
+void CircleSampler::printProgress(int current, int total) const {
+    int bar_width = 50;
+    int filled = current * bar_width / total;
+    int pct = current * 100 / total;
+    std::cout << "\r[";
+    for (int i = 0; i < bar_width; i++)
+        std::cout << (i < filled ? '#' : (i == filled ? '>' : ' '));
+    std::cout << "] " << pct << "% (" << current << "/" << total << ")" << std::flush;
+}
+
+// ============================================================
+// Checkpoint helpers (test mode)
+// ============================================================
+std::string CircleSampler::checkpointPath() const {
+    return m_test_config.output_dir + "/.checkpoint.yaml";
+}
+
+bool CircleSampler::saveCheckpoint(int bg_idx, int combo_idx, int layer_idx, int point_idx) {
+    cv::FileStorage fs(checkpointPath(), cv::FileStorage::WRITE);
+    if (!fs.isOpened()) return false;
+    fs << "checkpoint" << "{";
+    fs << "bg_idx" << bg_idx;
+    fs << "combo_idx" << combo_idx;
+    fs << "layer_idx" << layer_idx;
+    fs << "point_idx" << point_idx;
+    fs << "}";
+    return true;
+}
+
+bool CircleSampler::loadCheckpoint(int& bg_idx, int& combo_idx, int& layer_idx, int& point_idx) {
+    std::string path = checkpointPath();
+    FILE* fp = fopen(path.c_str(), "r");
+    if (!fp) return false;
+    fclose(fp);
+
+    cv::FileStorage fs(path, cv::FileStorage::READ);
+    if (!fs.isOpened()) return false;
+    cv::FileNode chk = fs["checkpoint"];
+    if (chk.empty()) return false;
+    bg_idx = (int)chk["bg_idx"];
+    combo_idx = (int)chk["combo_idx"];
+    layer_idx = (int)chk["layer_idx"];
+    point_idx = (int)chk["point_idx"];
+    return true;
+}
+
+// ============================================================
+// Dry-run: verify IK reachability only, no capture
+// ============================================================
+int CircleSampler::dryRunTestCollection() {
+    const auto& cfg = m_test_config;
+    int total = (int)cfg.backgrounds.size() * (int)cfg.sides.size() * (int)cfg.thread_types.size()
+                * (int)cfg.layers.size() * cfg.points_per_layer;
+    int ok = 0, skip = 0;
+
+    std::cout << "\n========== DRY RUN ==========" << std::endl;
+    std::cout << "Verifying IK reachability for " << total << " poses..." << std::endl;
+
+    for (size_t bi = 0; bi < cfg.backgrounds.size(); bi++) {
+        for (size_t si = 0; si < cfg.sides.size(); si++) {
+            for (size_t ti = 0; ti < cfg.thread_types.size(); ti++) {
+                for (int yaw : cfg.layers) {
+                    double theta_step = 360.0 / cfg.points_per_layer;
+                    for (int pi = 0; pi < cfg.points_per_layer; pi++) {
+                        double theta = cfg.start_angle + pi * theta_step;
+                        double pose[6];
+                        if (!computeLookAtPose(cfg.position.x, cfg.position.y, cfg.position.z,
+                                               cfg.radius, yaw, theta, pose)) {
+                            std::cout << "[SKIP] " << cfg.backgrounds[bi] << "/" << cfg.sides[si]
+                                      << "/" << cfg.thread_types[ti] << " L" << yaw
+                                      << " P" << std::setw(3) << std::setfill('0') << pi
+                                      << " computeLookAtPose failed" << std::endl;
+                            skip++;
+                            continue;
+                        }
+                        double ref_j[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
+                        if (cr_get_jointActualPos(robotHandle, ref_j) != sucess ||
+                            cr_kineInverse(robotHandle, pose, ref_j, joint) != sucess) {
+                            std::cout << "[SKIP] " << cfg.backgrounds[bi] << "/" << cfg.sides[si]
+                                      << "/" << cfg.thread_types[ti] << " L" << yaw
+                                      << " P" << std::setw(3) << std::setfill('0') << pi
+                                      << " IK unreachable" << std::endl;
+                            skip++;
+                            continue;
+                        }
+                        ok++;
+                    }
+                }
+            }
+        }
+    }
+
+    std::cout << "\nDry-run complete: " << ok << " reachable, "
+              << skip << " failed, " << total << " total" << std::endl;
+    return ok;
+}
+
+// ============================================================
+// Test collection entry
+// ============================================================
+int CircleSampler::runTestCollection() {
+    const auto& cfg = m_test_config;
+
+    if (cfg.backgrounds.empty() || cfg.sides.empty() || cfg.thread_types.empty() ||
+        cfg.layers.empty() || cfg.exposure_indices.empty()) {
+        std::cerr << "[CircleTest] Incomplete configuration" << std::endl;
+        return 0;
+    }
+
+    // Generate the full log-spaced exposure list
+    genExposures();
+
+    // Compute totals
+    int n_bg = (int)cfg.backgrounds.size();
+    int n_combo = (int)cfg.sides.size() * (int)cfg.thread_types.size();  // 4 combos per bg
+    int n_layer = (int)cfg.layers.size();
+    int n_point = cfg.points_per_layer;
+    int n_exp = (int)cfg.exposure_indices.size();
+    int total_points = n_bg * n_combo * n_layer * n_point;
+    int total_images = total_points * n_exp;
+
+    std::cout << "\n========== Circle Test Collection ==========" << std::endl;
+    std::cout << "  Backgrounds: " << n_bg;
+    for (auto& b : cfg.backgrounds) std::cout << " " << b;
+    std::cout << "\n  Combos (side+thread): " << n_combo;
+    for (auto& s : cfg.sides)
+        for (auto& t : cfg.thread_types)
+            std::cout << " (" << s << "+" << t << ")";
+    std::cout << "\n  Layers: ";
+    for (int l : cfg.layers) std::cout << l << " ";
+    std::cout << "\n  Points/layer: " << n_point << " (step=" << (360 / n_point) << "deg)";
+    std::cout << "\n  Exposures/point: " << n_exp << " (indices ";
+    for (int e : cfg.exposure_indices) std::cout << e << " ";
+    std::cout << ")";
+    std::cout << "\n  Total images: " << total_images << std::endl;
+    std::cout << "  Output dir: " << cfg.output_dir << std::endl;
+    std::cout << "=============================================\n" << std::endl;
+
+    // Ensure output directory (creates parent dirs as needed)
+    std::filesystem::create_directories(cfg.output_dir);
+
+    // Check for existing checkpoint
+    int start_bg = 0, start_combo = 0, start_layer = 0, start_point = 0;
+    int resume_from = 0;
+    if (loadCheckpoint(start_bg, start_combo, start_layer, start_point)) {
+        std::cout << "检测到上次未完成采集 (bg=" << start_bg
+                  << " combo=" << start_combo
+                  << " layer=" << start_layer
+                  << " point=" << start_point << ")" << std::endl;
+        std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
+        std::string line;
+        std::getline(std::cin, line);
+        if (line == "r" || line == "R") {
+            start_bg = start_combo = start_layer = start_point = 0;
+            // Remove checkpoint
+            std::remove(checkpointPath().c_str());
+            std::cout << "已重新开始" << std::endl;
+        } else {
+            std::cout << "从断点继续" << std::endl;
+        }
+    }
+
+    int cumulative = 0;   // points completed in this run (for progress)
+    int total_expected = n_bg * n_combo * n_layer * n_point;
+
+    for (int bi = start_bg; bi < n_bg; bi++) {
+        const std::string& bg = cfg.backgrounds[bi];
+
+        // Prompt: change background board
+        if (bi > 0 || start_bg > 0) {
+            std::cout << "\n========================================" << std::endl;
+            std::cout << "背景 " << (bi + 1) << "/" << n_bg
+                      << " 已完成，请更换背景为: " << bg << std::endl;
+            std::cout << "按 Enter 继续..." << std::flush;
+            std::cin.get();
+        } else {
+            std::cout << "\n请放置背景: " << bg << "，按 Enter 继续..." << std::flush;
+            std::cin.get();
+        }
+
+        int combo_start = (bi == start_bg) ? start_combo : 0;
+        for (int ci = combo_start; ci < n_combo; ci++) {
+            int si = ci / (int)cfg.thread_types.size();
+            int ti = ci % (int)cfg.thread_types.size();
+            const std::string& side = cfg.sides[si];
+            const std::string& thread = cfg.thread_types[ti];
+
+            // Prompt: change workpiece
+            if (ci > 0 || bi > 0) {
+                std::cout << "\n请更换工件: " << side << " + " << thread
+                          << "，按 Enter 继续..." << std::flush;
+                std::cin.get();
+            } else {
+                std::cout << "工件: " << side << " + " << thread << std::endl;
+            }
+
+            int layer_start = (bi == start_bg && ci == combo_start) ? start_layer : 0;
+            for (int li = layer_start; li < n_layer; li++) {
+                int yaw = cfg.layers[li];
+                double theta_step = 360.0 / n_point;
+                double cx = cfg.position.x;
+                double cy = cfg.position.y;
+                double cz = cfg.position.z;
+
+                int pt_start = (bi == start_bg && ci == combo_start && li == layer_start) ? start_point : 0;
+                for (int pi = pt_start; pi < n_point; pi++) {
+                    double theta = cfg.start_angle + pi * theta_step;
+
+                    double pose[6];
+                    if (!computeLookAtPose(cx, cy, cz, cfg.radius, yaw, theta, pose)) {
+                        std::cerr << "[CircleTest] computeLookAtPose failed at θ="
+                                  << theta << ", skip" << std::endl;
+                        continue;
+                    }
+
+                    if (sucess != moveToFlangeAxisPos(pose)) {
+                        std::cerr << "[CircleTest] Move failed at θ=" << theta << ", skip" << std::endl;
+                        saveCheckpoint(bi, ci, li, pi + 1);
+                        continue;
+                    }
+
+                    // Build filename: test_{bg}_{side}_{thread}_L{layer}_P{point:03d}_E{exp_idx}.jpg
+                    std::ostringstream prefix;
+                    prefix << cfg.output_dir << "/test_"
+                           << bg << "_" << side << "_" << thread << "_"
+                           << "L" << yaw << "_"
+                           << "P" << std::setw(3) << std::setfill('0') << pi;
+
+                    captureExposures(prefix.str(), cfg.exposure_indices);
+
+                    // Save checkpoint after each point
+                    saveCheckpoint(bi, ci, li, pi + 1);
+
+                    cumulative++;
+                    printProgress(cumulative, total_expected);
+                } // points
+                start_point = 0; // reset for next layer
+            } // layers
+            start_layer = 0; // reset for next combo
+        } // combos
+        start_combo = 0; // reset for next bg
+    } // backgrounds
+
+    // Clear checkpoint on successful completion
+    std::remove(checkpointPath().c_str());
+
+    std::cout << "\n\n========== Circle Test Collection Complete ==========" << std::endl;
+    std::cout << "Total images: " << (cumulative * n_exp)
+              << " (from " << cumulative << " points)" << std::endl;
+    std::cout << "Output directory: " << cfg.output_dir << std::endl;
+
+    return cumulative * n_exp;
+}
+
+// ============================================================
+// Original screw run (unchanged)
+// ============================================================
 int CircleSampler::run() {
     if (m_config.radii.empty()) {
         std::cerr << "[CircleSampler] No radii configured" << std::endl;
@@ -223,7 +500,7 @@ int CircleSampler::run() {
                     << std::put_time(tm, "%Y-%m-%d_%H-%M-%S");
             std::string sessionDir = dirName.str();
 
-            mkdir(sessionDir.c_str(), 0755);
+            std::filesystem::create_directories(sessionDir);
 
             std::cout << "\n========== Radius r=" << r << " mm ==========" << std::endl;
             std::cout << "Session: " << sessionDir << std::endl;
@@ -253,12 +530,10 @@ int CircleSampler::run() {
                            << std::setw(3) << std::setfill('0') << yaw
                            << "_p"
                            << std::setw(3) << std::setfill('0') << theta;
-                    //m_camera->setColorExposureTime(149);
                     int captured = captureExposures(prefix.str());
                     totalImages += captured;
                     std::cout << "  Captured " << captured << "/"
                               << m_config.num_exposures << " exposures" << std::endl;
-                    //  totalImages += captureGains(prefix.str());
                 }
             }
 

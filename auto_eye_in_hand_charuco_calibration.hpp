@@ -51,9 +51,8 @@ struct CalibrationResult {
  * @return true/false
  */
 bool autoEyeInHandCharucoCalibration(
-    int robot_handle,    
+    int robot_handle,
     char* pchRobotIP,
-   // const double tcp_offset[6],
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
@@ -61,6 +60,7 @@ bool autoEyeInHandCharucoCalibration(
     int cameraToTcpEnd,
     CalibrationResult& result,
     const std::string& save_dir = "",
+    const std::string& output_yaml = "",
     AI_det_callback callback=nullptr
 );
 
@@ -82,7 +82,13 @@ bool calibrateHandEyeFromDisk(
     cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
-    CalibrationResult& result);
+    CalibrationResult& result,
+    const std::string& output_yaml = "");
+
+bool calibrateCameraFromDisk(const std::string& save_dir,
+                             CharucoDetector& detector,
+                             cv::Mat& camera_matrix,
+                             cv::Mat& dist_coeffs);
 
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP

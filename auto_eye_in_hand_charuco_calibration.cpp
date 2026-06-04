@@ -905,86 +905,6 @@ bool executeCollection(int robot_handle,
     return captured > 0;
 }
 
-// ============================================================
-// Phase 5a: 相机内参标定（从目录读取图像）
-// ============================================================
-
-static bool loadImagesFromDisk(const std::string& save_dir,
-                                std::vector<std::string>& img_files,
-                                cv::Size& image_size) {
-    namespace fs = std::filesystem;
-    for (auto& entry : fs::directory_iterator(save_dir)) {
-        std::string name = entry.path().filename().string();
-        if (name.size() >= 4 && name.substr(name.size() - 4) == ".jpg")
-            img_files.push_back(entry.path().string());
-    }
-    std::sort(img_files.begin(), img_files.end());
-    if (img_files.empty()) return false;
-    // 从第一张图获取尺寸
-    cv::Mat first = cv::imread(img_files[0]);
-    if (first.empty()) return false;
-    image_size = first.size();
-    return true;
-}
-
-static bool calibrateCameraFromDisk(const std::string& save_dir,
-                                     CharucoDetector& detector,
-                                     cv::Mat& camera_matrix,
-                                     cv::Mat& dist_coeffs) {
-
-    const auto& board_points = detector.getChessboardCorners3D();
-
-    std::vector<std::string> img_files;
-    cv::Size image_size;
-    if (!loadImagesFromDisk(save_dir, img_files, image_size))
-        return false;
-
-    std::vector<std::vector<cv::Point3f>> object_points;
-    std::vector<std::vector<cv::Point2f>> image_points;
-
-    for (const auto& path : img_files) {
-        cv::Mat img = cv::imread(path);
-        if (img.empty()) continue;
-
-        std::vector<cv::Point2f> corners;
-        std::vector<int> ids;
-        if (!detector.detectCorners(img, corners, ids))
-            continue;
-
-        std::vector<cv::Point3f> pts3;
-        std::vector<cv::Point2f> pts2;
-        for (size_t j = 0; j < ids.size(); j++) {
-            int id = ids[j];
-            if (id >= 0 && (size_t)id < board_points.size()) {
-                pts3.push_back(board_points[id]);
-                pts2.push_back(corners[j]);
-            }
-        }
-        if (pts3.size() >= 6) {
-            object_points.push_back(pts3);
-            image_points.push_back(pts2);
-        }
-    }
-
-    if (object_points.size() < 5) {
-        std::cerr << "[autoCalib] 帧数不足，无法标定相机内参 (need >=5, got "
-                  << object_points.size() << ")" << std::endl;
-        return false;
-    }
-
-    camera_matrix = cv::Mat::eye(3, 3, CV_64F);
-    dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
-
-    std::vector<cv::Mat> rvecs, tvecs;
-    double err = cv::calibrateCamera(object_points, image_points,
-                                      image_size, camera_matrix, dist_coeffs,
-                                      rvecs, tvecs);
-    std::cout << "[autoCalib] 相机内参标定完成, 重投影误差: " << err << " px"
-              << std::endl;
-    std::cout << "[autoCalib] 相机矩阵:\n" << camera_matrix << std::endl;
-    return true;
-}
-
 bool estimateHandEyeTrans(
      const cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
@@ -1130,6 +1050,186 @@ bool estimateHandEyeTrans(
 } // anonymous namespace
 
 // ============================================================
+// 相机内参标定（从目录读取图像）
+// ============================================================
+
+bool loadImagesFromDisk(const std::string& save_dir,
+                         std::vector<std::string>& img_files,
+                         cv::Size& image_size) {
+    namespace fs = std::filesystem;
+    for (auto& entry : fs::directory_iterator(save_dir)) {
+        std::string name = entry.path().filename().string();
+        if (name.size() >= 4 && name.substr(name.size() - 4) == ".jpg")
+            img_files.push_back(entry.path().string());
+    }
+    std::sort(img_files.begin(), img_files.end());
+    if (img_files.empty()) return false;
+    cv::Mat first = cv::imread(img_files[0]);
+    if (first.empty()) return false;
+    image_size = first.size();
+    return true;
+}
+
+// ——— 分批标定 + 逐帧过滤 + 最终标定 ———
+// 每批最多 batch_size 帧，标定后只取误差最小的前 30% 进入候选池，
+// 最后从候选池取误差最小的 max_good 帧做最终标定。
+static bool calibrateCameraFiltered(
+    const std::vector<std::vector<cv::Point3f>>& object_points,
+    const std::vector<std::vector<cv::Point2f>>& image_points,
+    const cv::Size& image_size,
+    cv::Mat& camera_matrix,
+    cv::Mat& dist_coeffs) {
+
+    const int min_frames = 5;
+    const int batch_size = 100;
+    const int max_good = 100;
+    size_t n_total = object_points.size();
+
+    struct FrameRecord {
+        std::vector<cv::Point3f> obj_pts;
+        std::vector<cv::Point2f> img_pts;
+        double error;
+    };
+    std::vector<FrameRecord> good_frames;
+   
+    // ——— 分批处理 ———
+    for (size_t start = 0; start < n_total; start += batch_size) {
+        size_t end = std::min(start + batch_size, n_total);
+        size_t n_batch = end - start;
+
+        std::vector<std::vector<cv::Point3f>> batch_obj(
+            object_points.begin() + start, object_points.begin() + end);
+        std::vector<std::vector<cv::Point2f>> batch_img(
+            image_points.begin() + start, image_points.begin() + end);
+
+        cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
+        cv::Mat D = cv::Mat::zeros(5, 1, CV_64F);
+        std::vector<cv::Mat> rvecs, tvecs;
+        double err = cv::calibrateCamera(batch_obj, batch_img, image_size,
+                                          K, D, rvecs, tvecs);
+        std::cout << "[autoCalib] 批次 " << (start / batch_size)
+                  << ": " << n_batch << " 帧, 重投影误差 " << err << " px" << std::endl;
+
+        // 计算每帧投影误差
+        std::vector<FrameRecord> batch_records;
+        batch_records.reserve(n_batch);
+        for (size_t i = 0; i < n_batch; i++) {
+            std::vector<cv::Point2f> proj;
+            cv::projectPoints(batch_obj[i], rvecs[i], tvecs[i], K, D, proj);
+            double sum_err = 0.0;
+            for (size_t j = 0; j < proj.size(); j++)
+                sum_err += cv::norm(proj[j] - batch_img[i][j]);
+            batch_records.push_back({batch_obj[i], batch_img[i], sum_err / proj.size()});
+        }
+
+        // 取前 30%（误差最小）
+        std::sort(batch_records.begin(), batch_records.end(),
+                  [](const FrameRecord& a, const FrameRecord& b) {
+                      return a.error < b.error;
+                  });
+        size_t n_keep = std::max(size_t(1), n_batch * 60 / 100);
+        for (size_t i = 0; i < n_keep; i++)
+            good_frames.push_back(batch_records[i]);
+        std::cout << "[autoCalib]  保留 " << n_keep << "/" << n_batch
+                  << " 帧 (前30%, 最大误差 " << batch_records[n_keep - 1].error << " px)"
+                  << std::endl;
+    }
+
+    // ——— 取误差最小的 max_good 帧做最终标定 ———
+    std::sort(good_frames.begin(), good_frames.end(),
+              [](const FrameRecord& a, const FrameRecord& b) {
+                  return a.error < b.error;
+              });
+
+    size_t n_final = std::min(good_frames.size(), size_t(max_good));
+    if (n_final < (size_t)min_frames) {
+        std::cerr << "[autoCalib] 合格帧不足 (" << n_final << "), 使用全部帧标定"
+                  << std::endl;
+        camera_matrix = cv::Mat::eye(3, 3, CV_64F);
+        dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+        std::vector<cv::Mat> rvecs, tvecs;
+        cv::calibrateCamera(object_points, image_points, image_size,
+                             camera_matrix, dist_coeffs, rvecs, tvecs);
+        return true;
+    }
+
+    std::cout << "[autoCalib] 保留 " << n_final << "/" << n_total
+              << " 帧做最终标定" << std::endl;
+
+    std::vector<std::vector<cv::Point3f>> final_obj;
+    std::vector<std::vector<cv::Point2f>> final_img;
+    final_obj.reserve(n_final);
+    final_img.reserve(n_final);
+    for (size_t i = 0; i < n_final; i++) {
+        final_obj.push_back(good_frames[i].obj_pts);
+        final_img.push_back(good_frames[i].img_pts);
+    }
+
+    camera_matrix = cv::Mat::eye(3, 3, CV_64F);
+    dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+    std::vector<cv::Mat> rvecs, tvecs;
+    double final_err = cv::calibrateCamera(final_obj, final_img, image_size,
+                                            camera_matrix, dist_coeffs,
+                                            rvecs, tvecs);
+    std::cout << "[autoCalib] 最终标定, " << n_final << " 帧, 重投影误差: "
+              << final_err << " px" << std::endl;
+    std::cout << "[autoCalib] 相机矩阵:\n" << camera_matrix << std::endl;
+    return true;
+}
+
+bool calibrateCameraFromDisk(const std::string& save_dir,
+                              CharucoDetector& detector,
+                              cv::Mat& camera_matrix,
+                              cv::Mat& dist_coeffs) {
+
+    const auto& board_points = detector.getChessboardCorners3D();
+
+    std::vector<std::string> img_files;
+    cv::Size image_size;
+    if (!loadImagesFromDisk(save_dir, img_files, image_size))
+        return false;
+
+    std::vector<std::vector<cv::Point3f>> object_points;
+    std::vector<std::vector<cv::Point2f>> image_points;
+
+    for (const auto& path : img_files) {
+        cv::Mat img = cv::imread(path);
+        if (img.empty()) continue;
+
+        std::vector<cv::Point2f> corners;
+        std::vector<int> ids;
+        if (!detector.detectCorners(img, corners, ids))
+            continue;
+
+        std::vector<cv::Point3f> pts3;
+        std::vector<cv::Point2f> pts2;
+        for (size_t j = 0; j < ids.size(); j++) {
+            int id = ids[j];
+            if (id >= 0 && (size_t)id < board_points.size()) {
+                pts3.push_back(board_points[id]);
+                pts2.push_back(corners[j]);
+            }
+        }
+        if (pts3.size() >= 16) {
+            object_points.push_back(pts3);
+            image_points.push_back(pts2);
+        }
+    }
+
+    if (object_points.size() < 5) {
+        std::cerr << "[autoCalib] 帧数不足，无法标定相机内参 (need >=5, got "
+                  << object_points.size() << ")" << std::endl;
+        return false;
+    }
+
+    camera_matrix = cv::Mat::eye(3, 3, CV_64F);
+    dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+
+    return calibrateCameraFiltered(object_points, image_points,
+                                    image_size, camera_matrix, dist_coeffs);    
+}
+
+// ============================================================
 // 公开 API
 // ============================================================
 
@@ -1138,7 +1238,8 @@ bool calibrateHandEyeFromDisk(
     cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
-    CalibrationResult& result) {
+    CalibrationResult& result,
+    const std::string& output_yaml) {
 
     CharucoDetector detector(board_config);
     detector.setCameraParams(camera_matrix, dist_coeffs);
@@ -1189,7 +1290,31 @@ bool calibrateHandEyeFromDisk(
     }
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
-    return true;
+
+    // Save result to YAML if output path provided
+    if (!output_yaml.empty() && result.success) {
+        cv::FileStorage out(output_yaml, cv::FileStorage::WRITE);
+        if (out.isOpened()) {
+            out << "T_flange_camera" << result.T_flange_camera;
+            out << "camera_matrix" << result.camera_matrix;
+            out << "distortion_coefficients" << result.dist_coeffs;
+            out << "reprojection_error_mm" << result.reproj_error * 1000.0;
+            out << "valid_frames" << result.valid_frames;
+            out.release();
+        }
+    }
+
+    if (result.success) {
+        std::cout << "\n========== 标定结果 ==========" << std::endl;
+        std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
+        std::cout << "有效帧数: " << result.valid_frames << std::endl;
+        std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
+        std::cout << result.message << std::endl;
+        if (!output_yaml.empty())
+            std::cout << "结果已保存到: " << output_yaml << std::endl;
+    }
+
+    return result.success;
 }
 
 bool autoEyeInHandCharucoCalibration(
@@ -1202,6 +1327,7 @@ bool autoEyeInHandCharucoCalibration(
     int cameraToTcpEnd,
     CalibrationResult& result,
     const std::string& save_dir,
+    const std::string& output_yaml,
     AI_det_callback callback) {
 
     g_save_dir = save_dir;
@@ -1264,7 +1390,7 @@ bool autoEyeInHandCharucoCalibration(
         std::cout << "[autoCalib] 使用已有相机内参" << std::endl;
     }
 
-    if (!calibrateHandEyeFromDisk(save_dir, K, D, board_config, result))
+    if (!calibrateHandEyeFromDisk(save_dir, K, D, board_config, result, output_yaml))
         return false;
 
     K.copyTo(camera_matrix);

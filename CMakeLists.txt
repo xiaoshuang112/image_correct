@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB TRUE)
+SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS FALSE)
+SET(useMVS TRUE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -111,6 +111,7 @@ SET(SRC_LISTS
 charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp
     calibration.cpp exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
+    piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     utils/putText.cpp utils/Util.cpp utils/Texts.cpp utils/robot_util.cpp
 )
 

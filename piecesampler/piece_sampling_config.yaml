@@ -1,0 +1,37 @@
+%YAML:1.0
+piece_sampler:
+  # 工件中心位置 (mm)
+  position: [494.0, 25.66, 134.3]
+
+  # XY 平面偏移 (mm) — 以 position 为中心，5x5 网格
+  xy_offsets: [-500, -300, 0, 300, 500]
+
+  # Z 高度 — 工件上方距离 (mm)
+  z_heights: [300, 500, 700]
+
+  # 曝光配置
+  num_exposures: 10        # 生成的 log-spaced 曝光总数
+  exposure_indices: [4, 5, 6, 7, 8]   # 实际使用的曝光索引（从 0 开始）
+  capture_timeout_ms: 3000
+
+  # 背景（每换一个暂停，提示更换）
+  backgrounds: ["whiteboard", "towel", "plastic", "checkerboard", "clutter"]
+
+  # 工件摆放方式描述（人工按照描述摆放）
+  workpiece_configs:
+    - "1piece_A"
+    - "1piece_B"
+    - "1piece_C"
+    - "2pieces_A"
+    - "2pieces_B"
+    - "2pieces_C"
+    - "3pieces_A"
+    - "3pieces_B"
+    - "4pieces"
+    - "5pieces"
+
+  # 输出目录
+  output_dir: "data/piece_sampling"
+
+# 手眼标定矩阵（4x4 按行排列，单行避免 OpenCV YAML 解析多行缩进问题）
+T_flange_camera: [0.23696160135677208, -0.97134314343943862, 0.018485052762321017, -26.427115051899822, 0.97151587551734409, 0.23686955539986038, -0.0070510525768909468, 0.0, 0.0024704453452400483, 0.019629350928241467, 0.99980427358655166, 115.946909620155615, 0., 0., 0., 1.]

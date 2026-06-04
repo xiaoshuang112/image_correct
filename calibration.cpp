@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <iomanip>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 
 #ifdef _WIN32
@@ -41,6 +42,8 @@
 #include "basestruct.h"
 #include "utils/putText.h"
 #include "circlesampler/CircleSampler.h"
+#include "piecesampler/PieceSampler.h"
+#include "piecesampler/Config.h"
 
 CONFIG g_cfg;
 std::string g_appPath = "";
@@ -90,9 +93,11 @@ void display_menu() {
     std::cout << "1. 本地数据拟合验证" << std::endl;
     std::cout << "2. 自动手眼标定（全自动 729 位姿）" << std::endl;
     std::cout << "3. 螺纹圆形采样" << std::endl;
-    std::cout << "4. 退出程序" << std::endl;
+    std::cout << "4. CircleSample 测试图采集" << std::endl;
+    std::cout << "5. 工件检测采样" << std::endl;
+    std::cout << "6. 退出程序" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-4): ";
+    std::cout << "请选择操作 (1-6): ";
 }
 
 
@@ -172,11 +177,12 @@ int load_config(std::string cfg_file) {
 }
 
 void local_fit_demo()
+
 {
     std::cout << "\n========== 本地数据标定验证 ==========" << std::endl;
     std::cout << "从磁盘读取已有采集数据，使用 CalibrateHandEyeFromDisk 重新标定" << std::endl;
 
-    std::string save_dir = "/home/irobotic/work/caitu/build/param/calibration";
+    std::string save_dir = g_appPath + "param/calibration";
     // std::cout << "输入采集数据目录路径: ";
     // std::cin >> save_dir;
 
@@ -206,45 +212,37 @@ void local_fit_demo()
         return;
     }
 
-    // 加载相机内参
+    CharucoBoardConfig board_cfg;
     cv::Mat camera_matrix, dist_coeffs;
+
+    // 尝试加载已有相机内参，否则从图像标定
     std::string cam_file = g_paramPath + "camera_params.yaml";
     cv::FileStorage fs_cam(cam_file, cv::FileStorage::READ);
-    if (!fs_cam.isOpened()) {
-        std::cerr << "无法加载相机内参: " << cam_file << std::endl;
-        return;
-    }
-    fs_cam["camera_matrix"] >> camera_matrix;
-    fs_cam["distortion_coefficients"] >> dist_coeffs;
-    fs_cam.release();
-
-    if (camera_matrix.empty()) {
-        std::cerr << "相机内参矩阵为空" << std::endl;
-        return;
+    if (fs_cam.isOpened()) {
+        fs_cam["camera_matrix"] >> camera_matrix;
+        fs_cam["distortion_coefficients"] >> dist_coeffs;
+        fs_cam.release();
     }
 
-    std::cout << "相机内参已加载" << std::endl;
+    if (true) //camera_matrix.empty()) 
+    {
+        std::cout << "未找到已有相机内参，从采集图像标定..." << std::endl;
+        CharucoDetector detector(board_cfg);
+        if (!calibrateCameraFromDisk(save_dir, detector, camera_matrix, dist_coeffs)) {
+            std::cerr << "相机内参标定失败" << std::endl;
+            return;
+        }
+    } else {
+        std::cout << "相机内参已从文件加载" << std::endl;
+    }
+
     std::cout << "数据目录: " << save_dir << std::endl;
 
-    CharucoBoardConfig board_cfg;
     CalibrationResult result;
 
-    if (calibrateHandEyeFromDisk(save_dir, camera_matrix, dist_coeffs, board_cfg, result)) {
-        std::cout << "\n========== 标定结果 ==========" << std::endl;
-        std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
-        std::cout << "有效帧数: " << result.valid_frames << std::endl;
-        std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
-        std::cout << result.message << std::endl;
-
-        // 保存结果
-        cv::FileStorage out(g_appPath + "hand_eye_result.yaml", cv::FileStorage::WRITE);
-        out << "T_flange_camera" << result.T_flange_camera;
-        out << "camera_matrix" << result.camera_matrix;
-        out << "distortion_coefficients" << result.dist_coeffs;
-        out << "reprojection_error_mm" << (result.reproj_error * 1000.0);
-        out << "valid_frames" << result.valid_frames;
-        out.release();
-        std::cout << "结果已保存到: hand_eye_result.yaml" << std::endl;
+    if (calibrateHandEyeFromDisk(save_dir, camera_matrix, dist_coeffs, board_cfg, result,
+                                 g_appPath + "hand_eye_result.yaml")) {
+        // 结果已由 calibrateHandEyeFromDisk 输出并保存
     } else {
         std::cerr << "\n标定失败: " << result.message << std::endl;
     }
@@ -420,28 +418,13 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
         dist_coeffs,
         cameraToTcpEnd,
         result,
-        g_calibrationPath
+        g_calibrationPath,
+        g_appPath + "auto_handeye_result.yaml"
     );
 
-    // 输出/保存结果
     if (ok) {
-        std::cout << "\n========== 标定结果 ==========" << std::endl;
-        std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
-        std::cout << "相机内参:\n" << result.camera_matrix << std::endl;
-        std::cout << "畸变系数: " << result.dist_coeffs.t() << std::endl;
-        std::cout << "有效帧数: " << result.valid_frames << std::endl;
-        std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
-
-        // 保存到文件
-        cv::FileStorage out(g_appPath + "auto_handeye_result.yaml", cv::FileStorage::WRITE);
-        out << "T_flange_camera" << result.T_flange_camera;
-        out << "camera_matrix" << result.camera_matrix;
-        out << "distortion_coefficients" << result.dist_coeffs;
-        out << "reprojection_error_mm" << result.reproj_error * 1000.0;
-        out << "valid_frames" << result.valid_frames;
-        out.release();
-        std::cout << "结果已保存到: auto_handeye_result.yaml" << std::endl;
-
+        // 结果已由 calibrateHandEyeFromDisk 输出并保存
+        // 额外保存相机内参（仅当本次标定了新内参时）
         if (camera_matrix.empty()) {
             cv::FileStorage outCam(g_appPath + "camera_params.yaml", cv::FileStorage::WRITE);
             outCam << "camera_matrix" << result.camera_matrix;
@@ -574,7 +557,126 @@ void try_camera_exposure(){
     }
 }
 
-int main() {
+// ============================================================
+// CircleSample 测试图采集
+// ============================================================
+static void circle_test_collection(int argc, char** argv) {
+    // Parse args: --collect-test <config_path> [--dry-run]
+    std::string cfg_path;
+    bool dry_run = false;
+    for (int i = 2; i < argc; i++) {
+        if (strcmp(argv[i], "--dry-run") == 0) {
+            dry_run = true;
+        } else if (argv[i][0] != '-') {
+            cfg_path = argv[i];
+        }
+    }
+
+    if (cfg_path.empty()) {
+        cfg_path = g_appPath + "circlesampler/circle_test_config.yaml";
+        std::cout << "使用默认配置路径: " << cfg_path << std::endl;
+    }
+
+    CircleTestConfig cfg;
+    if (!loadCircleTestConfig(cfg_path, cfg)) {
+        std::cerr << "加载测试配置失败" << std::endl;
+        return;
+    }
+
+    // Try to load T_flange_camera from hand_eye_result.yaml as fallback
+    if (cfg.T_flange_camera.empty()) {
+        cv::FileStorage hfs(g_appPath + "hand_eye_result.yaml", cv::FileStorage::READ);
+        if (hfs.isOpened()) {
+            cv::Mat T;
+            hfs["T_flange_camera"] >> T;
+            if (!T.empty() && T.size() == cv::Size(4, 4))
+                cfg.T_flange_camera = T;
+        }
+    }
+
+    if (!validateCircleTestConfig(cfg)) {
+        std::cerr << "测试配置校验失败" << std::endl;
+        return;
+    }
+
+    // Open camera if needed
+    if (!g_camera || !g_camera->isOpened()) {
+#ifdef useORB
+        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
+#elif defined(useOAK)
+        g_camera = std::make_shared<OAKCamera>(g_cfg);
+#else
+        g_camera = std::make_shared<MVSCamera>(g_cfg);
+#endif
+        if (!g_camera->open()) {
+            std::cerr << "打开相机失败" << std::endl;
+            return;
+        }
+    }
+
+    if (dry_run) {
+        std::cout << "\n========== DRY RUN MODE ==========" << std::endl;
+        std::cout << "仅验证 IK 可达性，不拍照" << std::endl;
+        CircleSampler sampler(g_camera, cfg);
+        sampler.dryRunTestCollection();
+        return;
+    }
+
+    CircleSampler sampler(g_camera, cfg);
+    int total = sampler.runTestCollection();
+    std::cout << "\n采集完成，共 " << total << " 张图像" << std::endl;
+    std::cout << "输出目录: " << cfg.output_dir << std::endl;
+}
+
+// ============================================================
+// 工件检测采样（菜单项 5）
+// ============================================================
+static void piece_sampling() {
+    PieceSamplerConfig cfg;
+    std::string cfg_path = g_appPath + "piecesampler/piece_sampling_config.yaml";
+    if (!loadPieceSamplerConfig(cfg_path, cfg)) {
+        std::cerr << "加载工件采样配置失败: " << cfg_path << std::endl;
+        return;
+    }
+
+    // Try to load T_flange_camera from hand_eye_result.yaml as fallback
+    if (cfg.T_flange_camera.empty()) {
+        cv::FileStorage hfs(g_appPath + "hand_eye_result.yaml", cv::FileStorage::READ);
+        if (hfs.isOpened()) {
+            cv::Mat T;
+            hfs["T_flange_camera"] >> T;
+            if (!T.empty() && T.size() == cv::Size(4, 4))
+                cfg.T_flange_camera = T;
+        }
+    }
+
+    if (!validatePieceSamplerConfig(cfg)) {
+        std::cerr << "工件采样配置校验失败" << std::endl;
+        return;
+    }
+
+    // Open camera if needed
+    if (!g_camera || !g_camera->isOpened()) {
+#ifdef useORB
+        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
+#elif defined(useOAK)
+        g_camera = std::make_shared<OAKCamera>(g_cfg);
+#else
+        g_camera = std::make_shared<MVSCamera>(g_cfg);
+#endif
+        if (!g_camera->open()) {
+            std::cerr << "打开相机失败" << std::endl;
+            return;
+        }
+    }
+
+    PieceSampler sampler(g_camera, cfg);
+    int total = sampler.run();
+    std::cout << "\n采样完成，共 " << total << " 张图像" << std::endl;
+    std::cout << "输出目录: " << cfg.output_dir << std::endl;
+}
+
+int main(int argc, char** argv) {
 
     GetBasePathInfo();
 
@@ -584,12 +686,24 @@ int main() {
 
 
 
+    // CLI 参数：--collect-test 直接进入测试采集
+    if (argc >= 3 && strcmp(argv[1], "--collect-test") == 0) {
+        circle_test_collection(argc, argv);
+        return 0;
+    }
+
+    // CLI 参数：--piece-sampler 直接进入工件采样
+    if (argc >= 2 && strcmp(argv[1], "--piece-sampler") == 0) {
+        piece_sampling();
+        return 0;
+    }
+
     int choice = 0;
 
     std::setlocale(LC_ALL, "en_US.utf8");
 
     std::cout << "当前路径：" << g_appPath << std::endl;
-    
+
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
@@ -632,11 +746,17 @@ int main() {
         case 3:
             screw_sampling();
             break;
-        case 4:
+        case 4: 
+            circle_test_collection(0, nullptr);
+            break;        
+        case 5:
+            piece_sampling();
+            break;
+        case 6:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;
             return 0;
         default:
-            std::cout << "无效选择，请重新输入 (1-4)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-6)" << std::endl;
         }
 
         // 清空输入缓冲区
