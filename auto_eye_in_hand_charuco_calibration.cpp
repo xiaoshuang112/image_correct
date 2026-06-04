@@ -1081,9 +1081,12 @@ static bool calibrateCameraFiltered(
     cv::Mat& dist_coeffs) {
 
     const int min_frames = 5;
-    const int batch_size = 100;
-    const int max_good = 100;
+    int batch_size = 50;
+    const int max_good = 50;
+    
     size_t n_total = object_points.size();
+    int nTimes = n_total / batch_size;
+    batch_size = n_total / nTimes + 1;
 
     struct FrameRecord {
         std::vector<cv::Point3f> obj_pts;

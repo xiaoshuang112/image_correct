@@ -171,6 +171,7 @@ int load_config(std::string cfg_file) {
     g_cam_param.cy = 392.18;
 
     g_cam_param.width = 1280;
+    
     g_cam_param.height = 800;
 
     return 0;
