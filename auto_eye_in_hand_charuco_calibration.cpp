@@ -1112,7 +1112,7 @@ bool estimateHandEyeTrans(
     if(needFilter){
         int removed = 0;
         for(int i=valid-1; i>=0; i--){
-            if(vErr[i] > 0.001){
+            if(vErr[i] > 0.0015){
                 robot_poses.erase(robot_poses.begin() + i);
                 camera_poses.erase(camera_poses.begin() + i);
                 removed++;
