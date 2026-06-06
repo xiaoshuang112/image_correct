@@ -1078,7 +1078,7 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
     cv::Mat& dist_coeffs, int wantedNum){
     const int min_frames = 5;
     int batch_size = 50;
-    float keepRatio =std::max(0.3, (float)wantedNum / image_points.size() + 0.1);
+    float keepRatio =std::max<float>(0.3, std::min<float>((float)(wantedNum *1.5)  / image_points.size() + 0.1, 1.0));
     
     size_t n_total = object_points.size();
     int nTimes = n_total / batch_size;
@@ -1131,7 +1131,7 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
         for (size_t i = 0; i < n_keep; i++)
             good_frames.push_back(batch_records[i]);
         std::cout << "[autoCalib]  保留 " << n_keep << "/" << n_batch
-                  << " 帧 (前60%, 最大误差 " << batch_records[n_keep - 1].error << " px)"                  
+                  << " 帧 (前"<< 100 * keepRatio <<"%, 最大误差 " << batch_records[n_keep - 1].error << " px)"                  
                   << std::endl;
     }
 
@@ -1155,11 +1155,14 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
 
     std::cout << "[autoCalib] 保留 " << n_final << "/" << n_total
               << " 帧做最终标定" << std::endl;
-
+    
     std::vector<std::vector<cv::Point3f>> final_obj;
     std::vector<std::vector<cv::Point2f>> final_img;
     final_obj.reserve(n_final);
     final_img.reserve(n_final);
+    good_frames.erase(good_frames.begin() + n_final, good_frames.end());
+    std::random_device rd;
+    std::shuffle(good_frames.begin(), good_frames.end(), std::default_random_engine(rd()));
     for (size_t i = 0; i < n_final; i++) {
         final_obj.push_back(good_frames[i].obj_pts);
         final_img.push_back(good_frames[i].img_pts);
@@ -1178,7 +1181,7 @@ static bool calibrateCameraFiltered(
     const cv::Size& image_size,
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs) {
-    int wantedNum = image_points.size() * 0.5, n_final = 50;
+    int n_final = 50, wantedNum =std::max<int>( image_points.size() * 0.5, std::min<int>(image_points.size(), n_final * 2)); 
     if(filterDataForCameraCalibration(object_points, image_points, image_size, camera_matrix, dist_coeffs, wantedNum))
        filterDataForCameraCalibration(object_points, image_points, image_size, camera_matrix, dist_coeffs, n_final);
     
