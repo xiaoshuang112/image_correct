@@ -44,6 +44,9 @@
 #include "circlesampler/CircleSampler.h"
 #include "piecesampler/PieceSampler.h"
 #include "piecesampler/Config.h"
+#include "testcameradeepth/DepthTestConfig.h"
+#include "testcameradeepth/DepthRemedy.h"
+#include "testcameradeepth/DepthTester.h"
 
 CONFIG g_cfg;
 std::string g_appPath = "";
@@ -677,6 +680,35 @@ static void piece_sampling() {
     std::cout << "输出目录: " << cfg.output_dir << std::endl;
 }
 
+// ============================================================
+// 深度陈旧帧测试
+// ============================================================
+static void depth_test(const std::string& cfg_path) {
+    DepthTestConfig cfg;
+    if (!loadDepthTestConfig(cfg_path, cfg)) {
+        std::cerr << "加载深度测试配置失败: " << cfg_path << std::endl;
+        return;
+    }
+
+    // Open camera
+    if (!g_camera || !g_camera->isOpened()) {
+#ifdef useORB
+        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
+#elif defined(useOAK)
+        g_camera = std::make_shared<OAKCamera>(g_cfg);
+#else
+        g_camera = std::make_shared<MVSCamera>(g_cfg);
+#endif
+        if (!g_camera->open()) {
+            std::cerr << "打开相机失败" << std::endl;
+            return;
+        }
+    }
+
+    DepthTester tester(g_camera, robotHandle, cfg);
+    tester.run();
+}
+
 int main(int argc, char** argv) {
 
     GetBasePathInfo();
@@ -690,6 +722,12 @@ int main(int argc, char** argv) {
     // CLI 参数：--collect-test 直接进入测试采集
     if (argc >= 3 && strcmp(argv[1], "--collect-test") == 0) {
         circle_test_collection(argc, argv);
+        return 0;
+    }
+
+    // CLI 参数：--depth-test 直接进入深度测试
+    if (argc >= 3 && strcmp(argv[1], "--depth-test") == 0) {
+        depth_test(argv[2]);
         return 0;
     }
 

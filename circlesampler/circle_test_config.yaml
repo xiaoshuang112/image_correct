@@ -1,12 +1,12 @@
 %YAML:1.0
 circle_test:
-  backgrounds: ["whiteboard", "towel", "plastic", "checkerboard", "clutter"]
+  backgrounds: [ "paper1", "paper2", "paper3", "paper4"]  # "whiteboard",
   sides: ["front", "back"]
   thread_types: ["yes", "no"]
   layers: [40, 45, 50]
   points_per_layer: 18
   start_angle: 0
-  exposure_indices: [4, 5, 6, 7]
+  exposure_indices: [5, 6, 7, 8]
   position: [494.0, 25.66, 134.3]
   radius: 140
   num_exposures: 10

@@ -112,6 +112,7 @@ charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp
     calibration.cpp exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
+    testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
     utils/putText.cpp utils/Util.cpp utils/Texts.cpp utils/robot_util.cpp
 )
 

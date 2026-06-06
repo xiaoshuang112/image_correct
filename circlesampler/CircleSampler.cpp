@@ -353,23 +353,23 @@ int CircleSampler::runTestCollection() {
     // Check for existing checkpoint
     int start_bg = 0, start_combo = 0, start_layer = 0, start_point = 0;
     int resume_from = 0;
-    if (loadCheckpoint(start_bg, start_combo, start_layer, start_point)) {
-        std::cout << "检测到上次未完成采集 (bg=" << start_bg
-                  << " combo=" << start_combo
-                  << " layer=" << start_layer
-                  << " point=" << start_point << ")" << std::endl;
-        std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
-        std::string line;
-        std::getline(std::cin, line);
-        if (line == "r" || line == "R") {
-            start_bg = start_combo = start_layer = start_point = 0;
-            // Remove checkpoint
-            std::remove(checkpointPath().c_str());
-            std::cout << "已重新开始" << std::endl;
-        } else {
-            std::cout << "从断点继续" << std::endl;
-        }
-    }
+    // if (loadCheckpoint(start_bg, start_combo, start_layer, start_point)) {
+    //     std::cout << "检测到上次未完成采集 (bg=" << start_bg
+    //               << " combo=" << start_combo
+    //               << " layer=" << start_layer
+    //               << " point=" << start_point << ")" << std::endl;
+    //     std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
+    //     std::string line;
+    //     std::getline(std::cin, line);
+    //     if (line == "r" || line == "R") {
+    //         start_bg = start_combo = start_layer = start_point = 0;
+    //         // Remove checkpoint
+    //         std::remove(checkpointPath().c_str());
+    //         std::cout << "已重新开始" << std::endl;
+    //     } else {
+    //         std::cout << "从断点继续" << std::endl;
+    //     }
+    // }
 
     int cumulative = 0;   // points completed in this run (for progress)
     int total_expected = n_bg * n_combo * n_layer * n_point;

@@ -44,7 +44,8 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
 // ============================================================
 bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint) {
     double ref_j[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos((RobotHandle)robot_handle, ref_j) != sucess)
+    if (cr_get_jointActualPos
+        ((RobotHandle)robot_handle, ref_j) != sucess)
         return false;
     if (cr_kineInverse((RobotHandle)robot_handle, flangeAnglePos, ref_j, joint) != sucess)
         return false;
