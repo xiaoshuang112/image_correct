@@ -1505,7 +1505,16 @@ bool calibrateHandEyeFromDisk(
         return false;
 
     size_t n = std::min(img_files.size(), flange_poses.size());
-    std::vector<cv::Mat> robot_poses, camera_poses;
+    const auto& board_points = detector.getChessboardCorners3D();
+
+    // 逐帧检测 + 计算重投影误差
+    struct FrameRecord {
+        cv::Mat robot_pose;
+        cv::Mat camera_pose;
+        double error;
+    };
+    std::vector<FrameRecord> frames;
+    frames.reserve(n);
 
     for (size_t i = 0; i < n; i++) {
         cv::Mat img = cv::imread(img_files[i]);
@@ -1517,9 +1526,45 @@ bool calibrateHandEyeFromDisk(
         if (!detector.detectPose(img, rvec, tvec, corners, ids, 16))
             continue;
 
-        robot_poses.push_back(flange_poses[i]);
-        camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
+        // 计算该帧重投影误差
+        std::vector<cv::Point3f> pts3;
+        std::vector<cv::Point2f> pts2;
+        for (size_t j = 0; j < ids.size(); j++) {
+            int id = ids[j];
+            if (id >= 0 && (size_t)id < board_points.size()) {
+                pts3.push_back(board_points[id]);
+                pts2.push_back(corners[j]);
+            }
+        }
+        if (pts3.size() < 4) continue;
+
+        std::vector<cv::Point2f> projected;
+        cv::projectPoints(pts3, rvec, tvec, camera_matrix, dist_coeffs, projected);
+        double sum_err = 0.0;
+        for (size_t j = 0; j < projected.size(); j++)
+            sum_err += cv::norm(projected[j] - pts2[j]);
+
+        double err = sum_err / projected.size();
+        frames.push_back({flange_poses[i], rvecTvecToTransform(rvec, tvec), err});
     }
+
+    // 按误差排序，保留误差最小的帧
+    std::sort(frames.begin(), frames.end(),
+              [](const FrameRecord& a, const FrameRecord& b) { return a.error < b.error; });
+
+    size_t n_orig = frames.size();
+    size_t n_keep = std::min(n_orig, std::max(size_t(300), size_t(n_orig * 0.7)));
+    std::cout << "[autoCalib] 手眼标定: " << n_orig << " 帧, 保留误差最小的 "
+              << n_keep << " 帧" << std::endl;
+
+    std::vector<cv::Mat> robot_poses, camera_poses;
+    robot_poses.reserve(n_keep);
+    camera_poses.reserve(n_keep);
+    for (size_t i = 0; i < n_keep; i++) {
+        robot_poses.push_back(frames[i].robot_pose);
+        camera_poses.push_back(frames[i].camera_pose);
+    }
+
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
 

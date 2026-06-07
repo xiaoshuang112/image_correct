@@ -62,18 +62,20 @@ CRresult PieceSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
 }
 
 void PieceSampler::genExposures() {
-    int minExp = 0, maxExp = 1000000;
-    minExp = 4662; maxExp = 41592;
+    int minExp = 10, maxExp = 1800;
+    m_camera->getExposureRange(minExp, maxExp);
+    //minExp = 4662; maxExp = 41592;
 
     int n = m_config.num_exposures;
-    if (n < 2) n = 2;
+    if (n < 2) 
+        n = 2;
 
     _exp_values.resize(n);
-    double logMin = std::log10(minExp + 1.0);
-    double logMax = std::log10(maxExp);
+    // double logMin = std::log10(minExp + 1.0);
+    // double logMax = std::log10(maxExp);
     for (int i = 0; i < n; i++) {
-        double logVal = logMin + (logMax - logMin) * i / (n - 1);
-        _exp_values[i] = (int)std::round(std::pow(10.0, logVal));
+        _exp_values[i] = minExp + (maxExp - minExp) * i / (n - 1);
+        //_exp_values[i] = logVal;//(int)std::round(std::pow(10.0, logVal));
     }
 
     std::cout << "  Exposure range: " << minExp << " ~ " << maxExp << " us, using "
@@ -257,15 +259,16 @@ int PieceSampler::run() {
             std::cin.get();
 
             int z_start = (bi == start_bg && wi == wp_start) ? start_z : 0;
+            double max_z = *std::max_element(cfg.z_heights.begin(), cfg.z_heights.end());
             for (int zi = z_start; zi < n_z; zi++) {
-                double dz = cfg.z_heights[zi];
+                double dz = cfg.z_heights[zi], z_shrink = sqrt(dz / max_z);
 
                 int xy_start = (bi == start_bg && wi == wp_start && zi == z_start) ? start_xy : 0;
                 for (int xyi = xy_start; xyi < n_xy * n_xy; xyi++) {
                     int xi = xyi / n_xy;
                     int yi = xyi % n_xy;
-                    double dx = cfg.xy_offsets[xi];
-                    double dy = cfg.xy_offsets[yi];
+                    double dx = cfg.xy_offsets[xi] * z_shrink;
+                    double dy = cfg.xy_offsets[yi] * z_shrink;
 
                     double pose[6];
                     computeFixedPose(cx + dx, cy + dy, cz + dz, pose);

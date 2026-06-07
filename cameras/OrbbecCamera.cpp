@@ -164,7 +164,7 @@ bool OrbbecCameraV2::open() {
 
         // 6. 设置帧聚合模式
         m_configPtr->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ANY_SITUATION);
-        
+
         // 7. 启动 Pipeline
         std::cout << "Starting pipeline..." << std::endl;
         m_pipeline->start(m_configPtr);
@@ -198,7 +198,20 @@ bool OrbbecCameraV2::open() {
         m_isOpened = true;
         std::cout << "Camera started: " << m_config.cam_width << "x" << m_config.cam_height
                   << " @ " << m_config.fps << "fps" << std::endl;
-        
+
+        // 诊断：打印曝光相关属性支持情况
+        std::cout << "Exposure property support:" << std::endl;
+        std::cout << "  OB_PROP_COLOR_EXPOSURE_INT read: "
+                  << (m_device->isPropertySupported(OB_PROP_COLOR_EXPOSURE_INT, OB_PERMISSION_READ) ? "YES" : "NO")
+                  << ", write: "
+                  << (m_device->isPropertySupported(OB_PROP_COLOR_EXPOSURE_INT, OB_PERMISSION_WRITE) ? "YES" : "NO")
+                  << std::endl;
+        std::cout << "  OB_PROP_COLOR_AUTO_EXPOSURE_BOOL read: "
+                  << (m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_READ) ? "YES" : "NO")
+                  << ", write: "
+                  << (m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_WRITE) ? "YES" : "NO")
+                  << std::endl;
+
         return true;
     }
     catch (const ob::Error& e) {
@@ -468,23 +481,29 @@ bool OrbbecCameraV2::setColorExposureTime(int exposureUs) {
     }
     
     try {
+        // 先关闭自动曝光 — isPropertySupported 在某些固件上不可靠，直接 try/catch
+        try {
+            m_device->setBoolProperty(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, false);
+        } catch (const ob::Error&) {
+            // 不支持自动曝光属性也没关系，继续尝试设手动曝光
+        }
+
         // 检查设备是否支持曝光时间设置
         if (!m_device->isPropertySupported(OB_PROP_COLOR_EXPOSURE_INT, OB_PERMISSION_WRITE)) {
             std::cerr << "Device does not support color exposure setting" << std::endl;
-            m_exposureCached = exposureUs;
-            return true;
+            return false;
         }
-        
+
         // 获取曝光范围（可选，用于验证）
         if (m_device->isPropertySupported(OB_PROP_COLOR_EXPOSURE_INT, OB_PERMISSION_READ)) {
             auto range = m_device->getIntPropertyRange(OB_PROP_COLOR_EXPOSURE_INT);
             if (exposureUs < range.min || exposureUs > range.max) {
-                std::cerr << "Exposure value " << exposureUs << " us out of range [" 
+                std::cerr << "Exposure value " << exposureUs << " us out of range ["
                           << range.min << ", " << range.max << "]" << std::endl;
                 return false;
             }
         }
-        
+
         // 设置曝光时间
         m_device->setIntProperty(OB_PROP_COLOR_EXPOSURE_INT, exposureUs);
         m_exposureCached = exposureUs;
@@ -530,8 +549,7 @@ bool OrbbecCameraV2::setAutoExposure(bool enable) {
     try {
         if (!m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_WRITE)) {
             std::cerr << "Device does not support auto exposure setting" << std::endl;
-            m_autoExposureCached = enable;
-            return true;
+            return false;
         }
         
         m_device->setBoolProperty(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, enable);
@@ -567,18 +585,15 @@ bool OrbbecCameraV2::getAutoExposure() {
 bool OrbbecCameraV2::getExposureRange(int& minUs, int& maxUs) {
     if (!m_isOpened || !m_device) {
         std::cerr << "Camera not opened" << std::endl;
-        minUs = 50;
-        maxUs = 1999;
-        return true;
+        return false;
     }
-    
+
     try {
         if (!m_device->isPropertySupported(OB_PROP_COLOR_EXPOSURE_INT, OB_PERMISSION_READ)) {
-            minUs = 50;
-            maxUs = 1999;
-            return true;
+            std::cerr << "Device does not support reading exposure range" << std::endl;
+            return false;
         }
-        
+
         auto range = m_device->getIntPropertyRange(OB_PROP_COLOR_EXPOSURE_INT);
         minUs = range.min;
         maxUs = range.max;
@@ -586,9 +601,7 @@ bool OrbbecCameraV2::getExposureRange(int& minUs, int& maxUs) {
     }
     catch (const ob::Error& e) {
         std::cerr << "Get exposure range error: " << e.getMessage() << std::endl;
-        minUs = 50;
-        maxUs = 1999;
-        return true;
+        return false;
     }
 }
 
