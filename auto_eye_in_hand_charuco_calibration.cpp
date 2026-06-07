@@ -906,6 +906,140 @@ bool executeCollection(int robot_handle,
     return captured > 0;
 }
 
+// 手眼标定精化: Gauss-Newton 最小化基座标系下板位姿平移方差
+// X_init: 初始手眼矩阵 4x4 (flange→camera, 单位: m)
+// robot_poses: T_base_flange 列表
+// camera_poses: T_camera_calib 列表
+static cv::Mat refineHandEyePoseConsistency(
+    const cv::Mat& X_init,
+    const std::vector<cv::Mat>& robot_poses,
+    const std::vector<cv::Mat>& camera_poses) {
+
+    int n = (int)robot_poses.size();
+    if (n < 3) return X_init.clone();
+
+    // 参数化 p = [tx, ty, tz, rx, ry, rz]
+    cv::Mat p(6, 1, CV_64F);
+    cv::Mat R_init = X_init(cv::Rect(0, 0, 3, 3)).clone();
+    cv::Mat rvec_init;
+    cv::Rodrigues(R_init, rvec_init);
+    p.at<double>(0) = X_init.at<double>(0, 3);
+    p.at<double>(1) = X_init.at<double>(1, 3);
+    p.at<double>(2) = X_init.at<double>(2, 3);
+    p.at<double>(3) = rvec_init.at<double>(0);
+    p.at<double>(4) = rvec_init.at<double>(1);
+    p.at<double>(5) = rvec_init.at<double>(2);
+
+    // 参数 → 4x4
+    auto buildX = [](const cv::Mat& params) -> cv::Mat {
+        cv::Mat R(3, 3, CV_64F);
+        cv::Mat rv(3, 1, CV_64F);
+        rv.at<double>(0) = params.at<double>(3);
+        rv.at<double>(1) = params.at<double>(4);
+        rv.at<double>(2) = params.at<double>(5);
+        cv::Rodrigues(rv, R);
+        cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
+        R.copyTo(T(cv::Rect(0, 0, 3, 3)));
+        T.at<double>(0, 3) = params.at<double>(0);
+        T.at<double>(1, 3) = params.at<double>(1);
+        T.at<double>(2, 3) = params.at<double>(2);
+        return T;
+    };
+
+    // 计算所有帧的残差和代价
+    // r_i = trans(T_base_flange[i] * X * T_cam[i]) - mean(trans(...))
+    auto eval = [&](const cv::Mat& X,
+                    std::vector<cv::Mat>& residuals,
+                    cv::Mat& mean_t) -> double {
+        std::vector<cv::Mat> tvecs(n);
+        mean_t = cv::Mat::zeros(3, 1, CV_64F);
+        for (int i = 0; i < n; i++) {
+            cv::Mat T = robot_poses[i] * X * camera_poses[i];
+            tvecs[i] = T(cv::Rect(3, 0, 1, 3)).clone();
+            mean_t += tvecs[i];
+        }
+        mean_t /= n;
+        double cost = 0.0;
+        residuals.resize(n);
+        for (int i = 0; i < n; i++) {
+            residuals[i] = tvecs[i] - mean_t;
+            cost += residuals[i].dot(residuals[i]);
+        }
+        return cost;
+    };
+
+    const double eps_step = 1e-8;
+    const int max_iters = 100;
+    double lambda = 1e-6;
+    cv::Mat X = buildX(p);
+    std::vector<cv::Mat> res;
+    cv::Mat mean_t;
+    double prev_cost = eval(X, res, mean_t);
+    std::cout << "[refine] 初始方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
+
+    for (int iter = 0; iter < max_iters; iter++) {
+        // 组装右端项 R_full (3n × 1)
+        cv::Mat R_full(3 * n, 1, CV_64F);
+        for (int i = 0; i < n; i++) {
+            R_full.at<double>(3 * i,     0) = res[i].at<double>(0);
+            R_full.at<double>(3 * i + 1, 0) = res[i].at<double>(1);
+            R_full.at<double>(3 * i + 2, 0) = res[i].at<double>(2);
+        }
+
+        // 有限差分雅可比 J_full (3n × 6)
+        cv::Mat J_full(3 * n, 6, CV_64F);
+        for (int j = 0; j < 6; j++) {
+            cv::Mat p_pert = p.clone();
+            p_pert.at<double>(j) += eps_step;
+            cv::Mat X_pert = buildX(p_pert);
+            std::vector<cv::Mat> res_pert;
+            cv::Mat mean_pert;
+            eval(X_pert, res_pert, mean_pert);
+            for (int i = 0; i < n; i++) {
+                J_full.at<double>(3 * i,     j) = (res_pert[i].at<double>(0) - res[i].at<double>(0)) / eps_step;
+                J_full.at<double>(3 * i + 1, j) = (res_pert[i].at<double>(1) - res[i].at<double>(1)) / eps_step;
+                J_full.at<double>(3 * i + 2, j) = (res_pert[i].at<double>(2) - res[i].at<double>(2)) / eps_step;
+            }
+        }
+
+        // 阻尼 Gauss-Newton: (J^T J + λI) Δp = -J^T r
+        cv::Mat H = J_full.t() * J_full;
+        cv::Mat g = J_full.t() * R_full;
+        for (int j = 0; j < 6; j++)
+            H.at<double>(j, j) += lambda;
+
+        cv::Mat dp;
+        if (!cv::solve(H, -g, dp, cv::DECOMP_SVD))
+            break;
+
+        // 尝试步进
+        cv::Mat p_new = p + dp;
+        cv::Mat X_new = buildX(p_new);
+        std::vector<cv::Mat> res_new;
+        cv::Mat mean_new;
+        double cost = eval(X_new, res_new, mean_new);
+
+        if (cost < prev_cost) {
+            p = p_new;
+            X = X_new;
+            res = res_new;
+            mean_t = mean_new;
+            lambda *= 0.3;
+            if (iter % 10 == 0)
+                std::cout << "[refine]   iter " << iter << ": "
+                          << (cost * 1e6) << " mm²" << std::endl;
+            if (std::abs(prev_cost - cost) < 1e-14 || prev_cost == 0.0)
+                break;
+            prev_cost = cost;
+        } else {
+            lambda *= 3.0;
+        }
+    }
+
+    std::cout << "[refine] 精化后方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
+    return X;
+}
+
 bool estimateHandEyeTrans(
      const cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
@@ -960,6 +1094,11 @@ bool estimateHandEyeTrans(
         R_cam_gripper.copyTo(T(cv::Rect(0, 0, 3, 3)));
         t_cam_gripper.copyTo(T(cv::Rect(3, 0, 1, 3)));
 
+        // cv::Mat T = calib_results[best_idx].T.clone();
+
+        // 非线性和一致性精化（Gauss-Newton，无需外部依赖）
+        T = refineHandEyePoseConsistency(T, robot_poses, camera_poses);
+
         // 评估平移一致性：T_base_calib = T_base_flange * X * T_camera_calib
         std::vector<double> vErr;
         double sum_err = 0.0;
@@ -993,6 +1132,10 @@ bool estimateHandEyeTrans(
     }
 
     cv::Mat T = calib_results[best_idx].T.clone();
+
+    // // 非线性和一致性精化（Gauss-Newton，无需外部依赖）
+    // T = refineHandEyePoseConsistency(T, robot_poses, camera_poses);
+
     std::vector<double>& vErr = calib_results[best_idx].per_frame_errors;
     double rms_err = calib_results[best_idx].reproj_error;
 
@@ -1007,7 +1150,7 @@ bool estimateHandEyeTrans(
 
     std::cout << "[autoCalib] " << result.message << std::endl;
     std::cout << "[autoCalib] 最优方法: " << calib_results[best_idx].name << std::endl;
-    std::cout << "[autoCalib] T_flange_camera:\n" << T << std::endl;
+    std::cout << "[autoCalib] T_flange_camera:\n" << result.T_flange_camera << std::endl;
 
     // 位姿分布分析
     if (valid > 0) {
@@ -1032,8 +1175,9 @@ bool estimateHandEyeTrans(
 
     if(needFilter){
         int removed = 0;
+        float thresh = 0.0007;
         for(int i=valid-1; i>=0; i--){
-            if(vErr[i] > 0.0007){
+            if(vErr[i] > thresh){
                 robot_poses.erase(robot_poses.begin() + i);
                 camera_poses.erase(camera_poses.begin() + i);
                 removed++;
@@ -1041,14 +1185,12 @@ bool estimateHandEyeTrans(
        }
         if (removed > 0) {
             std::cout << "[autoCalib] 离群剔除: " << removed
-                      << " 帧 (阈值 " << 20 << "mm), 剩余 " << robot_poses.size() << " 帧" << std::endl;
+                      << " 帧 (阈值 " << thresh << "mm), 剩余 " << robot_poses.size() << " 帧" << std::endl;
         }
     }
 
     return true;
-}
-
-} // anonymous namespace
+}} // anonymous namespace
 
 // ============================================================
 // 相机内参标定（从目录读取图像）
@@ -1176,26 +1318,83 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
 // 每批最多 batch_size 帧，标定后只取误差最小的前 30% 进入候选池，
 // 最后从候选池取误差最小的 max_good 帧做最终标定。
 static bool calibrateCameraFiltered(
-    std::vector<std::vector<cv::Point3f>>& object_points,
-    std::vector<std::vector<cv::Point2f>>& image_points,
+    const std::vector<std::vector<cv::Point3f>>& object_points,
+    const std::vector<std::vector<cv::Point2f>>& image_points,
     const cv::Size& image_size,
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs) {
-    int n_final = 50, wantedNum =std::max<int>( image_points.size() * 0.5, std::min<int>(image_points.size(), n_final * 2)); 
-    if(filterDataForCameraCalibration(object_points, image_points, image_size, camera_matrix, dist_coeffs, wantedNum))
-       filterDataForCameraCalibration(object_points, image_points, image_size, camera_matrix, dist_coeffs, n_final);
+    int n_final = 65;
+    float fRatio = sqrt((float)n_final / image_points.size());
+    int  wantedNum =std::max<int>( (int)(image_points.size() * fRatio), std::min<int>(image_points.size(), n_final * 2)); 
+    std::vector<std::vector<cv::Point3f>> object_points_l = object_points;
+    std::vector<std::vector<cv::Point2f>> image_points_l = image_points;
+    if(filterDataForCameraCalibration(object_points_l, image_points_l, image_size, camera_matrix, dist_coeffs, wantedNum))
+       filterDataForCameraCalibration(object_points_l, image_points_l, image_size, camera_matrix, dist_coeffs, n_final);
     
 
     camera_matrix = cv::Mat::eye(3, 3, CV_64F);
     dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
     std::vector<cv::Mat> rvecs, tvecs;
-    double final_err = cv::calibrateCamera(object_points, image_points, image_size,
+    double final_err = cv::calibrateCamera(object_points_l, image_points_l, image_size,
                                             camera_matrix, dist_coeffs,
                                             rvecs, tvecs);
     std::cout << "[autoCalib] 最终标定, " << n_final << " 帧, 重投影误差: "
               << final_err << " px" << std::endl;
     std::cout << "[autoCalib] 相机矩阵:\n" << camera_matrix << std::endl;
     return true;
+}
+
+// 相机内参精化: 用全部有效帧数据做离群过滤后重标定
+// K, D 入/出: 初始值来自 filtered 管线, 返回精化结果
+static void refineCameraIntrinsics(
+    cv::Mat& K, cv::Mat& D,
+    const std::vector<std::vector<cv::Point3f>>& all_obj,
+    const std::vector<std::vector<cv::Point2f>>& all_img,
+    const cv::Size& image_size) {
+
+    int n = (int)all_obj.size(), miniNum = std::min<int>(50, all_obj.size());
+    if (n < 5) return;
+
+    // 逐帧 solvePnP + 重投影误差 (快: ~0.2ms/帧)
+    struct Rec { int idx; double err; };
+    std::vector<Rec> recs;
+    recs.reserve(n);
+    for (int i = 0; i < n; i++) {
+        cv::Mat rvec, tvec;
+        if (!cv::solvePnP(all_obj[i], all_img[i], K, D, rvec, tvec))
+            continue;
+        std::vector<cv::Point2f> proj;
+        cv::projectPoints(all_obj[i], rvec, tvec, K, D, proj);
+        double sum = 0.0;
+        for (size_t j = 0; j < proj.size(); j++)
+            sum += cv::norm(proj[j] - all_img[i][j]);
+        recs.push_back({i, sum / proj.size()});
+    }
+    if ((int)recs.size() < 5) return;
+
+    std::sort(recs.begin(), recs.end(),
+              [](const Rec& a, const Rec& b) { return a.err < b.err; });
+    
+    double median = recs[miniNum / 2].err;
+    double thresh = median * 1.2;
+
+    std::vector<std::vector<cv::Point3f>> good_obj;
+    std::vector<std::vector<cv::Point2f>> good_img;
+    for (auto& r : recs) {
+        if (r.err <= thresh) {
+            good_obj.push_back(all_obj[r.idx]);
+            good_img.push_back(all_img[r.idx]);
+        }
+    }
+    std::cout << "[refineCam] 重投影过滤: " << good_obj.size() << "/" << n
+              << " 帧保留 (median=" << median << " px, thresh=" << thresh << " px)" << std::endl;
+    if ((int)good_obj.size() < 5) return;
+
+    std::vector<cv::Mat> rvecs, tvecs;
+    double final_err = cv::calibrateCamera(good_obj, good_img, image_size, K, D, rvecs, tvecs,
+                         cv::CALIB_USE_INTRINSIC_GUESS);
+    std::cout << "[refineCam] 精化完成: " << good_obj.size() << " 帧, err=" << final_err << " px" << std::endl;
+    std::cout << "[autoCalib] 相机矩阵:\n" << K << std::endl;
 }
 
 bool calibrateCameraFromDisk(const std::string& save_dir,
@@ -1210,11 +1409,10 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
     if (!loadImagesFromDisk(save_dir, img_files, image_size))
         return false;
 
-    std::random_device rd;
-    std::shuffle(img_files.begin(), img_files.end(), std::default_random_engine(rd()));
-
     std::vector<std::vector<cv::Point3f>> object_points;
     std::vector<std::vector<cv::Point2f>> image_points;
+    std::random_device rd;
+    std::shuffle(img_files.begin(), img_files.end(), std::default_random_engine(rd()));
 
     for (const auto& path : img_files) {
         cv::Mat img = cv::imread(path);
@@ -1246,11 +1444,21 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
         return false;
     }
 
+    // 保存全部有效帧，过滤 + 精化用
+    auto all_obj = object_points;
+    auto all_img = image_points;
+
     camera_matrix = cv::Mat::eye(3, 3, CV_64F);
     dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
 
-    return calibrateCameraFiltered(object_points, image_points,
-                                    image_size, camera_matrix, dist_coeffs);    
+    if (!calibrateCameraFiltered(object_points, image_points,
+                                 image_size, camera_matrix, dist_coeffs))
+        return false;
+
+    // 以过滤后的 K,D 为初值，用全部有效帧做离群过滤 + 重标定
+    refineCameraIntrinsics(camera_matrix, dist_coeffs,
+                           all_obj, all_img, image_size);
+    return true;
 }
 
 // ============================================================
