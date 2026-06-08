@@ -1175,7 +1175,7 @@ bool estimateHandEyeTrans(
 
     if(needFilter){
         int removed = 0;
-        float thresh = 0.0007;
+        float thresh = 0.0015;
         for(int i=valid-1; i>=0; i--){
             if(vErr[i] > thresh){
                 robot_poses.erase(robot_poses.begin() + i);
@@ -1249,8 +1249,8 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
         std::vector<cv::Mat> rvecs, tvecs;
         double err = cv::calibrateCamera(batch_obj, batch_img, image_size,
                                           K, D, rvecs, tvecs);
-        std::cout << "[autoCalib] 批次 " << (start / batch_size)
-                  << ": " << n_batch << " 帧, 重投影误差 " << err << " px" << std::endl;
+        std::cout << "[autoCalib] 批次 " << (start / batch_size) << "/" <<nTimes
+                  << ": , 重投影误差 " << err << " px" << std::endl;
 
         // 计算每帧投影误差
         std::vector<FrameRecord> batch_records;
