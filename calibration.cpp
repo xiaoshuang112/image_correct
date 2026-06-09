@@ -423,7 +423,7 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
         cameraToTcpEnd,
         result,
         g_calibrationPath,
-        g_appPath + "auto_handeye_result.yaml"
+        g_appPath + "hand_eye_result.yaml"
     );
 
     if (ok) {
@@ -746,7 +746,7 @@ int main(int argc, char** argv) {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    char *pchRobotIp = "192.168.6.6";
+    char *pchRobotIp = "192.168.1.6";
 
     CRresult result;
     result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
