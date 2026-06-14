@@ -153,6 +153,56 @@ void transformToAxisAnglePose(const cv::Mat& T, double pose[6]) {
     pose[5] = rvec.at<double>(2) * 180.0 / CV_PI;
 }
 
+// 计算角点凸包在两个方向上的像素跨度（用于基于像素变化估计距离）
+// 返回最大方向跨度; out_w/out_h 为可选输出（宽度、高度）
+static float computePixelSpan(const std::vector<cv::Point2f>& corners,
+                              float* out_w = nullptr,
+                              float* out_h = nullptr) {
+    float min_x = std::numeric_limits<float>::max(), max_x = -std::numeric_limits<float>::max();
+    float min_y = std::numeric_limits<float>::max(), max_y = -std::numeric_limits<float>::max();
+    for (auto& pt : corners) {
+        min_x = std::min(min_x, pt.x); max_x = std::max(max_x, pt.x);
+        min_y = std::min(min_y, pt.y); max_y = std::max(max_y, pt.y);
+    }
+    if (out_w) *out_w = max_x - min_x;
+    if (out_h) *out_h = max_y - min_y;
+    return std::max(max_x - min_x, max_y - min_y);
+}
+
+// 从两组具有共同 ID 的 ChArUco 角点中，找第一帧距离最远的点对，
+// 返回该点对在两帧中的距离（用于双图像高度估计，避免个别角点缺失的影响）
+static bool computeCommonSpan(const std::vector<cv::Point2f>& corners1,
+                              const std::vector<int>& ids1,
+                              const std::vector<cv::Point2f>& corners2,
+                              const std::vector<int>& ids2,
+                              float& dist1, float& dist2) {
+    // 收集共同 ID 的点
+    std::vector<cv::Point2f> pts1, pts2;
+    for (size_t i = 0; i < ids2.size(); i++) {
+        for (size_t j = 0; j < ids1.size(); j++) {
+            if (ids2[i] == ids1[j]) {
+                pts1.push_back(corners1[j]);
+                pts2.push_back(corners2[i]);
+                break;
+            }
+        }
+    }
+    if (pts1.size() < 2) return false;
+
+    // 找第一帧中距离最远的点对
+    dist1 = 0; dist2 = 0;
+    for (size_t i = 0; i < pts1.size(); i++) {
+        for (size_t j = i + 1; j < pts1.size(); j++) {
+            float d1 = cv::norm(pts1[i] - pts1[j]);
+            if (d1 > dist1) {
+                dist1 = d1;
+                dist2 = cv::norm(pts2[i] - pts2[j]);
+            }
+        }
+    }
+    return true;
+}
+
 // ============================================================
 // 评价函数 + XY 搜索（共用）
 // ============================================================
@@ -582,16 +632,13 @@ static bool computeZValues(int robot_handle,
     memcpy(outZ, z_out_, sizeof(outZ));
     
 
-    // 在当前位姿检测标定板像素尺寸
-    cv::Mat frame, depth; 
-    for(int i = 0; i < 3; i++){
-      camera->captureOneFrameWithDepth(frame, depth);
-      if(depth.cols > 0 ) break;
-    }
-    if (frame.empty() || depth.empty()){
-       std::cout << "[computeZValues] ChArUco 获取深度图像失败" << std::endl;  
+    // 双图像高度估计: 在 Z 方向偏移两个位置拍摄，利用像素尺寸变化反算相机到标定板距离
+    // Pinhole: s = f*W/H => s1 = k/H, s2 = k/(H+dZ) => H = dZ * s2 / (s1 - s2)
+    cv::Mat frame = camera->captureOneFrame(1500);
+    if (frame.empty()){
+       std::cout << "[computeZValues] 采集图像失败" << std::endl;
        return false;
-    } 
+    }
 
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
@@ -600,26 +647,44 @@ static bool computeZValues(int robot_handle,
         return false;
     }
 
-    //{
-        double heightCamera = computeAvgDepth(depth, corners);
-        if (heightCamera > 0.0)
-            std::cout << "[autoCalib] ChArUco 区域平均深度: " << heightCamera << " mm" << std::endl;
-    //}
+    // 第二帧: 抬高 Z_STEP 后拍摄
+    double initJoint[ROB_AXIS_NUM];
+    cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
+    const double Z_STEP = 150.0;
+    double flangeUp[ROB_AXIS_NUM];
+    std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, flangeUp);
+    flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
+    moveToFlangeEulePos(robot_handle, flangeUp);
 
-    float min_x = std::numeric_limits<float>::max();
-    float max_x = -std::numeric_limits<float>::max();
-    float min_y = std::numeric_limits<float>::max();
-    float max_y = -std::numeric_limits<float>::max();
-    for (auto& pt : corners) {
-        min_x = std::min(min_x, pt.x);
-        max_x = std::max(max_x, pt.x);
-        min_y = std::min(min_y, pt.y);
-        max_y = std::max(max_y, pt.y);
+    cv::Mat frame2 = camera->captureOneFrame(1500);
+    if (frame2.empty()) { moveToJointPos(robot_handle, initJoint); return false; }
+    std::vector<cv::Point2f> corners2;
+    std::vector<int> ids2;
+    if (!detector.detectCorners(frame2, corners2, ids2) || ids2.size() < 4) {
+        moveToJointPos(robot_handle, initJoint); return false;
+    }
+    moveToJointPos(robot_handle, initJoint);
+
+    // 用两帧共同存在的角点中最远的一对，计算像素尺寸变化
+    float dim1, dim2;
+    if (!computeCommonSpan(corners, ids, corners2, ids2, dim1, dim2)) {
+        std::cout << "[computeZValues] 两帧共同角点不足" << std::endl;
+        return false;
+    }
+    moveToJointPos(robot_handle, initJoint);
+
+    double heightCamera = 0.0;
+    if (dim1 > dim2 && (dim1 - dim2) > 0.5f) {
+        heightCamera = Z_STEP * dim2 / (dim1 - dim2);
+        std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
+                  << " mm (像素 " << dim1 << "→" << dim2 << " px, 步长 " << Z_STEP << " mm)" << std::endl;
+    } else {
+        std::cout << "[computeZValues] 高度估计失败 (dim1=" << dim1 << ", dim2=" << dim2 << ")" << std::endl;
+        return false;
     }
 
-    float board_w = max_x - min_x;
-    float board_h = max_y - min_y;
-    float board_dim = std::max(board_w, board_h);
+    float board_w, board_h;
+    float board_dim = computePixelSpan(corners, &board_w, &board_h);
     float img_w = (float)frame.cols;
     float img_h = (float)frame.rows;
     float img_dim = (board_w >= board_h) ? img_w : img_h;
@@ -629,11 +694,11 @@ static bool computeZValues(int robot_handle,
          return false; }
 
     double current_z = oriFlangeEulePos[2];
-    const double ratios[3] = {0.08, 0.16, 0.30};
+    const double ratios[] = {0.08, 0.16, 0.30, 0.5, 0.7, 0.8, 0.2, 0.4, 0.6};
     double z_board = current_z - heightCamera;//, heightTcp = heightCamera - cameraToTcpEnd;
     double minH = 1.5 * cameraToTcpEnd; // Avoid TCP collision with calibration plate 
-
-    for (int i = 0; i < 3; i++) {
+    int shrinked = 0;
+    for (int i = 0; i < std::size(ratios) && shrinked < 3; i++) {
         
         double z_attempt = std::max(minH, heightCamera/2 * board_dim / (ratios[i] * img_dim)) + z_board;
 
@@ -648,8 +713,10 @@ static bool computeZValues(int robot_handle,
             //double joint[ROB_AXIS_NUM];
             std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, euler);
             euler[2] = z_attempt;
-            if(!moveToFlangeEulePos(robot_handle, euler))
-               continue;           
+            if(!moveToFlangeEulePos(robot_handle, euler)){
+                z_attempt *= 0.9;
+                continue;         
+            }                 
 
             cv::Mat vf = camera->captureOneFrame(1500);
             if (vf.empty()) continue;
@@ -686,13 +753,14 @@ static bool computeZValues(int robot_handle,
                 if (cr_get_tcpActualPose((RobotHandle)robot_handle, pose) == sucess)
                 {
                     convertTcpAxisPos2FlangeEule(robot_handle, pose, flangeEule);
-                    outZ[i] = flangeEule[2];
+                    outZ[shrinked] = flangeEule[2];
                     std::cout << "[autoCalib]    → 收敛, Z=" << outZ[i] << std::endl;
                 } else {
-                    outZ[i] = z_attempt;
+                    outZ[shrinked] = z_attempt;
                     std::cout << "[autoCalib]    → 收敛, 读位姿失败用 Z=" << outZ[i] << std::endl;
                 }
                 converged = true;
+                shrinked++;
                 break;
             }
 
@@ -707,7 +775,7 @@ static bool computeZValues(int robot_handle,
         }
 
         if (!converged) {
-            outZ[i] = best_z;
+            // outZ[i] = best_z;
             std::cout << "[autoCalib]    → 未收敛, 使用最佳 Z=" << best_z
                       << " (ratio_err=" << best_ratio_err << ")" << std::endl;
         }
@@ -715,7 +783,7 @@ static bool computeZValues(int robot_handle,
 
     // 回到原始位置
     moveToFlangeEulePos(robot_handle, oriFlangeEulePos);    
-    memcpy(z_out_, outZ, sizeof(outZ));
+    memcpy(z_out_, outZ, sizeof(outZ[0])*shrinked);
 
     return true;
 }

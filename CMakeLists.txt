@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB TRUE)
+SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS FALSE)
+SET(useMVS TRUE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -41,7 +41,7 @@ endif()
 
 message("Architecture Type: ${ARCH_TYPE}")
 
-
+ 
 # Orbbec SDK v2 路径
 if(WIN32)
 	set(ORBBEC_SDK_V2_DIR "F:\Program Files\OrbbecSDK 2.4.11")

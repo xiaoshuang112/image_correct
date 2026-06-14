@@ -783,6 +783,7 @@ int main(int argc, char** argv) {
             auto_handeye_calibration(150, pchRobotIp);
             break;
         case 3:
+            ret = open_camera();
             screw_sampling();
             break;
         case 4: 

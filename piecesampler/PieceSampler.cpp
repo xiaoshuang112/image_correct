@@ -217,22 +217,22 @@ int PieceSampler::run() {
 
     // Check for existing checkpoint
     int start_bg = 0, start_wp = 0, start_z = 0, start_xy = 0;
-    if (loadCheckpoint(start_bg, start_wp, start_z, start_xy)) {
-        std::cout << "检测到上次未完成采集 (背景=" << start_bg
-                  << " 工件=" << start_wp
-                  << " Z=" << start_z
-                  << " XY=" << start_xy << ")" << std::endl;
-        std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
-        std::string line;
-        std::getline(std::cin, line);
-        if (line == "r" || line == "R") {
-            start_bg = start_wp = start_z = start_xy = 0;
-            std::remove(checkpointPath().c_str());
-            std::cout << "已重新开始" << std::endl;
-        } else {
-            std::cout << "从断点继续" << std::endl;
-        }
-    }
+    // if (loadCheckpoint(start_bg, start_wp, start_z, start_xy)) {
+    //     std::cout << "检测到上次未完成采集 (背景=" << start_bg
+    //               << " 工件=" << start_wp
+    //               << " Z=" << start_z
+    //               << " XY=" << start_xy << ")" << std::endl;
+    //     std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
+    //     std::string line;
+    //     std::getline(std::cin, line);
+    //     if (line == "r" || line == "R") {
+    //         start_bg = start_wp = start_z = start_xy = 0;
+    //         std::remove(checkpointPath().c_str());
+    //         std::cout << "已重新开始" << std::endl;
+    //     } else {
+    //         std::cout << "从断点继续" << std::endl;
+    //     }
+    // }
 
     int cumulative = 0;
 
