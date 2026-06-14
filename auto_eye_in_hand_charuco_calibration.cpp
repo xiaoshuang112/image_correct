@@ -61,6 +61,9 @@ namespace {
 // 前向声明（visual servoing 函数需要）
 cv::Mat axisAnglePoseToTransform(const double pose[6]);
 
+// 前向声明（computeAvgDepth 定义在后面，estimateCameraHeight 需要）
+static double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2f>& corners);
+
 
 
 // ============================================================
@@ -199,6 +202,92 @@ static bool computeCommonSpan(const std::vector<cv::Point2f>& corners1,
                 dist2 = cv::norm(pts2[i] - pts2[j]);
             }
         }
+    }
+    return true;
+}
+
+// 估计相机到标定板的距离（深度相机优先，无深度时自动回退到双图像法）
+// 同时输出采集到的 frame 和角点（后续 Z 值迭代需要）
+static bool estimateCameraHeight(
+    std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    int robot_handle,
+    const double oriFlangeEulePos[6],
+    cv::Mat& out_frame,
+    std::vector<cv::Point2f>& out_corners,
+    std::vector<int>& out_ids,
+    double& heightCamera) {
+
+    // 采集一帧（含深度，如果有深度相机）
+    cv::Mat depth;
+    for (int i = 0; i < 3; i++) {
+        camera->captureOneFrameWithDepth(out_frame, depth);
+        if (!out_frame.empty() && !depth.empty()) break;
+    }
+    if (out_frame.empty()) {
+        std::cout << "[estimateCameraHeight] 采集图像失败" << std::endl;
+        return false;
+    }
+
+    if (!detector.detectCorners(out_frame, out_corners, out_ids) || out_ids.size() < 4) {
+        std::cout << "[estimateCameraHeight] ChArUco 角点过少" << std::endl;
+        return false;
+    }
+
+    heightCamera = 0.0;
+    bool heightOk = false;
+
+    // 方案 A: 有深度相机 → 直接用深度数据
+    if (!depth.empty() && depth.cols > 0 && depth.rows > 0) {
+        double h = computeAvgDepth(depth, out_corners);
+        if (h > 0.0) {
+            heightCamera = h;
+            heightOk = true;
+            std::cout << "[autoCalib] 深度相机高度: " << heightCamera << " mm" << std::endl;
+        }
+    }
+
+    // 方案 B: 无深度 → 双图像法
+    if (!heightOk) {
+        std::cout << "[estimateCameraHeight] 无深度数据，双图像法估计高度" << std::endl;
+
+        double initJoint[6];
+        cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
+        const double Z_STEP = 150.0;
+
+        double flangeUp[6];
+        std::copy(oriFlangeEulePos, oriFlangeEulePos + 6, flangeUp);
+        flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
+        moveToFlangeEulePos(robot_handle, flangeUp);
+
+        cv::Mat frame2 = camera->captureOneFrame(1500);
+        if (frame2.empty()) { moveToJointPos(robot_handle, initJoint); return false; }
+
+        std::vector<cv::Point2f> corners2;
+        std::vector<int> ids2;
+        if (!detector.detectCorners(frame2, corners2, ids2) || ids2.size() < 4) {
+            moveToJointPos(robot_handle, initJoint);
+            return false;
+        }
+        moveToJointPos(robot_handle, initJoint);
+
+        float dim1, dim2;
+        if (!computeCommonSpan(out_corners, out_ids, corners2, ids2, dim1, dim2)) {
+            std::cout << "[estimateCameraHeight] 两帧共同角点不足" << std::endl;
+            return false;
+        }
+
+        if (dim1 > dim2 && (dim1 - dim2) > 0.5f) {
+            heightCamera = Z_STEP * dim2 / (dim1 - dim2);
+            std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
+                      << " mm (像素 " << dim1 << "→" << dim2 << " px)" << std::endl;
+            heightOk = true;
+        }
+    }
+
+    if (!heightOk) {
+        std::cout << "[estimateCameraHeight] 高度估计失败" << std::endl;
+        return false;
     }
     return true;
 }
@@ -626,165 +715,177 @@ static bool computeZValues(int robot_handle,
     cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos);
     cr_AxisAngle2Eule(tcp_aa, tcpEulePos);
-    z_out_[0] = oriFlangeEulePos[2] - 100.0;
-    z_out_[1] = oriFlangeEulePos[2] + 100.0;
-    z_out_[2] = oriFlangeEulePos[2] + 300.0;
-    memcpy(outZ, z_out_, sizeof(outZ));
-    
-
-    // 双图像高度估计: 在 Z 方向偏移两个位置拍摄，利用像素尺寸变化反算相机到标定板距离
-    // Pinhole: s = f*W/H => s1 = k/H, s2 = k/(H+dZ) => H = dZ * s2 / (s1 - s2)
-    cv::Mat frame = camera->captureOneFrame(1500);
-    if (frame.empty()){
-       std::cout << "[computeZValues] 采集图像失败" << std::endl;
-       return false;
-    }
-
+    // 估计相机到标定板的距离
+    cv::Mat frame;
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
-    if (!detector.detectCorners(frame, corners, ids) || ids.size() < 4){
-        std::cout << "[computeZValues] ChArUco 初始图的角点过少" << std::endl;
+    double heightCamera = 0.0;
+    if (!estimateCameraHeight(camera, detector, robot_handle, oriFlangeEulePos,
+                               frame, corners, ids, heightCamera)) {
         return false;
     }
 
-    // 第二帧: 抬高 Z_STEP 后拍摄
+    // 标定板在基坐标系下的 Z 坐标
+    double z_board = oriFlangeEulePos[2] - heightCamera;
+    const double MIN_SAFE_HEIGHT = 300.0;   // 最低 30cm
+
+    // 通过 IK 搜索最大可达高度（保持当前 rx=-180, ry=0 姿态）
+    double euler[ROB_AXIS_NUM];
+    double joint[ROB_AXIS_NUM];
+    std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, euler);
+    double max_reach = MIN_SAFE_HEIGHT;
+    for (double h = 1400.0; h > MIN_SAFE_HEIGHT; h -= 10.0) {
+        euler[2] = z_board + h;
+        if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
+            max_reach = h;
+            break;
+        }
+    }
+
+    // 最大有效高度 = 80% 可达（留余量）
+    double z_high_h = std::min(max_reach * 0.9, max_reach - 100.0);
+    double z_low_h  = std::max(MIN_SAFE_HEIGHT, z_high_h - 600.0);
+
+    // 保证至少 500mm 范围
+    if (z_high_h - z_low_h < 500.0)
+        z_low_h = std::max(MIN_SAFE_HEIGHT, z_high_h - 500.0);
+
+    double z_mid_h = (z_low_h + z_high_h) / 2.0;
+
+    z_out_[2] = z_board + z_low_h;
+    z_out_[1] = z_board + z_mid_h;
+    z_out_[0] = z_board + z_high_h;
+
+    std::cout << "[autoCalib] Z 值: low=" << z_out_[2]
+              << ", mid=" << z_out_[1]
+              << ", high=" << z_out_[0]
+              << " mm (范围 " << (z_high_h - z_low_h) << " mm)"
+              << ", max_reach=" << max_reach << " mm" << std::endl;
+    return true;
+}
+
+// 旧方法：基于比例迭代的 Z 值搜索（替代上面的 IK 搜索方法）
+// 移动机器人到不同高度，根据标定板在图像中的占比自适应决定 Z 值
+static bool computeZValues_old(int robot_handle,
+    std::shared_ptr<AICamera>& camera,
+    int cameraToTcpEnd,
+    CharucoDetector& detector,
+    double z_out_[3]) {
+    double tcp_aa[ROB_AXIS_NUM], tcpEulePos[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM], outZ[3];
+    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos);
+    cr_AxisAngle2Eule(tcp_aa, tcpEulePos);
+    // 估计相机到标定板的距离
+    cv::Mat frame;
+    std::vector<cv::Point2f> corners;
+    std::vector<int> ids;
+    double heightCamera = 0.0;
+    if (!estimateCameraHeight(camera, detector, robot_handle, oriFlangeEulePos,
+                               frame, corners, ids, heightCamera)) {
+        return false;
+    }
+
+    // 标定板在基坐标系下的 Z 坐标
+    double z_board = oriFlangeEulePos[2] - heightCamera;
+
+    // 标定板在图像中的尺寸
+    float board_dim = computePixelSpan(corners);
+    if (board_dim < 1.0f) return false;
+
+    // 最小安全高度：离标定板至少 30cm
+    double minH = z_board + 300.0;
+
+    std::cout << "[autoCalib_old] z_board=" << z_board
+              << ", heightCamera=" << heightCamera
+              << ", board_dim=" << board_dim << " px" << std::endl;
+
+    // 目标图像占比（标定板像素跨度 / 图像短边）
+    // 占比小 → 相机离得远；占比大 → 相机离得近
+    const double ratios[] = {0.05, 0.1, 0.30, 0.5,  0.2, 0.4, 0.6};
+    double z_vals[9];
+    const double IMG_SHORT = std::min(frame.cols, frame.rows);
+    bool validZ[9] = {false};
     double initJoint[ROB_AXIS_NUM];
     cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
-    const double Z_STEP = 150.0;
-    double flangeUp[ROB_AXIS_NUM];
-    std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, flangeUp);
-    flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
-    moveToFlangeEulePos(robot_handle, flangeUp);
 
-    cv::Mat frame2 = camera->captureOneFrame(1500);
-    if (frame2.empty()) { moveToJointPos(robot_handle, initJoint); return false; }
-    std::vector<cv::Point2f> corners2;
-    std::vector<int> ids2;
-    if (!detector.detectCorners(frame2, corners2, ids2) || ids2.size() < 4) {
-        moveToJointPos(robot_handle, initJoint); return false;
-    }
-    moveToJointPos(robot_handle, initJoint);
+    for (int ri = 0; ri < 9; ri++) {
+        double ratio = ratios[ri];
+        double target_px = IMG_SHORT * ratio;    // 期望的像素跨度
+        double z_est = z_board + heightCamera * (board_dim / target_px);
 
-    // 用两帧共同存在的角点中最远的一对，计算像素尺寸变化
-    float dim1, dim2;
-    if (!computeCommonSpan(corners, ids, corners2, ids2, dim1, dim2)) {
-        std::cout << "[computeZValues] 两帧共同角点不足" << std::endl;
-        return false;
-    }
-    moveToJointPos(robot_handle, initJoint);
-
-    double heightCamera = 0.0;
-    if (dim1 > dim2 && (dim1 - dim2) > 0.5f) {
-        heightCamera = Z_STEP * dim2 / (dim1 - dim2);
-        std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
-                  << " mm (像素 " << dim1 << "→" << dim2 << " px, 步长 " << Z_STEP << " mm)" << std::endl;
-    } else {
-        std::cout << "[computeZValues] 高度估计失败 (dim1=" << dim1 << ", dim2=" << dim2 << ")" << std::endl;
-        return false;
-    }
-
-    float board_w, board_h;
-    float board_dim = computePixelSpan(corners, &board_w, &board_h);
-    float img_w = (float)frame.cols;
-    float img_h = (float)frame.rows;
-    float img_dim = (board_w >= board_h) ? img_w : img_h;
-
-    if (board_dim < 1.0f) { 
-         moveToFlangeEulePos(robot_handle, oriFlangeEulePos); 
-         return false; }
-
-    double current_z = oriFlangeEulePos[2];
-    const double ratios[] = {0.08, 0.16, 0.30, 0.5, 0.7, 0.8, 0.2, 0.4, 0.6};
-    double z_board = current_z - heightCamera;//, heightTcp = heightCamera - cameraToTcpEnd;
-    double minH = 1.5 * cameraToTcpEnd; // Avoid TCP collision with calibration plate 
-    int shrinked = 0;
-    for (int i = 0; i < std::size(ratios) && shrinked < 3; i++) {
-        
-        double z_attempt = std::max(minH, heightCamera/2 * board_dim / (ratios[i] * img_dim)) + z_board;
-
-        std::cout << "[autoCalib]  Z" << i << ": target_ratio=" << ratios[i]
-                  << ", 初始Z=" << z_attempt << std::endl;
-
-        bool converged = false;
-        double best_z = z_attempt;
-        double best_ratio_err = 1e18;
+        // 迭代收敛到目标比例
         for (int iter = 0; iter < 20; iter++) {
-            double euler[ROB_AXIS_NUM];
-            //double joint[ROB_AXIS_NUM];
-            std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, euler);
-            euler[2] = z_attempt;
-            if(!moveToFlangeEulePos(robot_handle, euler)){
-                z_attempt *= 0.9;
-                continue;         
-            }                 
-
-            cv::Mat vf = camera->captureOneFrame(1500);
-            if (vf.empty()) continue;
-
-            std::vector<cv::Point2f> vc;
-            std::vector<int> vi;
-            if (!detector.detectCorners(vf, vc, vi) || vi.size() < 4)
-                continue;
-
-            float vx1 = std::numeric_limits<float>::max(), vx2 = -std::numeric_limits<float>::max();
-            float vy1 = std::numeric_limits<float>::max(), vy2 = -std::numeric_limits<float>::max();
-            for (auto& pt : vc) {
-                vx1 = std::min(vx1, pt.x); vx2 = std::max(vx2, pt.x);
-                vy1 = std::min(vy1, pt.y); vy2 = std::max(vy2, pt.y);
-            }
-            float actual_w = vx2 - vx1;
-            float actual_h = vy2 - vy1;
-            float actual_ratio = std::max(actual_w / img_w, actual_h / img_h);
-
-            double ratio_err = fabs(actual_ratio - ratios[i]);
-            if (ratio_err < best_ratio_err) {
-                best_ratio_err = ratio_err;
-                best_z = z_attempt;
+            if (z_est < minH) {
+                z_est = minH;
             }
 
-            std::cout << "[autoCalib]    iter" << iter << ": Z=" << z_attempt
-                      << ", ratio=" << actual_ratio
-                      << " (w=" << actual_w/img_w << ", h=" << actual_h/img_h << ")"
-                      << std::endl;
+            double flangeEule[ROB_AXIS_NUM];
+            std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, flangeEule);
+            flangeEule[2] = z_est;
 
-            if (ratio_err <= 0.03f) {
-                double pose[ROB_AXIS_NUM];
-                double flangeEule[ROB_AXIS_NUM];
-                if (cr_get_tcpActualPose((RobotHandle)robot_handle, pose) == sucess)
-                {
-                    convertTcpAxisPos2FlangeEule(robot_handle, pose, flangeEule);
-                    outZ[shrinked] = flangeEule[2];
-                    std::cout << "[autoCalib]    → 收敛, Z=" << outZ[i] << std::endl;
-                } else {
-                    outZ[shrinked] = z_attempt;
-                    std::cout << "[autoCalib]    → 收敛, 读位姿失败用 Z=" << outZ[i] << std::endl;
-                }
-                converged = true;
-                shrinked++;
+            if (!moveToFlangeEulePos(robot_handle, flangeEule)) {
                 break;
             }
 
-            // 自适应步长：error > 0 → 板太大 → Z↑；error < 0 → 板太小 → Z↓
-            // 步长取 Z 的 30% × 误差比例，避免固定步长在近距区振荡
-            double error = actual_ratio / ratios[i] - 1.0;
-            double step = z_attempt * 0.3 * fabs(error);
-            step = std::max(step, 10.0);   // 最小步长 10mm
-            step = std::min(step, 100.0);  // 最大步长 100mm
-            z_attempt += (error > 0) ? step : -step;
-            z_attempt = z_board + std::max(z_attempt- z_board, minH); // 最小 Z
-        }
+            cv::Mat f = camera->captureOneFrame(1500);
+            if (f.empty()) break;
 
-        if (!converged) {
-            // outZ[i] = best_z;
-            std::cout << "[autoCalib]    → 未收敛, 使用最佳 Z=" << best_z
-                      << " (ratio_err=" << best_ratio_err << ")" << std::endl;
+            std::vector<cv::Point2f> pts;
+            std::vector<int> ids2;
+            if (!detector.detectCorners(f, pts, ids2) || ids2.size() < 4) {
+                break;
+            }
+
+            float dim = computePixelSpan(pts);
+            if (dim < 1.0f) break;
+
+            double actual_ratio = dim / IMG_SHORT;
+            double err = actual_ratio - ratio;
+
+            std::cout << "[autoCalib_old] ratio[" << ri << "] iter=" << iter
+                      << " z=" << z_est << " actual_ratio=" << actual_ratio
+                      << " err=" << err << std::endl;
+
+            if (fabs(err) < 0.03) {
+                z_vals[ri] = z_est;
+                validZ[ri] = true;
+                break;
+            }
+
+            // 自适应调整 Z
+            double adjust = z_est * err / (ratio * 1.5);
+            z_est -= adjust;
         }
     }
 
-    // 回到原始位置
-    moveToFlangeEulePos(robot_handle, oriFlangeEulePos);    
-    memcpy(z_out_, outZ, sizeof(outZ[0])*shrinked);
+    // 回到初始位置
+    moveToJointPos(robot_handle, initJoint);
 
+    // 从有效 Z 值中选择 3 个：尽量覆盖高、中、低三个范围
+    std::vector<double> sorted;
+    for (int i = 0; i < 9; i++) {
+        if (validZ[i]) sorted.push_back(z_vals[i]);
+    }
+    if (sorted.empty()) {
+        std::cout << "[autoCalib_old] 未收敛到任何 Z 值" << std::endl;
+        return false;
+    }
+    std::sort(sorted.begin(), sorted.end());
+
+    outZ[0] = sorted.back();   // 最高
+    outZ[2] = sorted.front();  // 最低
+    if (sorted.size() >= 3)
+        outZ[1] = sorted[sorted.size() / 2];
+    else
+        outZ[1] = (outZ[0] + outZ[2]) / 2.0;
+
+    z_out_[0] = outZ[0];
+    z_out_[1] = outZ[1];
+    z_out_[2] = outZ[2];
+
+    std::cout << "[autoCalib_old] Z 值: high=" << outZ[0]
+              << ", mid=" << outZ[1]
+              << ", low=" << outZ[2] << " mm" << std::endl;
     return true;
 }
 
