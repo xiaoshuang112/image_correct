@@ -12,7 +12,7 @@
 #ifdef useMVS
 struct CONFIG {
     std::string cam_sn = "";
-    std::string cam_ip = "192.168.1.12";
+    std::string cam_ip = "192.168.1.11";
     uint16_t cam_port = 8090;
 
     // 4056 x 3040

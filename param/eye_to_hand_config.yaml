@@ -1,0 +1,22 @@
+%YAML:1.0
+# 眼在手外标定配置
+# 位姿偏移参数：各轴在每个方向上生成 N 个偏移值，N^6 组合
+# 默认 3^6 = 729 种
+
+# X 偏移 (mm)
+offset_x: [300, 0, -300]
+# Y 偏移 (mm)
+offset_y: [300, 0, -300]
+# Z 偏移 (mm)
+offset_z: [100, 0, -100]
+# RX 旋转偏移 (deg)
+offset_rx: [10, 0, -10]
+# RY 旋转偏移 (deg)
+offset_ry: [10, 0, -10]
+# RZ 旋转偏移 (deg)
+offset_rz: [10, 0, -10]
+
+# 单帧最小有效 ChArUco 角点数（低于此值跳过）
+min_corners: 12
+# 最小有效帧数（低于此值放弃标定）
+min_valid_frames: 10

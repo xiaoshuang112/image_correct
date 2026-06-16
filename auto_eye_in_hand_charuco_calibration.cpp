@@ -28,7 +28,9 @@
 #include <filesystem>
 
 #include "utils/robot_util.hpp"
+#include "utils/calib_transform.hpp"
 
+using namespace calib_transform;
 
 std::string g_save_dir = "";
 AI_det_callback g_callback = nullptr;
@@ -49,17 +51,7 @@ struct CapturedFrame {
     cv::Mat image;                      // 原始图像（用于重检测）
 };
 
-// ============================================================
-// 内部工具函数
-// ============================================================
-
-
-
-
 namespace {
-
-// 前向声明（visual servoing 函数需要）
-cv::Mat axisAnglePoseToTransform(const double pose[6]);
 
 // 前向声明（computeAvgDepth 定义在后面，estimateCameraHeight 需要）
 static double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2f>& corners);
@@ -137,23 +129,6 @@ double computeBoardAngle(const std::vector<cv::Point2f>& corners,
     if (angle < -CV_PI / 2)
         angle = CV_PI + angle;
     return angle;
-}
-
-// 轴角位姿 → 4x4 变换矩阵 (已有，但需要非匿名可见)
-// 用已有的 axisAnglePoseToTransform
-
-// 4x4 → 轴角位姿 [x,y,z,rx,ry,rz] (mm, deg)
-void transformToAxisAnglePose(const cv::Mat& T, double pose[6]) {
-    pose[0] = T.at<double>(0, 3) * 1000.0;  // m → mm
-    pose[1] = T.at<double>(1, 3) * 1000.0;
-    pose[2] = T.at<double>(2, 3) * 1000.0;
-
-    cv::Mat R = T(cv::Rect(0, 0, 3, 3)).clone();
-    cv::Mat rvec;
-    cv::Rodrigues(R, rvec);
-    pose[3] = rvec.at<double>(0) * 180.0 / CV_PI;  // rad → deg
-    pose[4] = rvec.at<double>(1) * 180.0 / CV_PI;
-    pose[5] = rvec.at<double>(2) * 180.0 / CV_PI;
 }
 
 // 计算角点凸包在两个方向上的像素跨度（用于基于像素变化估计距离）
@@ -643,37 +618,6 @@ bool autoFindBestPose(int robot_handle,
     }
 
     return true;
-}
-
-// 轴角位姿 → 4x4 变换矩阵 (mm,deg → m,rad)
-cv::Mat axisAnglePoseToTransform(const double pose[6]) {
-    double x = pose[0] / 1000.0;
-    double y = pose[1] / 1000.0;
-    double z = pose[2] / 1000.0;
-    double rx = pose[3] * CV_PI / 180.0;
-    double ry = pose[4] * CV_PI / 180.0;
-    double rz = pose[5] * CV_PI / 180.0;
-    cv::Mat rvec = (cv::Mat_<double>(3, 1) << rx, ry, rz);
-    cv::Mat R;
-    cv::Rodrigues(rvec, R);
-    cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-    R.copyTo(T(cv::Rect(0, 0, 3, 3)));
-    T.at<double>(0, 3) = x;
-    T.at<double>(1, 3) = y;
-    T.at<double>(2, 3) = z;
-    return T;
-}
-
-// rvec/tvec → 4x4 变换矩阵 (T_camera_calib)
-cv::Mat rvecTvecToTransform(const cv::Mat& rvec, const cv::Mat& tvec) {
-    cv::Mat R;
-    cv::Rodrigues(rvec, R);
-    cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-    R.copyTo(T(cv::Rect(0, 0, 3, 3)));
-    T.at<double>(0, 3) = tvec.at<double>(0);
-    T.at<double>(1, 3) = tvec.at<double>(1);
-    T.at<double>(2, 3) = tvec.at<double>(2);
-    return T;
 }
 
 // ============================================================

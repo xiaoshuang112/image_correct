@@ -70,21 +70,14 @@ bool CharucoDetector::detect(const cv::Mat& image_gray,
                               std::vector<std::vector<cv::Point2f>>& markerCorners,
                               std::vector<int>& markerIds) const {
 
-    cv::aruco::DetectorParameters detectorParams;
-    cv::aruco::CharucoParameters charucoParams;
-    detectorParams.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
-    if (!camera_matrix_.empty()) {
-        charucoParams.cameraMatrix = camera_matrix_;
-        charucoParams.distCoeffs = dist_coeffs_;
-    }
-    charucoParams.minMarkers = 1;
-    charucoParams.tryRefineMarkers = true;
+    // 先检测 ArUco 标记（不依赖相机内参，更鲁棒）
+    cv::Ptr<cv::aruco::DetectorParameters> dp = cv::makePtr<cv::aruco::DetectorParameters>();
+    dp->cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+    cv::aruco::detectMarkers(image_gray, dictionary_, markerCorners, markerIds, dp);
 
-    cv::aruco::CharucoDetector detector(*board_, charucoParams, detectorParams);
-    detector.detectBoard(image_gray, corners, ids, markerCorners, markerIds);
-
-    auto interpolate = [&](bool use_camera_matrix) {
-        if (use_camera_matrix && !camera_matrix_.empty())
+    // 再插值 ChArUco 角点（可选使用相机内参去畸变）
+    if (!markerIds.empty()) {
+        if (!camera_matrix_.empty())
             cv::aruco::interpolateCornersCharuco(
                 markerCorners, markerIds, image_gray, board_,
                 corners, ids, camera_matrix_, dist_coeffs_, 1);
@@ -92,16 +85,42 @@ bool CharucoDetector::detect(const cv::Mat& image_gray,
             cv::aruco::interpolateCornersCharuco(
                 markerCorners, markerIds, image_gray, board_,
                 corners, ids, cv::noArray(), cv::noArray(), 1);
-    };
-
-    if (ids.empty() && !markerIds.empty())
-        interpolate(!camera_matrix_.empty());
-    if (ids.empty()) {
-        cv::Ptr<cv::aruco::DetectorParameters> fp = cv::makePtr<cv::aruco::DetectorParameters>();
-        cv::aruco::detectMarkers(image_gray, dictionary_, markerCorners, markerIds, fp);
-        if (!markerIds.empty())
-            interpolate(!camera_matrix_.empty());
     }
+
+    // 尝试用 CharucoDetector 作为补充（某些场景可能检测到更多）
+    if (ids.empty()) {
+        cv::aruco::DetectorParameters detectorParams;
+        cv::aruco::CharucoParameters charucoParams;
+        detectorParams.cornerRefinementMethod = cv::aruco::CORNER_REFINE_SUBPIX;
+        charucoParams.minMarkers = 1;
+        charucoParams.tryRefineMarkers = false;
+        if (!camera_matrix_.empty()) {
+            charucoParams.cameraMatrix = camera_matrix_;
+            charucoParams.distCoeffs = dist_coeffs_;
+        }
+
+        std::vector<cv::Point2f> refine_corners;
+        std::vector<int> refine_ids;
+        std::vector<std::vector<cv::Point2f>> refine_markerCorners;
+        std::vector<int> refine_markerIds;
+        try {
+            cv::aruco::CharucoDetector refine_detector(*board_, charucoParams, detectorParams);
+            refine_detector.detectBoard(image_gray, refine_corners, refine_ids,
+                                        refine_markerCorners, refine_markerIds);
+        } catch (...) {
+            // 某些版本可能抛异常
+        }
+
+        if (!refine_ids.empty()) {
+            corners = std::move(refine_corners);
+            ids = std::move(refine_ids);
+            if (markerCorners.empty())
+                markerCorners = std::move(refine_markerCorners);
+            if (markerIds.empty())
+                markerIds = std::move(refine_markerIds);
+        }
+    }
+
     return !ids.empty();
 }
 
@@ -109,8 +128,10 @@ bool CharucoDetector::detectCorners(const cv::Mat& image,
                                      std::vector<cv::Point2f>& corners,
                                      std::vector<int>& ids) const {
     cv::Mat gray;
-    if (image.channels() == 3) cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    else gray = image.clone();
+    if (image.channels() == 3)
+        cv::extractChannel(image, gray, 0);  // 取 B 通道（黑白相机 Mono8→BGR24 时 B 通道即是原始灰度数据）
+    else
+        gray = image.clone();
 
     std::vector<std::vector<cv::Point2f>> markerCorners;
     std::vector<int> markerIds;
@@ -204,11 +225,12 @@ bool CharucoDetector::detectAndDraw(const cv::Mat& image,
                                      cv::Mat& rvec, cv::Mat& tvec,
                                      int* out_corner_count,
                                      int override_min_ids) const {
-    if (camera_matrix_.empty()) return false;
 
     cv::Mat gray;
-    if (image.channels() == 3) cv::cvtColor(image, gray, cv::COLOR_BGR2GRAY);
-    else gray = image.clone();
+    if (image.channels() == 3)
+        cv::extractChannel(image, gray, 0);  // 取 B 通道（黑白相机 Mono8→BGR24 时 B 通道即是原始灰度数据）
+    else
+        gray = image.clone();
 
     std::vector<cv::Point2f> corners;
     std::vector<int> ids;
@@ -226,14 +248,19 @@ bool CharucoDetector::detectAndDraw(const cv::Mat& image,
     }
 
     cv::aruco::drawDetectedCornersCharuco(image_with_detection, corners, ids);
-    bool valid = false;
-    if (ids.size() >= 6)
-        valid = cv::aruco::estimatePoseCharucoBoard(corners, ids, board_,
-                                                     camera_matrix_, dist_coeffs_,
-                                                     rvec, tvec);
+
+    // 需要相机内参才能做位姿估计和重投影过滤
+    if (camera_matrix_.empty()) {
+        if (out_corner_count) *out_corner_count = (int)corners.size();
+        return true;
+    }
+
+    bool valid = cv::aruco::estimatePoseCharucoBoard(corners, ids, board_,
+                                                      camera_matrix_, dist_coeffs_,
+                                                      rvec, tvec);
     if (!valid) {
-        if (out_corner_count) *out_corner_count = 0;
-        return false;
+        if (out_corner_count) *out_corner_count = (int)corners.size();
+        return true;
     }
 
     filterCorners(corners, ids, rvec, tvec, filter_thresh_, &image_with_detection);

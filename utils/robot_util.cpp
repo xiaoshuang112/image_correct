@@ -2,10 +2,20 @@
 #include <iostream>
 #include <thread>
 #include <chrono>
+#include <cmath>
 
 // ============================================================
 // 运动到目标关节角（等效 goto_jointpos）
 // ============================================================
+static bool jointsWithinTolerance(const double actual[6], const double target[6],
+                                   double tol_deg) {
+    for (int i = 0; i < ROB_AXIS_NUM; i++) {
+        if (std::abs(actual[i] - target[i]) > tol_deg)
+            return false;
+    }
+    return true;
+}
+
 CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     double pose[6] = {0, 0, 0, 0, 0, 0};
     cr_get_jointActualPos(robot_handle, pose);
@@ -35,7 +45,23 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
     }
-    std::this_thread::sleep_for(std::chrono::milliseconds(1000));
+
+    // 等待机器人实际到位（轮询实际关节角，到位后再加稳定延时）
+    double actual[6];
+    const double tol_deg = 0.5;
+    const int max_polls = 200;       // 最多等 10 秒
+    const int poll_ms = 50;
+    for (int wait = 0; wait < max_polls; wait++) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
+        if (cr_get_jointActualPos((RobotHandle)robot_handle, actual) != sucess)
+            continue;
+        if (jointsWithinTolerance(actual, joint, tol_deg)) {
+            // 到位后再稳定 200ms，消除残余抖动
+            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            break;
+        }
+    }
+
     return ret;
 }
 
