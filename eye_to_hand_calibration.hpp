@@ -11,6 +11,8 @@
 #include "robotapi.h"
 #include "basestruct.h"
 
+#include "det.h"
+
 // 眼在手外标定结果
 struct EyeToHandResult {
     bool success = false;

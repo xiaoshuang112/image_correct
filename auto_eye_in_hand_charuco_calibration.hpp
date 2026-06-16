@@ -12,11 +12,7 @@
 #include "basestruct.h"
 #include "utils/robot_util.hpp"
 
-#ifdef XIALIAO
 #include "det.h"
-#else
-typedef int (*AI_det_callback)(char* msg, int msg_len, int flag);
-#endif // XIALIAO
 
 // 自动眼在手 ChArUco 标定结果
 struct CalibrationResult {
