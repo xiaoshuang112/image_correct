@@ -58,7 +58,8 @@ bool autoEyeToHandCharucoCalibration(
     CharucoDetector& detector,
     const PoseGenerationConfig& pose_config,
     EyeToHandResult& result,
-    const std::string& save_dir = "");
+    const std::string& save_dir = "",
+    AI_det_callback callback = nullptr);
 
 /**
  * @brief 从已采集的本地数据标定相机内参 + 眼在手外手眼矩阵

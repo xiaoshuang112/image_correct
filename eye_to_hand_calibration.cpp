@@ -202,7 +202,8 @@ static int executeEyeToHandCollection(
     const std::vector<std::array<double, 6>>& candidates,
     const std::string& save_dir,
     std::vector<cv::Mat>& robot_poses,    // T_base_flange
-    int min_corners) {
+    int min_corners,
+    AI_det_callback callback = nullptr) {
 
     robot_poses.clear();
 
@@ -265,6 +266,17 @@ static int executeEyeToHandCollection(
                 (captured < 10 ? "00" : captured < 100 ? "0" : "") +
                 std::to_string(captured) + ".jpg";
             cv::imwrite(img_name, frame);
+
+            // 回调通知调用者（传递图像路径 + 进度）
+            if (callback) {
+                int progress = (i + 1) * 100 / total;
+                int call_ret = callback((char*)img_name.c_str(),
+                                        (int)img_name.length(), progress);
+                if (-1 == call_ret) {
+                    std::cerr << "\r[eyeToHand] 用户取消了  采集进度" << std::endl;
+                    return captured;
+                }
+            }
         }
 
         // 保存 pos（法兰轴角 mm,deg）
@@ -555,7 +567,8 @@ bool autoEyeToHandCharucoCalibration(
     CharucoDetector& detector,
     const PoseGenerationConfig& pose_config,
     EyeToHandResult& result,
-    const std::string& save_dir) {
+    const std::string& save_dir,
+    AI_det_callback callback) {
 
     std::cout << "\n========== 眼在手外 ChArUco 标定 ==========" << std::endl;
 
@@ -588,7 +601,7 @@ bool autoEyeToHandCharucoCalibration(
     std::vector<cv::Mat> robot_poses;
     int captured = executeEyeToHandCollection(
         robot_handle, pchRobotIP, camera, detector, candidates,
-        save_dir, robot_poses, pose_config.min_corners);
+        save_dir, robot_poses, pose_config.min_corners, callback);
 
     if (captured < pose_config.min_valid_frames) {
         result.message = "有效帧数不足: " + std::to_string(captured) +

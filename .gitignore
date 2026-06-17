@@ -21,3 +21,4 @@ test-kill-app
 boost_*.bz2
 public/third-party/boost_1_88_0/
 CLAUDE.md
+build_qt/
