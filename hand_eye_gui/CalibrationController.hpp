@@ -151,7 +151,7 @@ private:
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
     int      m_cameraToTcpEnd = 150;
-    QString  m_calibrationType = "eye_in_hand";   // 或 "eye_to_hand"
+    QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
     QString  m_cameraIp     = "192.168.1.11";
     int      m_cameraPort   = 8090;
     int      m_previewWidth  = 2448;

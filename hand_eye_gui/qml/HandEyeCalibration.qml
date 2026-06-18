@@ -38,7 +38,7 @@ ApplicationWindow {
     Timer {
         id: refreshTimer
         interval: 50
-        running: calibrationController.previewActive
+        running: calibrationController.previewActive || calibrationController.running
         repeat: true
         onTriggered: {
             cameraImage.source = "image://camera/current#" + Date.now()
