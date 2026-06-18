@@ -513,7 +513,7 @@ void CalibrationController::calibrationThreadFunc()
                 m_cameraToTcpEnd,
                 result,
                 m_calibrationPath,
-                m_appPath + "hand_eye_result.yaml",
+                m_paramPath + "hand_eye_result.yaml",
                 calibrationCallback);
 
             if (m_cancelRequested) {
@@ -602,7 +602,7 @@ void CalibrationController::calibrationThreadFunc()
             }
 
             if (ok) {
-                std::string out_file = m_appPath + "eye_to_hand_result.yaml";
+                std::string out_file = m_paramPath + "eye_to_hand_result.yaml";
                 cv::FileStorage out(out_file, cv::FileStorage::WRITE);
                 out << "T_base_camera" << result.T_base_camera;
                 out << "camera_matrix" << result.camera_matrix;
@@ -610,6 +610,16 @@ void CalibrationController::calibrationThreadFunc()
                 out << "reprojection_error_mm" << result.reproj_error * 1000.0;
                 out << "valid_frames" << result.valid_frames;
                 out.release();
+
+                // 保存相机内参（如果标定过程中更新了）
+                if (!result.camera_matrix.empty()) {
+                    cv::FileStorage outCam(m_appPath + "camera_params.yaml",
+                                           cv::FileStorage::WRITE);
+                    outCam << "camera_matrix" << result.camera_matrix;
+                    outCam << "distortion_coefficients" << result.dist_coeffs;
+                    outCam.release();
+                }
+
 
                 std::stringstream ss_et;
                 ss_et << result.T_base_camera;
