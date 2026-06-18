@@ -9,6 +9,8 @@
 #include <thread>
 #include <atomic>
 #include <memory>
+#include <iostream>
+#include <sstream>
 
 #include "my_base.h"
 #include "cameras/AICamera.hpp"
@@ -17,6 +19,29 @@
 #include "basestruct.h"
 
 class CameraImageProvider;
+
+/// 拦截 std::cout / std::cerr 的自定义 streambuf，每行输出回调
+class LogStreambuf : public std::streambuf {
+public:
+    using Callback = std::function<void(const std::string&)>;
+    explicit LogStreambuf(Callback cb) : m_cb(std::move(cb)) {}
+protected:
+    int overflow(int c) override {
+        if (c != EOF) {
+            m_buf += static_cast<char>(c);
+            if (c == '\n') { flush(); }
+        }
+        return c;
+    }
+    int sync() override { flush(); return 0; }
+private:
+    void flush() {
+        if (!m_buf.empty() && m_cb) m_cb(m_buf);
+        m_buf.clear();
+    }
+    std::string m_buf;
+    Callback m_cb;
+};
 
 /**
  * @brief 手眼标定 QML 控制器
@@ -45,6 +70,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(int     progress       READ progress       NOTIFY progressChanged)
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
     Q_PROPERTY(QString resultText     READ resultText     NOTIFY resultTextChanged)
+    Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
 
 public:
     explicit CalibrationController(QObject* parent = nullptr);
@@ -70,6 +96,7 @@ public:
     int     progress() const        { return m_progress; }
     QString statusMessage() const   { return m_statusMessage; }
     QString resultText() const      { return m_resultText; }
+    QString logText() const         { return m_logText; }
 
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
@@ -115,6 +142,7 @@ signals:
     void progressChanged();
     void statusMessageChanged();
     void resultTextChanged();
+    void logTextChanged();
     void frameUpdated();
 
     /// 标定结束信号
@@ -139,6 +167,13 @@ private:
 
     /// 将 cv::Mat (BGR) 转为 QImage (RGB)，线程安全发送到 ImageProvider
     void publishFrame(const cv::Mat& bgr);
+
+    /// 重定向 stdout/stderr 到日志
+    void redirectConsole();
+    void restoreConsole();
+
+    /// 追加日志（线程安全）
+    void appendLog(const QString& line);
 
     // ---- 静态回调（供 C 风格 AI_det_callback） ----
     static int calibrationCallback(char* msg, int msg_len, int flag);
@@ -165,6 +200,13 @@ private:
     int      m_progress       = 0;
     QString  m_statusMessage  = "就绪";
     QString  m_resultText;
+    QString  m_logText;
+
+    // 控制台重定向
+    LogStreambuf* m_coutBuf  = nullptr;
+    LogStreambuf* m_cerrBuf  = nullptr;
+    std::streambuf* m_oldCout = nullptr;
+    std::streambuf* m_oldCerr = nullptr;
 
     // 硬件句柄
     RobotHandle m_robotHandle = 0;

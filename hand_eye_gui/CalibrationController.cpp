@@ -468,6 +468,9 @@ void CalibrationController::stopCalibration()
 
 void CalibrationController::calibrationThreadFunc()
 {
+    // 重定向控制台输出到 QML 日志
+    redirectConsole();
+
     // ================================================================
     //  眼在手内 (eye_in_hand)
     // ================================================================
@@ -631,6 +634,7 @@ void CalibrationController::calibrationThreadFunc()
     }
 
 done:
+    restoreConsole();
     m_running = false;
     m_progress = 0;
     // 通过 invokeMethod 确保主线程更新属性
@@ -676,6 +680,59 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
     }
 
     return 0;
+}
+
+// ===================================================================
+//  控制台重定向
+// ===================================================================
+
+void CalibrationController::redirectConsole()
+{
+    // 清除之前的日志
+    m_logText.clear();
+    QMetaObject::invokeMethod(this, [this]() {
+        emit logTextChanged();
+    }, Qt::QueuedConnection);
+
+    // 创建自定义 streambuf，每次输出一行就追加到日志
+    auto cb = [this](const std::string& line) {
+        appendLog(QString::fromStdString(line));
+    };
+
+    m_coutBuf = new LogStreambuf(cb);
+    m_cerrBuf = new LogStreambuf(cb);
+
+    m_oldCout = std::cout.rdbuf(m_coutBuf);
+    m_oldCerr = std::cerr.rdbuf(m_cerrBuf);
+}
+
+void CalibrationController::restoreConsole()
+{
+    if (m_oldCout) {
+        std::cout.rdbuf(m_oldCout);
+        delete m_coutBuf;
+        m_coutBuf = nullptr;
+        m_oldCout = nullptr;
+    }
+    if (m_oldCerr) {
+        std::cerr.rdbuf(m_oldCerr);
+        delete m_cerrBuf;
+        m_cerrBuf = nullptr;
+        m_oldCerr = nullptr;
+    }
+}
+
+void CalibrationController::appendLog(const QString& line)
+{
+    // 仅保留最近 500 行，避免内存无限增长
+    m_logText += line;
+    if (m_logText.count('\n') > 500) {
+        int idx = m_logText.indexOf('\n');
+        m_logText = m_logText.mid(idx + 1);
+    }
+    QMetaObject::invokeMethod(this, [this]() {
+        emit logTextChanged();
+    }, Qt::QueuedConnection);
 }
 
 // ===================================================================

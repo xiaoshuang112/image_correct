@@ -471,11 +471,11 @@ ApplicationWindow {
             Layout.fillHeight: true
             spacing: 12
 
-            // 视频画面
+            // 视频画面（占 2/3）
             Rectangle {
                 Layout.fillWidth: true
                 Layout.fillHeight: true
-                Layout.preferredWidth: 3
+                Layout.preferredWidth: 2
                 radius: 8
                 color: "#0d1117"
                 border.color: border
@@ -503,10 +503,11 @@ ApplicationWindow {
                 }
             }
 
-            // 结果面板
+            // 结果 + 日志面板（占 1/3）
             Rectangle {
-                Layout.preferredWidth: 380
+                Layout.fillWidth: true
                 Layout.fillHeight: true
+                Layout.preferredWidth: 1
                 radius: 8
                 color: "#0d1117"
                 border.color: border
@@ -514,8 +515,9 @@ ApplicationWindow {
                 ColumnLayout {
                     anchors.fill: parent
                     anchors.margins: 12
-                    spacing: 8
+                    spacing: 6
 
+                    // ---- 标定结果（紧凑） ----
                     Label {
                         text: "标定结果"
                         color: textPrimary
@@ -545,9 +547,7 @@ ApplicationWindow {
                             color: textPrimary
                             Layout.preferredWidth: 60
                             background: Rectangle {
-                                radius: 4
-                                color: "#161b22"
-                                border.color: border
+                                radius: 4; color: "#161b22"; border.color: border
                             }
                             onEditingFinished: {
                                 var v = parseInt(text)
@@ -558,18 +558,16 @@ ApplicationWindow {
 
                     Flickable {
                         Layout.fillWidth: true
-                        Layout.fillHeight: true
+                        Layout.preferredHeight: 60
                         clip: true
                         contentWidth: resultText.paintedWidth
                         contentHeight: resultText.paintedHeight
-
                         TextArea {
                             id: resultText
                             readOnly: true
-                            text: calibrationController.resultText
-                                   || "等待标定完成..."
+                            text: calibrationController.resultText || "等待标定完成..."
                             color: textDim
-                            font.pixelSize: 20
+                            font.pixelSize: 18
                             font.family: "monospace"
                             background: null
                             wrapMode: TextArea.NoWrap
@@ -577,26 +575,56 @@ ApplicationWindow {
                         }
                     }
 
-                    // 复制结果按钮
-                    Button {
-                        text: "复制结果"
-                        font.pixelSize: 21
-                        enabled: calibrationController.resultText !== ""
-                        background: Rectangle {
-                            radius: 4
-                            color: parent.down ? "#30363d"
-                                 : parent.hovered ? "#21262d"
-                                 : "#161b22"
-                            border.color: border
+                    // ---- 分隔 ----
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: border
+                    }
+
+                    // ---- 控制台日志 ----
+                    Label {
+                        text: "控制台输出"
+                        color: textPrimary
+                        font.pixelSize: 24
+                        font.bold: true
+                    }
+
+                    Flickable {
+                        id: logFlickable
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        clip: true
+                        contentWidth: logTextArea.paintedWidth
+                        contentHeight: logTextArea.paintedHeight
+                        boundsBehavior: Flickable.StopAtBounds
+
+                        function scrollToBottom() {
+                            var maxY = contentHeight - height
+                            if (maxY > 0) contentY = maxY
                         }
-                        contentItem: Text {
-                            text: parent.text
-                            color: textPrimary
-                            font: parent.font
-                            horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
+
+                        TextArea {
+                            id: logTextArea
+                            readOnly: true
+                            text: calibrationController.logText
+                            color: "#c9d1d9"
+                            font.pixelSize: 18
+                            font.family: "monospace"
+                            background: null
+                            wrapMode: TextArea.Wrap
+                            selectByMouse: true
+                            onPaintedHeightChanged: { logFlickable.contentHeight = paintedHeight; logFlickable.scrollToBottom() }
+                            onPaintedWidthChanged:  { logFlickable.contentWidth = paintedWidth }
                         }
-                        onClicked: resultText.selectAll()
+                    }
+
+                    // 当日志文本变化时，延迟一帧滚动（确保布局完成）
+                    Connections {
+                        target: calibrationController
+                        function onLogTextChanged() {
+                            Qt.callLater(function() { logFlickable.scrollToBottom() })
+                        }
                     }
                 }
             }
