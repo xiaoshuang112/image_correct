@@ -129,7 +129,13 @@ set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2)
 target_link_libraries(${PROJECT_NAME}
     ${QT_LIBS}
     ${OpenCV_LIBS}
+    # --no-as-needed 强制保留全部 CGX 库到 NEEDED，
+    # 避免 libcr_sdk 的传递依赖在双击启动时找不到
+    # --disable-new-dtags 用 RPATH 替代 RUNPATH（RPATH 对传递依赖也生效）
+    -Wl,--no-as-needed
     ${CGX_SDK_LIBS}
+    -Wl,--as-needed
+    -Wl,--disable-new-dtags
 )
 
 # MVS SDK
