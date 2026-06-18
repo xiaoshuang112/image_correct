@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(hand-eye-app)
 
 # 查找 Qt5
-find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2)
+find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2 Widgets)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
@@ -12,13 +12,18 @@ set(CMAKE_AUTORCC ON)
 # ============================================================
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set(ARCH_TYPE "x86_64")
+    set(ARCH_FLAG "-DX86_64")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     set(ARCH_TYPE "ARM64")
+    set(ARCH_FLAG "-DARM64")
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7|armv7l")
     set(ARCH_TYPE "ARMv7")
+    set(ARCH_FLAG "-DARM")
 else()
     set(ARCH_TYPE "Unknown")
 endif()
+
+
 message("-- [${PROJECT_NAME}] Architecture: ${ARCH_TYPE}")
 
 # ============================================================
@@ -64,6 +69,7 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CalibrationController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/auth_check.cpp
 )
 
 # MOC 需要处理的头文件
@@ -124,7 +130,7 @@ endif()
 # ============================================================
 #  链接库
 # ============================================================
-set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2)
+set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2 Qt5::Widgets)
 
 target_link_libraries(${PROJECT_NAME}
     ${QT_LIBS}

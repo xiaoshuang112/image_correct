@@ -165,7 +165,7 @@ target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS}
 # ============================================================
 option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
 if(BUILD_QT_GUI)
-    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2)
+    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
     if(Qt5_FOUND)
         add_subdirectory(hand_eye_gui)
         message(STATUS "Qt5 GUI enabled → target 'hand-eye-app'")
