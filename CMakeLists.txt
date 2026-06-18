@@ -98,13 +98,19 @@ link_directories(${depthai_DIR}/lib)
 if(useMVS)
     set(MVS_SDK_DIR "/opt/MVS")
     include_directories(${MVS_SDK_DIR}/include)
-    if(ARCH_TYPE STREQUAL "x86_64")
-        link_directories(${MVS_SDK_DIR}/lib/64)
-    else()
-        link_directories(${MVS_SDK_DIR}/lib/32)
-    endif()
-endif()
 
+    if(ARCH_TYPE STREQUAL "x86_64")
+        if(ARCH_TYPE STREQUAL "x86_64")
+            link_directories(${MVS_SDK_DIR}/lib/64)
+        else()
+            link_directories(${MVS_SDK_DIR}/lib/32)
+        endif()
+    elseif(ARCH_TYPE STREQUAL "ARM64")
+        link_directories(${MVS_SDK_DIR}/lib/aarch64)
+    endif()
+
+
+endif()
 
 
 SET(SRC_LISTS
