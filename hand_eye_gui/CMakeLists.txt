@@ -25,6 +25,8 @@ endif()
 
 
 message("-- [${PROJECT_NAME}] Architecture: ${ARCH_TYPE}")
+add_definitions(${ARCH_FLAG})
+
 
 # ============================================================
 #  CGX SDK 路径
@@ -52,14 +54,37 @@ elseif(ARCH_TYPE STREQUAL "ARM64")
 endif()
 
 # ============================================================
-#  检测 MVS SDK（父目录变量 useMVS 不传递到子目录，自行检测）
+#  相机 SDK 检测（ORB 和 MVS 互斥）
 # ============================================================
-if(EXISTS /opt/MVS/include)
-    set(useMVS_QT TRUE)
-    message("-- [${PROJECT_NAME}] MVS SDK detected at /opt/MVS")
+
+option(USE_ORB "Build with Orbbec camera (disable MVS)" OFF)
+
+if(USE_ORB)
+    # ---- ORB 模式 ----
+    if(EXISTS /usr/local/include/libobsensor)
+        set(useORB_QT TRUE)
+        set(useMVS_QT FALSE)
+        set(CAM_SUFFIX "orb")
+        set(ORBBEC_SDK_V2_DIR "/usr/local")
+        add_definitions(-DuseORB -DDEFAULT_CAM_WIDTH=1280 -DDEFAULT_CAM_HEIGHT=800)
+        message("-- [${PROJECT_NAME}] 相机: Orbbec (1280×800)")
+    else()
+        message(FATAL_ERROR "-- [${PROJECT_NAME}] USE_ORB=ON 但未找到 Orbbec SDK (/usr/local/include/libobsensor)")
+    endif()
 else()
-    set(useMVS_QT FALSE)
-    message("-- [${PROJECT_NAME}] MVS SDK not found")
+    # ---- MVS 模式（默认） ----
+    set(useORB_QT FALSE)
+    if(EXISTS /opt/MVS/include)
+        set(useMVS_QT TRUE)
+        set(CAM_SUFFIX "mvs")
+        add_definitions(-DuseMVS -DDEFAULT_CAM_WIDTH=2448 -DDEFAULT_CAM_HEIGHT=2048)
+        message("-- [${PROJECT_NAME}] 相机: MVS (2448×2048)")
+    else()
+        set(useMVS_QT FALSE)
+        set(CAM_SUFFIX "nocam")
+        add_definitions(-DDEFAULT_CAM_WIDTH=1280 -DDEFAULT_CAM_HEIGHT=800)
+        message(WARNING "-- [${PROJECT_NAME}] MVS SDK 未找到，无相机支持")
+    endif()
 endif()
 
 # ============================================================
@@ -93,12 +118,12 @@ file(GLOB TOP_SRCS
 # 排除 calibration.cpp（含 main 函数）
 list(REMOVE_ITEM TOP_SRCS "${CMAKE_SOURCE_DIR}/calibration.cpp")
 
-# 相机源文件：只添加当前启用的相机
-file(GLOB CAM_SRCS ${CMAKE_SOURCE_DIR}/cameras/*.cpp)
+# 相机源文件：ORB / MVS 互斥
 if(useMVS_QT)
     list(APPEND TOP_SRCS ${CMAKE_SOURCE_DIR}/cameras/MVSCamera.cpp)
+elseif(useORB_QT)
+    list(APPEND TOP_SRCS ${CMAKE_SOURCE_DIR}/cameras/OrbbecCamera.cpp)
 endif()
-# Orbbec 和 OAK 默认不启用（与父项目 useORB=FALSE, useOAK=FALSE 一致）
 
 # ============================================================
 #  可执行文件
@@ -122,9 +147,13 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${Qt5QuickControls2_INCLUDE_DIRS}
 )
 
-# MVS SDK include
+# MVS / ORB SDK include
 if(useMVS_QT)
     target_include_directories(${PROJECT_NAME} PRIVATE /opt/MVS/include)
+endif()
+if(useORB_QT)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${ORBBEC_SDK_V2_DIR}/include)
+    target_link_directories(${PROJECT_NAME} PRIVATE ${ORBBEC_SDK_V2_DIR}/lib)
 endif()
 
 # ============================================================
@@ -154,6 +183,11 @@ if(useMVS_QT)
     target_link_libraries(${PROJECT_NAME} MvCameraControl)
 endif()
 
+# Orbbec SDK
+if(useORB_QT)
+    target_link_libraries(${PROJECT_NAME} OrbbecSDK)
+endif()
+
 # ============================================================
 #  编译选项
 # ============================================================
@@ -162,6 +196,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
+    OUTPUT_NAME "hand-eye-${CAM_SUFFIX}"
 )
 
 # 继承父目录的宏定义（useMVS 等）

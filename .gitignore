@@ -23,3 +23,7 @@ public/third-party/boost_1_88_0/
 CLAUDE.md
 build_qt/
 .claude/
+build_mvs/
+build_orb/
+hand-eye-orb/
+hand-eye-mvs/

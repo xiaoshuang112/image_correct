@@ -189,8 +189,8 @@ private:
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
     QString  m_cameraIp     = "192.168.1.11";
     int      m_cameraPort   = 8090;
-    int      m_previewWidth  = 2448;
-    int      m_previewHeight = 2048;
+    int      m_previewWidth  = DEFAULT_CAM_WIDTH;
+    int      m_previewHeight = DEFAULT_CAM_HEIGHT;
 
     // 状态
     bool     m_robotConnected = false;

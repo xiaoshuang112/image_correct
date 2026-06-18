@@ -278,9 +278,7 @@ void CalibrationController::openCamera()
     qDebug() << "[CalibrationController] 创建相机:" << cfg.cam_ip.c_str()
              << cfg.cam_port << cfg.cam_width << "x" << cfg.cam_height;
 
-#ifdef useMVS
-    m_camera = std::make_shared<MVSCamera>(cfg);
-#elif defined(useORB)
+#ifdef useORB
     m_camera = std::make_shared<OrbbecCameraV2>(cfg);
 #else
     m_camera = std::make_shared<MVSCamera>(cfg);
