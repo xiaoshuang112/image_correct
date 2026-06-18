@@ -58,213 +58,170 @@ ApplicationWindow {
         spacing: 12
 
         // =============================================================
-        //  顶部：连接配置 + 模式选择
+        //  顶部：连接配置 + 相机配置 + 模式选择（双行自适应）
         // =============================================================
         Rectangle {
             Layout.fillWidth: true
-            height: 72
+            implicitHeight: topColumn.implicitHeight + 20
             radius: 8
             color: bgPanel
             border.color: border
 
-            RowLayout {
+            ColumnLayout {
+                id: topColumn
                 anchors.fill: parent
                 anchors.margins: 10
-                spacing: 10
+                spacing: 6
 
-                // 机器人 IP
-                Label {
-                    text: "IP:"
-                    color: textDim
-                    font.pixelSize: 22
-                }
-                TextField {
-                    id: ipField
-                    text: calibrationController.robotIp
-                    font.pixelSize: 22
-                    color: textPrimary
-                    Layout.preferredWidth: 130
-                    background: Rectangle {
-                        radius: 4
-                        color: "#0d1117"
-                        border.color: border
-                    }
-                    onEditingFinished: calibrationController.robotIp = text
-                }
+                // ---- 第 1 行：机器人连接 + 标定模式 ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
 
-                // 端口
-                Label {
-                    text: "端口:"
-                    color: textDim
-                    font.pixelSize: 22
-                }
-                TextField {
-                    id: portField
-                    text: calibrationController.robotPort
-                    font.pixelSize: 22
-                    color: textPrimary
-                    Layout.preferredWidth: 70
-                    background: Rectangle {
-                        radius: 4
-                        color: "#0d1117"
-                        border.color: border
+                    Label { text: "机器人IP:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.robotIp
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 130
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: calibrationController.robotIp = text
                     }
-                    onEditingFinished: {
-                        var v = parseInt(text)
-                        if (!isNaN(v)) calibrationController.robotPort = v
-                    }
-                }
 
-                // 密码
-                Label {
-                    text: "密码:"
-                    color: textDim
-                    font.pixelSize: 22
-                }
-                TextField {
-                    id: passwdField
-                    text: calibrationController.robotPasswd
-                    font.pixelSize: 22
-                    color: textPrimary
-                    Layout.preferredWidth: 80
-                    background: Rectangle {
-                        radius: 4
-                        color: "#0d1117"
-                        border.color: border
+                    Label { text: "端口:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.robotPort
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 65
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: {
+                            var v = parseInt(text)
+                            if (!isNaN(v)) calibrationController.robotPort = v
+                        }
                     }
-                    onEditingFinished: calibrationController.robotPasswd = text
-                }
 
-                // 连接 / 断开
-                Button {
-                    text: calibrationController.robotConnected ? "断开" : "连接机器人"
-                    font.pixelSize: 21
-                    font.bold: true
-                    background: Rectangle {
-                        radius: 6
-                        color: parent.down ? "#1565c0"
-                             : parent.hovered ? "#1976d2"
-                             : accent
+                    Label { text: "密码:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.robotPasswd
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 80
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: calibrationController.robotPasswd = text
                     }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "#ffffff"
-                        font: parent.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
+
+                    Button {
+                        text: calibrationController.robotConnected ? "断开" : "连接"
+                        font.pixelSize: 21; font.bold: true
+                        background: Rectangle {
+                            radius: 6
+                            color: parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : accent
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: "#ffffff"; font: parent.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: {
+                            if (calibrationController.robotConnected)
+                                calibrationController.disconnectRobot()
+                            else
+                                calibrationController.connectRobot()
+                        }
                     }
-                    onClicked: {
-                        if (calibrationController.robotConnected)
-                            calibrationController.disconnectRobot()
-                        else
-                            calibrationController.connectRobot()
+
+                    Item { Layout.fillWidth: true }
+
+                    // 标定模式
+                    ButtonGroup { buttons: [btnEyeInHand, btnEyeToHand] }
+
+                    Button {
+                        id: btnEyeInHand
+                        checkable: true
+                        checked: calibrationController.calibrationType === "eye_in_hand"
+                        text: "眼在手内"
+                        font.pixelSize: 21; font.bold: true
+                        background: Rectangle {
+                            radius: 6
+                            color: btnEyeInHand.checked ? accent
+                                 : parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : "#30363d"
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: "#ffffff"; font: parent.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: calibrationController.calibrationType = "eye_in_hand"
                     }
-                }
 
-                // 分隔
-                Rectangle { width: 1; height: 36; color: border }
-
-                // 相机 IP
-                Label { text: "相机IP:"; color: textDim; font.pixelSize: 22 }
-                TextField {
-                    text: calibrationController.cameraIp
-                    font.pixelSize: 22; color: textPrimary
-                    Layout.preferredWidth: 170
-                    background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
-                    onEditingFinished: calibrationController.cameraIp = text
-                }
-
-                // 相机端口
-                Label { text: ":"; color: textDim; font.pixelSize: 22 }
-                TextField {
-                    text: calibrationController.cameraPort
-                    font.pixelSize: 22; color: textPrimary
-                    Layout.preferredWidth: 65
-                    background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
-                    onEditingFinished: {
-                        var v = parseInt(text)
-                        if (!isNaN(v)) calibrationController.cameraPort = v
+                    Button {
+                        id: btnEyeToHand
+                        checkable: true
+                        checked: calibrationController.calibrationType === "eye_to_hand"
+                        text: "眼在手外"
+                        font.pixelSize: 21; font.bold: true
+                        background: Rectangle {
+                            radius: 6
+                            color: btnEyeToHand.checked ? accent
+                                 : parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : "#30363d"
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: "#ffffff"; font: parent.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: calibrationController.calibrationType = "eye_to_hand"
                     }
                 }
 
-                // 分辨率
-                Label { text: "分辨率:"; color: textDim; font.pixelSize: 22 }
-                TextField {
-                    text: calibrationController.previewWidth
-                    font.pixelSize: 22; color: textPrimary
-                    Layout.preferredWidth: 75
-                    background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
-                    onEditingFinished: {
-                        var v = parseInt(text)
-                        if (!isNaN(v)) calibrationController.previewWidth = v
-                    }
-                }
-                Label { text: "×"; color: textDim; font.pixelSize: 22 }
-                TextField {
-                    text: calibrationController.previewHeight
-                    font.pixelSize: 22; color: textPrimary
-                    Layout.preferredWidth: 75
-                    background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
-                    onEditingFinished: {
-                        var v = parseInt(text)
-                        if (!isNaN(v)) calibrationController.previewHeight = v
-                    }
-                }
+                // ---- 第 2 行：相机配置 ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
 
-                Item { Layout.fillWidth: true }
+                    Label { text: "相机IP:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.cameraIp
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 170
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: calibrationController.cameraIp = text
+                    }
 
-                // 标定类型 Tab
-                ButtonGroup {
-                    id: typeGroup
-                    buttons: [btnEyeInHand, btnEyeToHand]
-                }
+                    Label { text: ":"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.cameraPort
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 65
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: {
+                            var v = parseInt(text)
+                            if (!isNaN(v)) calibrationController.cameraPort = v
+                        }
+                    }
 
-                Button {
-                    id: btnEyeInHand
-                    checkable: true
-                    checked: calibrationController.calibrationType === "eye_in_hand"
-                    text: "眼在手内"
-                    font.pixelSize: 21
-                    font.bold: true
-                    background: Rectangle {
-                        radius: 6
-                        color: btnEyeInHand.checked ? accent
-                             : parent.down ? "#1565c0"
-                             : parent.hovered ? "#1976d2"
-                             : "#30363d"
+                    Label { text: "分辨率:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.previewWidth
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 75
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: {
+                            var v = parseInt(text)
+                            if (!isNaN(v)) calibrationController.previewWidth = v
+                        }
                     }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "#ffffff"
-                        font: parent.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
+                    Label { text: "×"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.previewHeight
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 75
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        onEditingFinished: {
+                            var v = parseInt(text)
+                            if (!isNaN(v)) calibrationController.previewHeight = v
+                        }
                     }
-                    onClicked: calibrationController.calibrationType = "eye_in_hand"
-                }
 
-                Button {
-                    id: btnEyeToHand
-                    checkable: true
-                    checked: calibrationController.calibrationType === "eye_to_hand"
-                    text: "眼在手外"
-                    font.pixelSize: 21
-                    font.bold: true
-                    background: Rectangle {
-                        radius: 6
-                        color: btnEyeToHand.checked ? accent
-                             : parent.down ? "#1565c0"
-                             : parent.hovered ? "#1976d2"
-                             : "#30363d"
-                    }
-                    contentItem: Text {
-                        text: parent.text
-                        color: "#ffffff"
-                        font: parent.font
-                        horizontalAlignment: Text.AlignHCenter
-                        verticalAlignment: Text.AlignVCenter
-                    }
-                    onClicked: calibrationController.calibrationType = "eye_to_hand"
+                    Item { Layout.fillWidth: true }
                 }
             }
         }
