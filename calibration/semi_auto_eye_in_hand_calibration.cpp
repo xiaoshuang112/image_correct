@@ -6,8 +6,6 @@
 #include <opencv2/calib3d.hpp>
 #include <iostream>
 #include <algorithm>
-#include <fstream>
-#include <sstream>
 #include <iomanip>
 #include <cmath>
 #include <filesystem>
@@ -463,7 +461,7 @@ bool estimateHandEyeTrans(
 
     if(needFilter){
         int removed = 0;
-        float thresh = 0.0015;
+        float thresh = 0.001;
         for(int i=valid-1; i>=0; i--){
             if(vErr[i] > thresh){
                 robot_poses.erase(robot_poses.begin() + i);
@@ -495,25 +493,11 @@ bool calibrateHandEyeFromDisk(
     detector.setCameraParams(camera_matrix, dist_coeffs);
 
     // 读取法兰位姿
-    std::string pos_file = save_dir + "/rob_pos.csv";
-    std::ifstream pf(pos_file);
-    if (!pf.is_open()) {
-        result.message = "无法打开 " + pos_file;
+    std::vector<cv::Mat> flange_poses;
+    if (!loadRobotPosesFromCSV(save_dir + "/rob_pos.csv", flange_poses)) {
+        result.message = "无法加载 " + save_dir + "/rob_pos.csv";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
-    }
-    std::vector<cv::Mat> flange_poses;
-    std::string line;
-    while (std::getline(pf, line)) {
-        if (line.empty()) continue;
-        std::stringstream ss(line);
-        double pose[6];
-        for (int i = 0; i < 6; i++) {
-            std::string val;
-            if (!std::getline(ss, val, ',')) break;
-            pose[i] = std::stod(val);
-        }
-        flange_poses.push_back(calib_transform::axisAnglePoseToTransform(pose));
     }
 
     // 扫描图像文件

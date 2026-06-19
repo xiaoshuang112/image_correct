@@ -162,6 +162,12 @@ add_executable(${PROJECT_NAME} ${SRC_LISTS})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )
 
 # ============================================================
+#  反畸变工具
+# ============================================================
+add_executable(anti_distortion tools/anti_distortion.cpp)
+target_link_libraries(anti_distortion ${OpenCV_LIBS})
+
+# ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
 option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
