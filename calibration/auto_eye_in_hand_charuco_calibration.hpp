@@ -7,6 +7,7 @@
 
 #include "cameras/AICamera.hpp"
 #include "charuco_detector.hpp"
+#include "camera_calibration.hpp"
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -80,11 +81,6 @@ bool calibrateHandEyeFromDisk(
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
     const std::string& output_yaml = "");
-
-bool calibrateCameraFromDisk(const std::string& save_dir,
-                             CharucoDetector& detector,
-                             cv::Mat& camera_matrix,
-                             cv::Mat& dist_coeffs);
 
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP

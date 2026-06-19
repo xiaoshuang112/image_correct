@@ -1,5 +1,6 @@
 #include "eye_to_hand_calibration.hpp"
 #include "auto_eye_in_hand_charuco_calibration.hpp"
+#include "camera_calibration.hpp"
 
 #include <iostream>
 #include <fstream>
