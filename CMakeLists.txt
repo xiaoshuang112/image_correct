@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB FALSE)
+SET(useORB TRUE)
 SET(useOAK FALSE)
-SET(useMVS TRUE)
+SET(useMVS FALSE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -50,6 +50,7 @@ else()
     # # public
     set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     include_directories(${SRC_DIR})
+    include_directories(${SRC_DIR}/calibration)
 
     set(depthai_DIR "/usr/local")
 
@@ -114,7 +115,7 @@ endif()
 
 
 SET(SRC_LISTS
-charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp eye_to_hand_calibration.cpp
+calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp
     calibration.cpp exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
