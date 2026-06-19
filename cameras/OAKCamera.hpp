@@ -4,7 +4,7 @@
 #define DEPTHAI_HAVE_OPENCV_SUPPORT
 
 #include "AICamera.hpp"
-#include "exposure_fusion.hpp"
+#include "utils/exposure_fusion.hpp"
 #include <depthai/depthai.hpp>
 #include <memory>
 #include <thread>

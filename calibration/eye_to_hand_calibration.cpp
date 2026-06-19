@@ -1,4 +1,5 @@
 #include "eye_to_hand_calibration.hpp"
+#include "calibration_utils.hpp"
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 #include "camera_calibration.hpp"
 
@@ -648,81 +649,6 @@ bool autoEyeToHandCharucoCalibration(
 
     // ---- Phase 4: 标定 ----
     return eyeToHandCalibrate(robot_poses, camera_poses, result);
-}
-
-// ============================================================
-// 从 CSV 加载机器人位姿（法兰欧拉 → 4x4，与采集时保持一致的转换方式）
-// ============================================================
-static bool loadRobotPosesFromCSV(const std::string& csv_file,
-                                   std::vector<cv::Mat>& robot_poses) {
-    std::ifstream f(csv_file);
-    if (!f.is_open()) {
-        std::cerr << "[eyeToHand] 无法打开 " << csv_file << std::endl;
-        return false;
-    }
-
-    std::string line;
-    int count = 0;
-    while (std::getline(f, line)) {
-        if (line.empty()) continue;
-        std::stringstream ss(line);
-        double vals[6];
-        for (int i = 0; i < 6; i++) {
-            std::string token;
-            if (!std::getline(ss, token, ',')) break;
-            vals[i] = std::stod(token);
-        }
-        robot_poses.push_back(axisAnglePoseToTransform(vals));
-        count++;
-    }
-
-    std::cout << "[eyeToHand] 从 " << csv_file << " 加载 " << count << " 帧机器人位姿" << std::endl;
-    return count > 0;
-}
-
-// ============================================================
-// 将 rob_pos.csv（欧拉角）转换为 rob_axis.csv（轴角）
-// ============================================================
-bool convertEulerCsvToAxisCsv(const std::string& save_dir) {
-    std::string euler_file = save_dir + "/rob_eule.csv";
-    std::string axis_file = save_dir + "/rob_pos.csv";
-
-    std::ifstream fin(euler_file);
-    if (!fin.is_open()) {
-        std::cerr << "[eyeToHand] 无法打开 " << euler_file << std::endl;
-        return false;
-    }
-
-    std::ofstream fout(axis_file);
-    if (!fout.is_open()) {
-        std::cerr << "[eyeToHand] 无法创建 " << axis_file << std::endl;
-        return false;
-    }
-
-    std::string line;
-    int count = 0;
-    while (std::getline(fin, line)) {
-        if (line.empty()) continue;
-        std::stringstream ss(line);
-        double euler[ROB_AXIS_NUM], axis[ROB_AXIS_NUM];
-        for (int i = 0; i < ROB_AXIS_NUM; i++) {
-            std::string token;
-            if (!std::getline(ss, token, ',')) break;
-            euler[i] = std::stod(token);
-        }
-        if (cr_Eule2AxisAngle(euler, axis) != sucess) {
-            std::cerr << "[eyeToHand] 欧拉→轴角转换失败，第 " << (count + 1) << " 行" << std::endl;
-            return false;
-        }
-        fout << std::fixed << std::setprecision(3);
-        for (int j = 0; j < ROB_AXIS_NUM; j++)
-            fout << axis[j] << (j < ROB_AXIS_NUM - 1 ? "," : "\n");
-        count++;
-    }
-
-    std::cout << "[eyeToHand] 转换完成: " << euler_file << " → " << axis_file
-              << " (" << count << " 帧)" << std::endl;
-    return count > 0;
 }
 
 // ============================================================

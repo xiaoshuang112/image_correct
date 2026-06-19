@@ -10,6 +10,7 @@
 #include "cameras/AICamera.hpp"
 #include "charuco_detector.hpp"
 #include "det.h"
+#include "utils/calib_transform.hpp"
 
 // 采集候选位姿
 struct PoseCandidate {
@@ -88,5 +89,20 @@ bool rotateFlangeToHorizon(int robot_handle, double* pFlangeEulePos);
  * @brief 将角度限制在 [-90, 90] 范围
  */
 float bound_camera_angle(float angle);
+
+// ============================================================
+// 位姿加载与转换（眼在手外 / 眼在手上共用）
+// ============================================================
+
+/**
+ * @brief 从 CSV 加载机器人位姿（法兰轴角 → 4x4）
+ */
+bool loadRobotPosesFromCSV(const std::string& csv_file,
+                            std::vector<cv::Mat>& robot_poses);
+
+/**
+ * @brief 将 rob_pos.csv（欧拉角）转换为 rob_axis.csv（轴角）
+ */
+bool convertEulerCsvToAxisCsv(const std::string& save_dir);
 
 #endif // CALIBRATION_UTILS_HPP

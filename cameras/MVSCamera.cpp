@@ -1,5 +1,5 @@
 #include "MVSCamera.hpp"
-#include "exposure_fusion.hpp"
+#include "utils/exposure_fusion.hpp"
 #include <iostream>
 #include <cstring>
 #include <arpa/inet.h>

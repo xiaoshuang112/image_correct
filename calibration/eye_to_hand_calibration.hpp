@@ -76,12 +76,4 @@ bool autoEyeToHandCharucoCalibration(
 bool calibrateEyeToHandFromDisk(const std::string& save_dir,
                                  EyeToHandResult& result);
 
-/**
- * @brief 将 rob_pos.csv（欧拉角）转换为 rob_axis.csv（轴角）
- *
- * 使用 SDK 的 cr_Eule2AxisAngle 逐行转换，保存为 rob_axis.csv，
- * 之后 loadRobotPosesFromCSV 会优先读取此文件。
- */
-bool convertEulerCsvToAxisCsv(const std::string& save_dir);
-
 #endif // EYE_TO_HAND_CALIBRATION_HPP

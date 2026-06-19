@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB TRUE)
+SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS FALSE)
+SET(useMVS TRUE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -115,8 +115,8 @@ endif()
 
 
 SET(SRC_LISTS
-calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp
-    calibration.cpp exposure_fusion.cpp
+calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
+    calibration.cpp utils/exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp

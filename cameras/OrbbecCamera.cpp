@@ -1,5 +1,5 @@
 #include "OrbbecCamera.hpp"
-#include "exposure_fusion.hpp"
+#include "utils/exposure_fusion.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>

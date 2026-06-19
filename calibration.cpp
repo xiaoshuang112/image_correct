@@ -1,5 +1,7 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 #include "eye_to_hand_calibration.hpp"
+#include "calibration_utils.hpp"
+#include "semi_auto_eye_in_hand_calibration.hpp"
 #include "charuco_detector.hpp"
 #include <iostream>
 #include <thread>
@@ -94,11 +96,11 @@ void display_menu() {
     std::cout << "\n========================================" << std::endl;
     std::cout << "      机器人标定系统" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "1. 本地数据拟合验证" << std::endl;
-    std::cout << "2. 自动手眼标定（全自动 729 位姿）" << std::endl;
-    std::cout << "3. 螺纹圆形采样" << std::endl;
-    std::cout << "4. CircleSample 测试图采集" << std::endl;
-    std::cout << "5. 工件检测采样" << std::endl;
+    std::cout << "1. 自动手眼标定（全自动 729 位姿）" << std::endl;
+    std::cout << "2. 螺纹圆形采样" << std::endl;
+    std::cout << "3. CircleSample 测试图采集" << std::endl;
+    std::cout << "4. 工件检测采样" << std::endl;
+    std::cout << "5. 半自动眼在手内标定" << std::endl;
     std::cout << "6. 眼在手外标定（行架固定相机）" << std::endl;
     std::cout << "7. 退出程序" << std::endl;
     std::cout << "========================================" << std::endl;
@@ -182,15 +184,13 @@ int load_config(std::string cfg_file) {
     return 0;
 }
 
-void local_fit_demo()
+void local_fit_demo(const std::string& dir = "")
 
 {
     std::cout << "\n========== 本地数据标定验证 ==========" << std::endl;
     std::cout << "从磁盘读取已有采集数据，使用 CalibrateHandEyeFromDisk 重新标定" << std::endl;
 
-    std::string save_dir = g_appPath + "param/calibration";
-    // std::cout << "输入采集数据目录路径: ";
-    // std::cin >> save_dir;
+    std::string save_dir = dir.empty() ? (g_appPath + "param/calibration") : dir;
 
     if (save_dir.empty() || !fs::exists(save_dir)) {
         std::cerr << "目录不存在: " << save_dir << std::endl;
@@ -714,6 +714,108 @@ static void depth_test(const std::string& cfg_path) {
 }
 
 // ============================================================
+// 半自动眼在手内标定入口（菜单项 5）
+// ============================================================
+static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
+    if (open_camera() != 0) return;
+
+    CharucoBoardConfig board_cfg;
+    CharucoDetector detector(board_cfg);
+
+    cv::namedWindow("Semi-Auto Eye-in-Hand", cv::WINDOW_NORMAL);
+    cv::resizeWindow("Semi-Auto Eye-in-Hand", 960, 600);
+
+    std::cout << "\n----------------------------------------" << std::endl;
+    std::cout << "  请将机器人拖到起始位姿（标定板在相机视野内）" << std::endl;
+    std::cout << "  按 's' 开始半自动眼在手内标定" << std::endl;
+    std::cout << "  按 'q' 取消" << std::endl;
+    std::cout << "----------------------------------------\n" << std::endl;
+
+    while (true) {
+        cv::Mat frame = g_camera->captureOneFrame(1000);
+        if (frame.empty()) continue;
+
+        cv::Mat display;
+        cv::Mat rvec, tvec;
+        if (detector.detectAndDraw(frame, display, rvec, tvec)) {
+            cv::putText(display, "Press 's' to start semi-auto eye-in-hand",
+                        cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
+                        0.7, cv::Scalar(0, 255, 0), 2);
+        } else {
+            frame.copyTo(display);
+            cv::putText(display, "No board detected",
+                        cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX,
+                        0.7, cv::Scalar(0, 0, 255), 2);
+        }
+
+        cv::imshow("Semi-Auto Eye-in-Hand", display);
+        int key = cv::waitKey(30);
+        if (key == 's' || key == 'S') break;
+        if (key == 'q' || key == 'Q') {
+            std::cout << "[semiAutoEyeInHand] 用户取消" << std::endl;
+            cv::destroyWindow("Semi-Auto Eye-in-Hand");
+            return;
+        }
+    }
+    cv::destroyWindow("Semi-Auto Eye-in-Hand");
+
+    // 加载配置或使用默认
+    PoseGenerationConfig pose_config;
+    std::string cfg_path = g_paramPath + "eye_in_hand_config.yaml";
+    cv::FileStorage cfg_fs(cfg_path, cv::FileStorage::READ);
+    if (cfg_fs.isOpened()) {
+        cv::FileNode fn;
+        fn = cfg_fs["offset_x"]; if (!fn.empty()) fn >> pose_config.offset_x;
+        fn = cfg_fs["offset_y"]; if (!fn.empty()) fn >> pose_config.offset_y;
+        fn = cfg_fs["offset_z"]; if (!fn.empty()) fn >> pose_config.offset_z;
+        fn = cfg_fs["offset_rx"]; if (!fn.empty()) fn >> pose_config.offset_rx;
+        fn = cfg_fs["offset_ry"]; if (!fn.empty()) fn >> pose_config.offset_ry;
+        fn = cfg_fs["offset_rz"]; if (!fn.empty()) fn >> pose_config.offset_rz;
+        cfg_fs["min_corners"] >> pose_config.min_corners;
+        cfg_fs["min_valid_frames"] >> pose_config.min_valid_frames;
+        cfg_fs.release();
+        std::cout << "[semiAutoEyeInHand] 加载配置: " << cfg_path << std::endl;
+    } else {
+        std::cout << "[semiAutoEyeInHand] 未找到 " << cfg_path << "，使用默认参数" << std::endl;
+    }
+
+    // 加载已知相机内参（如有）
+    cv::Mat camera_matrix, dist_coeffs;
+    std::string cam_file = g_paramPath + "camera_params.yaml";
+    // cv::FileStorage fs(cam_file, cv::FileStorage::READ);
+    // if (fs.isOpened()) {
+    //     fs["camera_matrix"] >> camera_matrix;
+    //     fs["distortion_coefficients"] >> dist_coeffs;
+    //     fs.release();
+    //     if (!camera_matrix.empty())
+    //         std::cout << "[semiAutoEyeInHand] 加载已有相机内参: " << cam_file << std::endl;
+    // }
+
+    std::string save_dir = g_calibrationPath + "semi_eye_in_hand/";
+
+    CalibrationResult result;
+    bool ok = semiAutoEyeInHandCalibration(
+        robotHandle, pchRobotIP, g_camera, detector,
+        pose_config, board_cfg,
+        camera_matrix, dist_coeffs,
+        result, save_dir,
+        g_appPath + "hand_eye_result.yaml");
+
+    if (ok) {
+        // 保存相机内参（仅当本次标定了新内参时）
+        if (camera_matrix.empty()) {
+            cv::FileStorage outCam(g_appPath + "camera_params.yaml", cv::FileStorage::WRITE);
+            outCam << "camera_matrix" << result.camera_matrix;
+            outCam << "distortion_coefficients" << result.dist_coeffs;
+            outCam.release();
+            std::cout << "相机内参已保存到: camera_params.yaml" << std::endl;
+        }
+    } else {
+        std::cerr << "\n[semiAutoEyeInHand] 标定失败: " << result.message << std::endl;
+    }
+}
+
+// ============================================================
 // 眼在手外标定入口（菜单项 6）
 // ============================================================
 static void auto_eye_to_hand_calibration(char* pchRobotIP) {
@@ -803,38 +905,34 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     }
 }
 
-int main(int argc, char** argv) {
+// ============================================================
+// CLI 命令处理（返回 true 表示已处理，main 应退出）
+// ============================================================
+static bool handleCLI(int argc, char** argv) {
+    if (argc < 2) return false;
 
-    GetBasePathInfo();
-
-    // cv::Mat image_with_detection(480, 640, CV_8UC3, cv::Scalar(255, 255, 255));
-
-    // putTextZH(image_with_detection, "检测到标定板 - 可以保存", cv::Point(10, 90), cv::Scalar(0, 255, 0),20);
-
-
-
-    // CLI 参数：--collect-test 直接进入测试采集
-    if (argc >= 3 && strcmp(argv[1], "--collect-test") == 0) {
+    // --collect-test <config_path> [--dry-run]
+    if (strcmp(argv[1], "--collect-test") == 0) {
         circle_test_collection(argc, argv);
-        return 0;
+        return true;
     }
 
-    // CLI 参数：--depth-test 直接进入深度测试
-    if (argc >= 3 && strcmp(argv[1], "--depth-test") == 0) {
-        depth_test(argv[2]);
-        return 0;
+    // --depth-test <config_path>
+    if (strcmp(argv[1], "--depth-test") == 0) {
+        if (argc >= 3) depth_test(argv[2]);
+        return true;
     }
 
-    // CLI 参数：--piece-sampler 直接进入工件采样
-    if (argc >= 2 && strcmp(argv[1], "--piece-sampler") == 0) {
+    // --piece-sampler
+    if (strcmp(argv[1], "--piece-sampler") == 0) {
         piece_sampling();
-        return 0;
+        return true;
     }
 
-    // CLI 参数：--calibrate-eye-to-hand <save_dir> 从本地数据离线标定
-    if (argc >= 3 && strcmp(argv[1], "--calibrate-eye-to-hand") == 0) {
+    // --calibrate-eye-to-hand <save_dir>
+    if (strcmp(argv[1], "--calibrate-eye-to-hand") == 0) {
         EyeToHandResult result;
-        if (calibrateEyeToHandFromDisk(argv[2], result)) {
+        if (argc >= 3 && calibrateEyeToHandFromDisk(argv[2], result)) {
             std::cout << "\n[main] 离线标定成功!" << std::endl;
             std::cout << "[main] T_base_camera:\n" << result.T_base_camera << std::endl;
             std::cout << "[main] 平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
@@ -842,17 +940,50 @@ int main(int argc, char** argv) {
         } else {
             std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
         }
-        return 0;
+        return true;
     }
 
-    // CLI 参数：--convert-eye-to-hand-poses <save_dir> 将欧拉角 CSV 转换为轴角 CSV
-    if (argc >= 3 && strcmp(argv[1], "--convert-eye-to-hand-poses") == 0) {
-        if (convertEulerCsvToAxisCsv(argv[2]))
+    // --calibrate-eye-in-hand <save_dir>
+    if (strcmp(argv[1], "--calibrate-eye-in-hand") == 0) {
+        CharucoBoardConfig board_cfg;
+        cv::Mat camera_matrix, dist_coeffs;
+        CalibrationResult result;
+        if (argc >= 3 && semiAutoEyeInHandCalibrationFromDisk(argv[2], board_cfg,
+                camera_matrix, dist_coeffs, result)) {
+            std::cout << "\n[main] 离线标定成功!" << std::endl;
+            std::cout << "[main] T_flange_camera:\n" << result.T_flange_camera << std::endl;
+            std::cout << "[main] 重投影误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
+            std::cout << "[main] 有效帧: " << result.valid_frames << std::endl;
+        } else {
+            std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
+        }
+        return true;
+    }
+
+    // --local-fit <save_dir>
+    if (strcmp(argv[1], "--local-fit") == 0) {
+        if (argc >= 3) local_fit_demo(argv[2]);
+        return true;
+    }
+
+    // --convert-eye-to-hand-poses <save_dir>
+    if (strcmp(argv[1], "--convert-eye-to-hand-poses") == 0) {
+        if (argc >= 3 && convertEulerCsvToAxisCsv(argv[2]))
             std::cout << "[main] 转换成功!" << std::endl;
         else
             std::cerr << "[main] 转换失败" << std::endl;
-        return 0;
+        return true;
     }
+
+    return false;
+}
+
+int main(int argc, char** argv) {
+
+    GetBasePathInfo();
+
+    if (handleCLI(argc, argv))
+        return 0;
 
     int choice = 0;
 
@@ -892,22 +1023,22 @@ int main(int argc, char** argv) {
         int ret = -1;
         switch (choice) {
         case 1:
-            local_fit_demo();
-            break;
-        case 2:
             ret = open_camera();
             if (-1==ret) break;
             auto_handeye_calibration(150, pchRobotIp);
             break;
-        case 3:
+        case 2:
             ret = open_camera();
             screw_sampling();
             break;
-        case 4: 
+        case 3:
             circle_test_collection(0, nullptr);
-            break;        
-        case 5:
+            break;
+        case 4:
             piece_sampling();
+            break;
+        case 5:
+            semi_auto_eye_in_hand_calibration_wrapper(pchRobotIp);
             break;
         case 6:
             auto_eye_to_hand_calibration(pchRobotIp);
@@ -916,7 +1047,7 @@ int main(int argc, char** argv) {
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;
             return 0;
         default:
-            std::cout << "无效选择，请重新输入 (1-6)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-7)" << std::endl;
         }
 
         // 清空输入缓冲区
