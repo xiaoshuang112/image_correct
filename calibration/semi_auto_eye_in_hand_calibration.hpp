@@ -60,7 +60,7 @@ bool semiAutoEyeInHandCalibration(
  * @param output_yaml     结果 YAML 输出路径
  * @return true/false
  */
-bool semiAutoEyeInHandCalibrationFromDisk(
+bool calibrateEyeInHandFromDisk(
     const std::string& save_dir,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,

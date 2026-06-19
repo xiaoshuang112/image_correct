@@ -712,14 +712,15 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir,
     // ---- 保存结果 ----
     {
         std::string out_file = save_dir + "/eye_to_hand_result.yaml";
-        cv::FileStorage out(out_file, cv::FileStorage::WRITE);
-        out << "T_base_camera" << result.T_base_camera;
-        out << "camera_matrix" << result.camera_matrix;
-        out << "distortion_coefficients" << result.dist_coeffs;
-        out << "reprojection_error_mm" << result.reproj_error * 1000.0;
-        out << "valid_frames" << result.valid_frames;
-        std::cout << "[eyeToHand] 结果已保存到: " << out_file << std::endl;
+        saveCalibrationResult(out_file, "T_base_camera",
+                               result.T_base_camera, result.camera_matrix, result.dist_coeffs,
+                               result.reproj_error * 1000.0, result.valid_frames);
     }
+
+    std::cout << "\n========== 标定结果 ==========" << std::endl;
+    std::cout << "T_base_camera:\n" << result.T_base_camera << std::endl;
+    std::cout << "有效帧数: " << result.valid_frames << std::endl;
+    std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
 
     return true;
 }

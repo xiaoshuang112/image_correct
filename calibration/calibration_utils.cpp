@@ -478,3 +478,28 @@ bool convertEulerCsvToAxisCsv(const std::string& save_dir) {
               << " (" << count << " 帧)" << std::endl;
     return count > 0;
 }
+
+// ============================================================
+// 保存标定结果到 YAML
+// ============================================================
+bool saveCalibrationResult(const std::string& yaml_path,
+                            const std::string& transform_key,
+                            const cv::Mat& transform,
+                            const cv::Mat& camera_matrix,
+                            const cv::Mat& dist_coeffs,
+                            double reproj_error_mm,
+                            int valid_frames) {
+    cv::FileStorage out(yaml_path, cv::FileStorage::WRITE);
+    if (!out.isOpened()) {
+        std::cerr << "[calibUtil] 无法写入 " << yaml_path << std::endl;
+        return false;
+    }
+    out << transform_key.c_str() << transform;
+    out << "camera_matrix" << camera_matrix;
+    out << "distortion_coefficients" << dist_coeffs;
+    out << "reprojection_error_mm" << reproj_error_mm;
+    out << "valid_frames" << valid_frames;
+    out.release();
+    std::cout << "[calibUtil] 结果已保存到: " << yaml_path << std::endl;
+    return true;
+}

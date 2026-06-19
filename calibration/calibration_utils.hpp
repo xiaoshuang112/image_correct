@@ -105,4 +105,22 @@ bool loadRobotPosesFromCSV(const std::string& csv_file,
  */
 bool convertEulerCsvToAxisCsv(const std::string& save_dir);
 
+/**
+ * @brief 将标定结果保存到 YAML 文件
+ * @param yaml_path      输出路径
+ * @param transform_key  "T_flange_camera" 或 "T_base_camera"
+ * @param transform      4x4 变换矩阵
+ * @param camera_matrix  3x3 相机内参
+ * @param dist_coeffs    畸变系数
+ * @param reproj_error_mm 重投影误差 (mm)
+ * @param valid_frames   有效帧数
+ */
+bool saveCalibrationResult(const std::string& yaml_path,
+                            const std::string& transform_key,
+                            const cv::Mat& transform,
+                            const cv::Mat& camera_matrix,
+                            const cv::Mat& dist_coeffs,
+                            double reproj_error_mm,
+                            int valid_frames);
+
 #endif // CALIBRATION_UTILS_HPP

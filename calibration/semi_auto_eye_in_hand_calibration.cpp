@@ -168,7 +168,7 @@ bool semiAutoEyeInHandCalibration(
 // ============================================================
 // 离线标定入口
 // ============================================================
-bool semiAutoEyeInHandCalibrationFromDisk(
+bool calibrateEyeInHandFromDisk(
     const std::string& save_dir,
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
@@ -568,15 +568,9 @@ bool calibrateHandEyeFromDisk(
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
 
     if (!output_yaml.empty() && result.success) {
-        cv::FileStorage out(output_yaml, cv::FileStorage::WRITE);
-        if (out.isOpened()) {
-            out << "T_flange_camera" << result.T_flange_camera;
-            out << "camera_matrix" << result.camera_matrix;
-            out << "distortion_coefficients" << result.dist_coeffs;
-            out << "reprojection_error_mm" << result.reproj_error * 1000.0;
-            out << "valid_frames" << result.valid_frames;
-            out.release();
-        }
+        saveCalibrationResult(output_yaml, "T_flange_camera",
+                               result.T_flange_camera, result.camera_matrix, result.dist_coeffs,
+                               result.reproj_error * 1000.0, result.valid_frames);
     }
 
     if (result.success) {

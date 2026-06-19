@@ -37,6 +37,25 @@ struct PoseGenerationConfig {
     int min_valid_frames = 10;
 };
 
+inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_path) {
+    PoseGenerationConfig cfg;
+    cv::FileStorage fs(yaml_path, cv::FileStorage::READ);
+    if (fs.isOpened()) {
+        cv::FileNode fn;
+        fn = fs["offset_x"]; if (!fn.empty()) fn >> cfg.offset_x;
+        fn = fs["offset_y"]; if (!fn.empty()) fn >> cfg.offset_y;
+        fn = fs["offset_z"]; if (!fn.empty()) fn >> cfg.offset_z;
+        fn = fs["offset_rx"]; if (!fn.empty()) fn >> cfg.offset_rx;
+        fn = fs["offset_ry"]; if (!fn.empty()) fn >> cfg.offset_ry;
+        fn = fs["offset_rz"]; if (!fn.empty()) fn >> cfg.offset_rz;
+        fs["min_corners"] >> cfg.min_corners;
+        fs["min_valid_frames"] >> cfg.min_valid_frames;
+        fs.release();
+        std::cout << "加载配置: " << yaml_path << std::endl;
+    }
+    return cfg;
+}
+
 /**
  * @brief 自动眼在手外 ChArUco 标定
  *
