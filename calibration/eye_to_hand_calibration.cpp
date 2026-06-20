@@ -295,6 +295,17 @@ static int executeEyeToHandCollection(
                 f << candidates[i][j] << (j < 5 ? "," : "\n");
         }
 
+        // 保存欧拉角位姿（法兰欧拉 mm,deg）
+        {
+            double eule[6];
+            if (cr_AxisAngle2Eule(flange_aa, eule) == sucess) {
+                std::ofstream f(save_dir + "/rob_eule.csv", std::ios::app);
+                f << std::fixed << std::setprecision(3);
+                for (int j = 0; j < 6; j++)
+                    f << eule[j] << (j < 5 ? "," : "\n");
+            }
+        }
+
         // 保存内存中的位姿用于标定
         robot_poses.push_back(axisAnglePoseToTransform(flange_aa));
         captured++;
@@ -474,7 +485,7 @@ static bool eyeToHandCalibrate(
     // ---- 离群过滤 ----
     {
         std::vector<double>& vErr = calib_results[best_idx].per_frame_errors;
-        double thresh = 0.003;  // 2mm
+        double thresh = 0.001;  // 2mm
         int removed = 0;
         for (int i = valid - 1; i >= 0; i--) {
             if (vErr[i] > thresh) {

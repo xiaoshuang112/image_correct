@@ -479,13 +479,11 @@ bool OrbbecCameraV2::setColorExposureTime(int exposureUs) {
         m_exposureCached = exposureUs;
         return false;
     }
-    
+
     try {
-        // 先关闭自动曝光 — isPropertySupported 在某些固件上不可靠，直接 try/catch
-        try {
+        // 关闭自动曝光
+        if (m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_WRITE)) {
             m_device->setBoolProperty(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, false);
-        } catch (const ob::Error&) {
-            // 不支持自动曝光属性也没关系，继续尝试设手动曝光
         }
 
         // 检查设备是否支持曝光时间设置
@@ -506,8 +504,13 @@ bool OrbbecCameraV2::setColorExposureTime(int exposureUs) {
 
         // 设置曝光时间
         m_device->setIntProperty(OB_PROP_COLOR_EXPOSURE_INT, exposureUs);
+
+        // 部分奥比中光固件在 setIntProperty 后会重新打开自动曝光，再次确保关闭
+        if (m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_WRITE)) {
+            m_device->setBoolProperty(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, false);
+        }
+
         m_exposureCached = exposureUs;
-        std::cout << "Exposure time set to " << exposureUs << " us" << std::endl;
         return true;
     }
     catch (const ob::Error& e) {

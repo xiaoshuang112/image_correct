@@ -144,24 +144,48 @@ bool GetBasePathInfo() {
     return true;
 }
 
-int load_config(std::string cfg_file) { 
+int load_config(std::string cfg_file) {
     cv::FileStorage fs(cfg_file, cv::FileStorage::READ);
 
     if (!fs.isOpened()) {
-        std::cerr << "无法打开文件进行读取!" << std::endl;
+        std::cerr << "无法打开配置文件!" << std::endl;
         return -1;
     }
 
-    fs["cam_ip"] >> g_cfg.cam_ip;
-    fs["cam_port"] >> g_cfg.cam_port;
-    fs["fps"] >> g_cfg.fps;
-    fs["cam_width"] >> g_cfg.cam_width;
-    fs["cam_height"] >> g_cfg.cam_height;
+    // Select camera section based on compile flags
+    std::string cam_section;
+#ifdef useORB
+    cam_section = "camera_obb_100";
+#elif defined(useMVS)
+    int choice = 1;
+    std::cout << "\n请选择 MVS 相机型号:" << std::endl;
+    std::cout << "  1. camera_mvs_130 (1280x1024)" << std::endl;
+    std::cout << "  2. camera_mvs_500 (2448x2048)" << std::endl;
+    std::cout << "  请选择 (1-2): " << std::flush;
+    std::cin >> choice;
+    cam_section = (choice == 2) ? "camera_mvs_500" : "camera_mvs_130";
+#else
+    cam_section = "camera_obb_100";
+#endif
 
+    // Read camera-specific params from the selected section
+    cv::FileNode cam_node = fs[cam_section];
+    if (!cam_node.empty()) {
+        cam_node["cam_ip"] >> g_cfg.cam_ip;
+        cam_node["cam_port"] >> g_cfg.cam_port;
+        cam_node["fps"] >> g_cfg.fps;
+        cam_node["cam_width"] >> g_cfg.cam_width;
+        cam_node["cam_height"] >> g_cfg.cam_height;
+    } else {
+        std::cerr << "[load_config] 配置中未找到 '" << cam_section << "' 节，使用默认参数" << std::endl;
+    }
+
+    // Calibration grid params (always at root level)
     fs["grid_num_heng"] >> g_cfg.grid_num_heng;
     fs["grid_num_shu"] >> g_cfg.grid_num_shu;
     fs["grid_size"] >> g_cfg.grid_size;
 
+    std::cout << "相机型号: " << cam_section << std::endl;
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
     fs.release();

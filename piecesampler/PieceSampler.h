@@ -15,7 +15,7 @@ public:
 
 private:
     // Fixed downward camera: compute flange pose for camera at (px, py, pz)
-    void computeFixedPose(double px, double py, double pz, double out_pose[6]);
+    void computeFixedPose(double px, double py, double pz, double flangAA[6], double out_pose[6]);
 
     // Capture exposures for specific indices
     int captureExposures(const std::string& prefix, const std::vector<int>& indices);

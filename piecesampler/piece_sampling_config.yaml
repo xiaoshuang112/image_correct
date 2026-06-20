@@ -3,8 +3,11 @@ piece_sampler:
   # 工件中心位置 (mm)
   position: [-750.0, 228.66, -450.3]
 
-  # XY 平面偏移 (mm) — 以 position 为中心，5x5 网格
-  xy_offsets: [-500, -300, 0, 300, 500]
+  # X 方向偏移 (mm) — 以 position 为中心
+  x_offsets: [-500, -300, 0, 300, 500]
+
+  # Y 方向偏移 (mm)
+  y_offsets: [-500, -300, 0, 300, 500]
 
   # Z 高度 — 工件上方距离 (mm)
   z_heights: [300, 500, 700]

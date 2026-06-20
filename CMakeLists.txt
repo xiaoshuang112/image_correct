@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB FALSE)
+SET(useORB TRUE)
 SET(useOAK FALSE)
-SET(useMVS TRUE)
+SET(useMVS FALSE)
 
 
 set(CMAKE_BUILD_TYPE "Debug")
@@ -166,6 +166,12 @@ target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS}
 # ============================================================
 add_executable(anti_distortion tools/anti_distortion.cpp)
 target_link_libraries(anti_distortion ${OpenCV_LIBS})
+
+# ============================================================
+#  FK 验证工具
+# ============================================================
+add_executable(verify_fk tools/verify_fk.cpp)
+target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 
 # ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）

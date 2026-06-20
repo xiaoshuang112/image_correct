@@ -15,7 +15,7 @@ bool loadPieceSamplerConfig(const std::string& path, PieceSamplerConfig& cfg) {
         return false;
     }
 
-    // Position (single triple)
+    // Position (single triple) — optional; if absent, uses current robot pose
     cv::FileNode pos_node = root["position"];
     if (pos_node.type() == cv::FileNode::SEQ) {
         auto it = pos_node.begin();
@@ -23,14 +23,23 @@ bool loadPieceSamplerConfig(const std::string& path, PieceSamplerConfig& cfg) {
         double y = (double)*it; ++it;
         double z = (double)*it;
         cfg.position = cv::Point3d(x, y, z);
+        cfg.has_position = true;
     }
 
-    // XY offsets
-    cv::FileNode xy_node = root["xy_offsets"];
-    if (xy_node.type() == cv::FileNode::SEQ) {
-        cfg.xy_offsets.clear();
-        for (auto it = xy_node.begin(); it != xy_node.end(); ++it)
-            cfg.xy_offsets.push_back((double)*it);
+    // X offsets
+    cv::FileNode x_node = root["x_offsets"];
+    if (x_node.type() == cv::FileNode::SEQ) {
+        cfg.x_offsets.clear();
+        for (auto it = x_node.begin(); it != x_node.end(); ++it)
+            cfg.x_offsets.push_back((double)*it);
+    }
+
+    // Y offsets
+    cv::FileNode y_node = root["y_offsets"];
+    if (y_node.type() == cv::FileNode::SEQ) {
+        cfg.y_offsets.clear();
+        for (auto it = y_node.begin(); it != y_node.end(); ++it)
+            cfg.y_offsets.push_back((double)*it);
     }
 
     // Z heights
@@ -83,8 +92,12 @@ bool loadPieceSamplerConfig(const std::string& path, PieceSamplerConfig& cfg) {
 }
 
 bool validatePieceSamplerConfig(const PieceSamplerConfig& cfg) {
-    if (cfg.xy_offsets.size() < 1) {
-        std::cerr << "[PieceConfig] xy_offsets must have at least 1 value" << std::endl;
+    if (cfg.x_offsets.size() < 1) {
+        std::cerr << "[PieceConfig] x_offsets must have at least 1 value" << std::endl;
+        return false;
+    }
+    if (cfg.y_offsets.size() < 1) {
+        std::cerr << "[PieceConfig] y_offsets must have at least 1 value" << std::endl;
         return false;
     }
     if (cfg.z_heights.empty()) {
