@@ -201,7 +201,7 @@ bool executeCollection(int robot_handle,
             progress = (i + 1) * 100 / total;
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
         }        
-        CRresult ret_move = moveToJointPosByLine(robot_handle, candidates[i].joint);
+        CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
         if(sucess != ret_move){            
             if(operate_timeout == ret_move){
                  std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;

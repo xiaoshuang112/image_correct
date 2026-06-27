@@ -18,7 +18,7 @@ static bool jointsWithinTolerance(const double actual[6], const double target[6]
 }
 
 
-CRresult moveToJointPosByLine(int robot_handle, const double joint[ROB_AXIS_NUM])//, const std::vector<double>& basepose)
+CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS_NUM])//, const std::vector<double>& basepose)
 {
     double init_joint[ROB_AXIS_NUM];
     cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
@@ -38,8 +38,8 @@ CRresult moveToJointPosByLine(int robot_handle, const double joint[ROB_AXIS_NUM]
 	PointControlPara pointControlPara;
 	for (int index = 0; index < ROB_AXIS_NUM; index++)
 	{
-		pointControlPara.pose[index] = init_joint[index];
-		pointControlPara.jointpos[index] = joint[index];
+		pointControlPara.pose[index] = tcpAxisPos[index];
+		pointControlPara.jointpos[index] = init_joint[index];
 		pointControlPara.tcpOffset[index] = 0;
 		pointControlPara.coordinatePose[index] = 0;
 

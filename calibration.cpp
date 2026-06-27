@@ -184,6 +184,11 @@ int load_config(std::string cfg_file) {
     fs["grid_num_shu"] >> g_cfg.grid_num_shu;
     fs["grid_size"] >> g_cfg.grid_size;
 
+    // Robot connection params
+    fs["robot_ip"] >> g_cfg.robot_ip;
+    fs["robot_port"] >> g_cfg.robot_port;
+    fs["robot_pwd"] >> g_cfg.robot_pwd;
+
     std::cout << "相机型号: " << cam_section << std::endl;
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
@@ -714,6 +719,20 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     }
 }
 
+bool tryMoveByLineOrJoint(int robotHandle, double tcpAxisPosZ[6], double x_off, double y_off, double z_off){
+    CRresult ret = moveToJointPosByLine(robotHandle, tcpAxisPosZ);
+    //cr_get_jointActualPos(robotHandle, jointPos);
+    if (sucess != ret)
+    {                     
+        bool   ok = moveToTcpAxisPos(robotHandle, tcpAxisPosZ);                    
+        if(!ok)
+                return false;
+        else
+          std::cout << "movel失败， moveJ成功：x_off=" << x_off << ", y_ff=" << y_off << ", z=" <<  z_off << std::endl;
+    }
+   return true;
+}
+
 // ============================================================
 // 奇异点测试分析（菜单项 8）
 // ============================================================
@@ -723,20 +742,21 @@ static void singularity_test() {
     std::cout << "请确保机器人处于安全状态，按 Enter 开始..." << std::endl;
     std::cin.get();
 
-    double init_joint[ROB_AXIS_NUM], init_eule[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos(robotHandle, init_joint) != sucess) {
-        std::cerr << "获取初始关节角失败" << std::endl;
-        return;
-    }
-    convertJointToFlangeEule(robotHandle, init_joint, init_eule);
-
+    
+    double tcpAxisPoseInit[ROB_AXIS_NUM] = {-805.5958993, -50.970954, -192.117255, -140.155821, -99.117461, -9.923929};
+    moveToTcpAxisPos(robotHandle, tcpAxisPoseInit);
+    // if (cr_get_tcpActualPose(robotHandle, tcpAxisPoseInit) != sucess)     {
+    //     std::cerr << "获取初始tcp轴角失败" << std::endl;
+    //     return;
+    // }
+    
     std::cout << std::fixed << std::setprecision(1);
     std::cout << "\n初始法兰位姿 (X Y Z RX RY RZ): "
-              << init_eule[0] << " " << init_eule[1] << " " << init_eule[2] << "  "
-              << init_eule[3] << " " << init_eule[4] << " " << init_eule[5] << std::endl;
+              << tcpAxisPoseInit[0] << " " << tcpAxisPoseInit[1] << " " << tcpAxisPoseInit[2] << "  "
+              << tcpAxisPoseInit[3] << " " << tcpAxisPoseInit[4] << " " << tcpAxisPoseInit[5] << std::endl;
 
-    const double x_offsets[] = {-200, -100, 0, 100, 200};
-    const double y_offsets[] = {-200, 0, 200};
+    const double x_offsets[] = { -200, -100, 0, 100, 200, 300};
+    const double y_offsets[] = {-500, -400, -300, -200, 0, 200, 300, 400, 500};
     const double step_z = 50.0;  // 5cm
 
     std::cout << "\n" << std::string(75, '-') << std::endl;
@@ -752,69 +772,47 @@ static void singularity_test() {
 
     for (double x_off : x_offsets) {
         for (double y_off : y_offsets) {
-            double target_eule[ROB_AXIS_NUM];
-            memcpy(target_eule, init_eule, sizeof(target_eule));
-            target_eule[0] = init_eule[0] + x_off;
-            target_eule[1] = init_eule[1] + y_off;
-            target_eule[2] = init_eule[2];
-
-            double target_joint[ROB_AXIS_NUM];
-            if (!convertFlangeOulePos2Joint(robotHandle, target_eule, target_joint)) {
+            double tcpAxisPos[ROB_AXIS_NUM], tcpAxisPosZ[ROB_AXIS_NUM], jointPos[ROB_AXIS_NUM];
+            memcpy(tcpAxisPos, tcpAxisPoseInit, sizeof(tcpAxisPoseInit));
+            tcpAxisPos[0] = tcpAxisPoseInit[0] + x_off;
+            tcpAxisPos[1] = tcpAxisPoseInit[1] + y_off;
+            bool ok = moveToTcpAxisPos(robotHandle, tcpAxisPos);
+            if (!ok) {
                 std::cout << std::left
                           << std::setw(8) << x_off
                           << std::setw(8) << y_off
-                          << "IK不可达" << std::endl;
-                continue;
-            }
-
-            CRresult ret = moveToJointPos(robotHandle, target_joint);
-            if (ret != sucess) {
-                std::cout << std::left
-                          << std::setw(8) << x_off
-                          << std::setw(8) << y_off
-                          << "运动失败 (ret=" << ret << ")" << std::endl;
-                if (ret == operate_timeout)
-                    moveToJointPos(robotHandle, init_joint);
+                          << "运动失败" << std::endl;
                 continue;
             }
 
             // 逐步上抬
             int steps = 0;
-            double max_z = init_eule[2];
-            target_eule[2] = init_eule[2];
+            double max_z = tcpAxisPos[2];
+            memcpy(tcpAxisPosZ, tcpAxisPos, sizeof(tcpAxisPosZ));
 
             while (true) {
-                target_eule[2] += step_z;
-
-                double next_joint[ROB_AXIS_NUM];
-                if (!convertFlangeOulePos2Joint(robotHandle, target_eule, next_joint))
-                    break;
-
-                ret = moveToJointPosByLine(robotHandle, next_joint);
-                if (ret == operate_timeout) {
-                    moveToJointPosByLine(robotHandle, init_joint);
-                    break;
-                }
-                if (ret != sucess)
-                    break;
+                tcpAxisPosZ[2] += step_z;
+                if(!tryMoveByLineOrJoint(robotHandle, tcpAxisPosZ, x_off, y_off, tcpAxisPosZ[2] -tcpAxisPos[2]))
+                   break;               
 
                 steps++;
-                max_z = target_eule[2];
+                max_z = tcpAxisPosZ[2];
             }
 
-            double lift = max_z - init_eule[2];
+            double lift = max_z - tcpAxisPos[2];
             std::cout << std::fixed << std::setprecision(1);
             std::cout << std::left
                       << std::setw(8) << x_off
                       << std::setw(8) << y_off
-                      << std::setw(10) << init_eule[2]
+                      << std::setw(10) << tcpAxisPos[2]
                       << std::setw(10) << max_z
                       << std::setw(10) << lift
                       << std::setw(6) << steps
                       << (steps > 0 ? "OK" : "失败") << std::endl;
 
             // 回到初始点
-            moveToJointPosByLine(robotHandle, init_joint);
+            //moveToJointPosByLine(robotHandle, tcpAxisPoseInit);
+            tryMoveByLineOrJoint(robotHandle, tcpAxisPoseInit, -1, -1, -1);
         }
     }
 
@@ -895,10 +893,8 @@ int main(int argc, char** argv) {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    char *pchRobotIp = "192.168.1.6";
-
     CRresult result;
-    result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
+    result = cr_create_robot(&robotHandle, g_cfg.robot_ip.c_str(), g_cfg.robot_port, g_cfg.robot_pwd.data());  // 机械臂连接
     if (result != sucess){
         std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
         return -1;
@@ -920,13 +916,13 @@ int main(int argc, char** argv) {
         case 1:
             ret = open_camera();
             if (-1==ret) break;
-            auto_handeye_calibration(150, pchRobotIp);
+            auto_handeye_calibration(150,(char*) g_cfg.robot_ip.c_str());
             break;
         case 2:
-            semi_auto_eye_in_hand_calibration_wrapper(pchRobotIp);
+            semi_auto_eye_in_hand_calibration_wrapper((char*)g_cfg.robot_ip.c_str());
             break;
         case 3:
-            auto_eye_to_hand_calibration(pchRobotIp);
+            auto_eye_to_hand_calibration((char*)g_cfg.robot_ip.c_str());
             break;
         case 4:
             ret = open_camera();
