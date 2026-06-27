@@ -62,8 +62,6 @@ RobotHandle robotHandle;
 
 namespace fs = std::filesystem;
 
-AICameraIntrinsic g_cam_param;
-
 
 std::string string_format(const char* format, ...) {
 #if 1 // 最大长度限制：1024 - 1
@@ -189,21 +187,6 @@ int load_config(std::string cfg_file) {
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
     fs.release();
-
-
-    // g_cam_param
-    ///< Focal length in x direction
-    g_cam_param.fx = 608.212;
-    ///< Focal length in y direction        
-    g_cam_param.fy = 608.21;
-    ///< Optical center abscissa        
-    g_cam_param.cx = 648.738;
-    ///< Optical center ordinate
-    g_cam_param.cy = 392.18;
-
-    g_cam_param.width = 1280;
-    
-    g_cam_param.height = 800;
 
     return 0;
 }
@@ -677,7 +660,7 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
     // 加载已知相机内参（如有）
     cv::Mat camera_matrix, dist_coeffs;
     std::string cam_file = g_paramPath + "camera_params.yaml";  
-    std::string save_dir = g_calibrationPath + "semi_eye_in_hand/";
+    std::string save_dir = g_paramPath + "semi_eye_in_hand/";
 
     CalibrationResult result;
     bool ok = semiAutoEyeInHandCalibration(
@@ -714,7 +697,7 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     // 加载配置
     PoseGenerationConfig pose_config = loadPoseGenerationConfig(g_paramPath + "eye_to_hand_config.yaml");
 
-    std::string save_dir = g_calibrationPath + "eye_to_hand/";
+    std::string save_dir = g_paramPath + "eye_to_hand/";
 
     EyeToHandResult result;
     bool ok = autoEyeToHandCharucoCalibration(

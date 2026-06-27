@@ -57,7 +57,7 @@ endif()
 #  相机 SDK 检测（ORB 和 MVS 互斥）
 # ============================================================
 
-option(USE_ORB "Build with Orbbec camera (disable MVS)" OFF)
+option(USE_ORB "Build with Orbbec camera (disable MVS)" ON)
 
 if(USE_ORB)
     # ---- ORB 模式 ----

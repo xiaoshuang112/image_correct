@@ -12,8 +12,8 @@ SET(useOAK FALSE)
 SET(useMVS FALSE)
 
 
-set(CMAKE_BUILD_TYPE "Debug")
-# set(CMAKE_BUILD_TYPE "Release")
+# set(CMAKE_BUILD_TYPE "Debug")
+set(CMAKE_BUILD_TYPE "Release")
 
 # 禁用 MSVC 安全警告
 if(MSVC)
