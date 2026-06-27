@@ -3,9 +3,12 @@
 
 #include "robotapi.h"
 #include "basestruct.h"
+#include <vector>
 
 // 运动到目标关节角（等效 goto_jointpos）
 CRresult moveToJointPos(int robot_handle, const double joint[6]);
+
+CRresult moveToJointPosByLine(int robot_handle, const double joint[ROB_AXIS_NUM]);
 
 // 法兰轴角 → 关节角
 bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint);
@@ -18,6 +21,7 @@ bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double 
 
 // TCP 轴角 → 法兰欧拉
 bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos);
+bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM], double flangeEule[ROB_AXIS_NUM]);
 
 // 运动到目标法兰轴角位姿
 bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos);

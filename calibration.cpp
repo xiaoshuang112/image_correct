@@ -101,8 +101,9 @@ void display_menu() {
     std::cout << "5. CircleSample 测试图采集" << std::endl;
     std::cout << "6. 工件检测采样" << std::endl;
     std::cout << "7. 退出程序" << std::endl;
+    std::cout << "8. 奇异点测试分析" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-7): ";
+    std::cout << "请选择操作 (1-8): ";
 }
 
 
@@ -714,6 +715,114 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
 }
 
 // ============================================================
+// 奇异点测试分析（菜单项 8）
+// ============================================================
+static void singularity_test() {
+    std::cout << "\n===== 奇异点测试分析 =====" << std::endl;
+    std::cout << "机械臂将遍历 x/y 偏移组合，逐步上抬直到不可达" << std::endl;
+    std::cout << "请确保机器人处于安全状态，按 Enter 开始..." << std::endl;
+    std::cin.get();
+
+    double init_joint[ROB_AXIS_NUM], init_eule[ROB_AXIS_NUM];
+    if (cr_get_jointActualPos(robotHandle, init_joint) != sucess) {
+        std::cerr << "获取初始关节角失败" << std::endl;
+        return;
+    }
+    convertJointToFlangeEule(robotHandle, init_joint, init_eule);
+
+    std::cout << std::fixed << std::setprecision(1);
+    std::cout << "\n初始法兰位姿 (X Y Z RX RY RZ): "
+              << init_eule[0] << " " << init_eule[1] << " " << init_eule[2] << "  "
+              << init_eule[3] << " " << init_eule[4] << " " << init_eule[5] << std::endl;
+
+    const double x_offsets[] = {-200, -100, 0, 100, 200};
+    const double y_offsets[] = {-200, 0, 200};
+    const double step_z = 50.0;  // 5cm
+
+    std::cout << "\n" << std::string(75, '-') << std::endl;
+    std::cout << std::left
+              << std::setw(8) << "X偏移"
+              << std::setw(8) << "Y偏移"
+              << std::setw(10) << "初始Z"
+              << std::setw(10) << "最大Z"
+              << std::setw(10) << "抬升"
+              << std::setw(6) << "步数"
+              << "结果" << std::endl;
+    std::cout << std::string(75, '-') << std::endl;
+
+    for (double x_off : x_offsets) {
+        for (double y_off : y_offsets) {
+            double target_eule[ROB_AXIS_NUM];
+            memcpy(target_eule, init_eule, sizeof(target_eule));
+            target_eule[0] = init_eule[0] + x_off;
+            target_eule[1] = init_eule[1] + y_off;
+            target_eule[2] = init_eule[2];
+
+            double target_joint[ROB_AXIS_NUM];
+            if (!convertFlangeOulePos2Joint(robotHandle, target_eule, target_joint)) {
+                std::cout << std::left
+                          << std::setw(8) << x_off
+                          << std::setw(8) << y_off
+                          << "IK不可达" << std::endl;
+                continue;
+            }
+
+            CRresult ret = moveToJointPos(robotHandle, target_joint);
+            if (ret != sucess) {
+                std::cout << std::left
+                          << std::setw(8) << x_off
+                          << std::setw(8) << y_off
+                          << "运动失败 (ret=" << ret << ")" << std::endl;
+                if (ret == operate_timeout)
+                    moveToJointPos(robotHandle, init_joint);
+                continue;
+            }
+
+            // 逐步上抬
+            int steps = 0;
+            double max_z = init_eule[2];
+            target_eule[2] = init_eule[2];
+
+            while (true) {
+                target_eule[2] += step_z;
+
+                double next_joint[ROB_AXIS_NUM];
+                if (!convertFlangeOulePos2Joint(robotHandle, target_eule, next_joint))
+                    break;
+
+                ret = moveToJointPosByLine(robotHandle, next_joint);
+                if (ret == operate_timeout) {
+                    moveToJointPosByLine(robotHandle, init_joint);
+                    break;
+                }
+                if (ret != sucess)
+                    break;
+
+                steps++;
+                max_z = target_eule[2];
+            }
+
+            double lift = max_z - init_eule[2];
+            std::cout << std::fixed << std::setprecision(1);
+            std::cout << std::left
+                      << std::setw(8) << x_off
+                      << std::setw(8) << y_off
+                      << std::setw(10) << init_eule[2]
+                      << std::setw(10) << max_z
+                      << std::setw(10) << lift
+                      << std::setw(6) << steps
+                      << (steps > 0 ? "OK" : "失败") << std::endl;
+
+            // 回到初始点
+            moveToJointPosByLine(robotHandle, init_joint);
+        }
+    }
+
+    std::cout << std::string(75, '-') << std::endl;
+    std::cout << "测试完成" << std::endl;
+}
+
+// ============================================================
 // CLI 命令处理（返回 true 表示已处理，main 应退出）
 // ============================================================
 static bool handleCLI(int argc, char** argv) {
@@ -801,8 +910,6 @@ int main(int argc, char** argv) {
 #else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
 #endif
-
-    // int cam = open_camera();
     
     while (true) {
         display_menu();
@@ -834,8 +941,11 @@ int main(int argc, char** argv) {
         case 7:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;
             return 0;
+        case 8:
+            singularity_test();
+            break;
         default:
-            std::cout << "无效选择，请重新输入 (1-7)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-8)" << std::endl;
         }
 
         // 清空输入缓冲区
