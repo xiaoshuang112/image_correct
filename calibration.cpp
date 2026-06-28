@@ -183,6 +183,11 @@ int load_config(std::string cfg_file) {
     fs["grid_num_shu"] >> g_cfg.grid_num_shu;
     fs["grid_size"] >> g_cfg.grid_size;
 
+    // Robot connection params
+    fs["robot_ip"] >> g_cfg.robot_ip;
+    fs["robot_port"] >> g_cfg.robot_port;
+    fs["robot_pwd"] >> g_cfg.robot_pwd;
+
     std::cout << "相机型号: " << cam_section << std::endl;
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
 
@@ -631,7 +636,7 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
         cameraToTcpEnd,
         result,
         g_calibrationPath,
-        g_appPath + "hand_eye_result.yaml"
+        g_paramPath + "hand_eye_result.yaml"
     );
 
     if (ok) {
@@ -668,7 +673,7 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
         pose_config, board_cfg,
         camera_matrix, dist_coeffs,
         result, save_dir,
-        g_appPath + "hand_eye_result.yaml");
+        g_paramPath + "hand_eye_result.yaml");
 
     if (ok) {
         saveCalibratedCameraParams(camera_matrix, result.camera_matrix, result.dist_coeffs);
@@ -705,7 +710,7 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
         pose_config, result, save_dir);
 
     if (ok) {
-        saveCalibrationResult(g_appPath + "eye_to_hand_result.yaml", "T_base_camera",
+        saveCalibrationResult(g_paramPath + "eye_to_hand_result.yaml", "T_base_camera",
                                result.T_base_camera, result.camera_matrix, result.dist_coeffs,
                                result.reproj_error * 1000.0, result.valid_frames);
     } else {
@@ -786,10 +791,11 @@ int main(int argc, char** argv) {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    char *pchRobotIp = "192.168.1.6";
+    // char *pchRobotIp = "192.168.1.6";
 
     CRresult result;
-    result = cr_create_robot(&robotHandle, pchRobotIp, 2323, "123");  // 机械臂连接 
+    std::cout << "robot_ip: " << g_cfg.robot_ip << ", port: " << g_cfg.robot_port << ", pwd: " << g_cfg.robot_pwd << std::endl;
+    result = cr_create_robot(&robotHandle, g_cfg.robot_ip.c_str(), g_cfg.robot_port, g_cfg.robot_pwd.c_str());  // 机械臂连接 
     if (result != sucess){
         std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
         return -1;
@@ -813,13 +819,13 @@ int main(int argc, char** argv) {
         case 1:
             ret = open_camera();
             if (-1==ret) break;
-            auto_handeye_calibration(150, pchRobotIp);
+            auto_handeye_calibration(150, (char*)g_cfg.robot_ip.c_str());
             break;
         case 2:
-            semi_auto_eye_in_hand_calibration_wrapper(pchRobotIp);
+            semi_auto_eye_in_hand_calibration_wrapper((char*)g_cfg.robot_ip.c_str());
             break;
         case 3:
-            auto_eye_to_hand_calibration(pchRobotIp);
+            auto_eye_to_hand_calibration((char*)g_cfg.robot_ip.c_str());
             break;
         case 4:
             ret = open_camera();

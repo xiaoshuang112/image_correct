@@ -7,9 +7,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-SET(useORB TRUE)
+SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS FALSE)
+SET(useMVS TRUE)
 
 
 # set(CMAKE_BUILD_TYPE "Debug")
@@ -176,7 +176,7 @@ target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 # ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
-option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
+option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" OFF)
 if(BUILD_QT_GUI)
     find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
     if(Qt5_FOUND)
