@@ -326,11 +326,13 @@ static bool computeBoardPosesFromImages(
     CharucoDetector& detector,
     const cv::Mat& camera_matrix,
     const cv::Mat& dist_coeffs,
-    std::vector<cv::Mat>& camera_poses) {
+    std::vector<cv::Mat>& camera_poses,
+   std::vector<cv::Mat> &robot_poses) {
 
     camera_poses.clear();
     std::cout << "[eyeToHand] 计算标定板位姿..." << std::endl;
-
+    std::vector<cv::Mat> robot_poses_dst;
+    robot_poses_dst.reserve(robot_poses.size());
     // 临时设置相机内参用于 detectPose
     detector.setCameraParams(camera_matrix, dist_coeffs);
 
@@ -349,10 +351,12 @@ static bool computeBoardPosesFromImages(
             std::cout << "[eyeToHand]   " << path << " 位姿估计失败，跳过" << std::endl;
             continue;
         }
+        else 
+           robot_poses_dst.push_back(robot_poses[i]);
 
         camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
     }
-
+    robot_poses = robot_poses_dst;
     std::cout << "[eyeToHand] 成功计算 " << camera_poses.size() << " 帧位姿" << std::endl;
     return !camera_poses.empty();
 }
@@ -644,7 +648,7 @@ bool autoEyeToHandCharucoCalibration(
 
     // ---- Phase 3.75: 用标定后的内参计算每帧标定板位姿 ----
     std::vector<cv::Mat> camera_poses;
-    if (!computeBoardPosesFromImages(save_dir, detector, camera_matrix, dist_coeffs, camera_poses)) {
+    if (!computeBoardPosesFromImages(save_dir, detector, camera_matrix, dist_coeffs, camera_poses, robot_poses)) {
         result.message = "计算标定板位姿失败";
         std::cerr << "[eyeToHand] " << result.message << std::endl;
         return false;
@@ -682,18 +686,7 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir,
         std::cerr << "[eyeToHand] " << result.message << std::endl;
         return false;
     }
-
-    // ---- 计算每帧标定板位姿 ----
-    std::vector<cv::Mat> camera_poses;
-    if (!computeBoardPosesFromImages(save_dir, detector,
-                                      result.camera_matrix, result.dist_coeffs,
-                                      camera_poses)) {
-        result.message = "计算标定板位姿失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- 加载机器人位姿（优先读轴角文件，否则尝试转换欧拉文件） ----
+     // ---- 加载机器人位姿（优先读轴角文件，否则尝试转换欧拉文件） ----
     std::vector<cv::Mat> robot_poses;
     std::string axis_csv = save_dir + "/rob_pos.csv";
     std::string euler_csv = save_dir + "/rob_eule.csv";
@@ -707,6 +700,17 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir,
         std::cerr << "[eyeToHand] " << result.message << std::endl;
         return false;
     }
+
+    // ---- 计算每帧标定板位姿 ----
+    std::vector<cv::Mat> camera_poses;
+    if (!computeBoardPosesFromImages(save_dir, detector,
+                                      result.camera_matrix, result.dist_coeffs,
+                                      camera_poses, robot_poses)) {
+        result.message = "计算标定板位姿失败";
+        std::cerr << "[eyeToHand] " << result.message << std::endl;
+        return false;
+    }
+   
 
     // robot_poses 与 camera_poses 必须一一对应
     if (robot_poses.size() != camera_poses.size()) {

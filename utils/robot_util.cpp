@@ -3,6 +3,7 @@
 #include <thread>
 #include <chrono>
 #include <cmath>
+#include <vector>
 
 // ============================================================
 // 运动到目标关节角（等效 goto_jointpos）
@@ -14,6 +15,62 @@ static bool jointsWithinTolerance(const double actual[6], const double target[6]
             return false;
     }
     return true;
+}
+
+
+CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS_NUM])//, const std::vector<double>& basepose)
+{
+    double init_joint[ROB_AXIS_NUM];
+    cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
+    // if ( jointpos.size()!=ROB_AXIS_NUM){        
+    //     std::cerr << "moveLine失败：未连接或参数错误 " << std::endl;
+    //     return robotmode_error;
+    // }
+    // 读取当前激活的TCP
+	int tcpindex = -1;
+	CRresult result =  cr_cfg_tcp_active_get(robot_handle, &tcpindex);
+	if (result != sucess)
+	{		
+        std::cerr << "[moveLine] 读取当前激活的TCP失败 " << std::endl;
+        return result;
+	}
+
+	PointControlPara pointControlPara;
+	for (int index = 0; index < ROB_AXIS_NUM; index++)
+	{
+		pointControlPara.pose[index] = tcpAxisPos[index];
+		pointControlPara.jointpos[index] = init_joint[index];
+		pointControlPara.tcpOffset[index] = 0;
+		pointControlPara.coordinatePose[index] = 0;
+
+#ifdef X86_64
+		pointControlPara.speed[index] = 150;
+		pointControlPara.acc[index] = 250;
+
+#else
+		pointControlPara.speed[index] = 150;
+		pointControlPara.acc[index] = 250;
+
+#endif // X86_64
+        
+        
+        pointControlPara.jerk[index] = 60;
+	}
+    // 当tcpID为非负数时，使用tcpID对应的TCP偏移量作为输入；当tcpID为负数时，使用tcpoffset数据作为TCP偏移量输入；
+	pointControlPara.tcpID = tcpindex;		
+	pointControlPara.coordinateType = PointCoordinate; 
+	pointControlPara.pointTransType = pointTransStop;
+	pointControlPara.pointTransRadius = 0;
+	pointControlPara.poseTranType = poseTranMoveToTargetPose;
+	pointControlPara.motiontriggerMode = MovetriggerbyOnlyRpc;
+
+	result = cr_move_line(robot_handle, pointControlPara, TRUE);
+    if (result != sucess)
+    {
+        std::cerr << "moveLine失败：cr_move_line ret= " << result << std::endl;
+        return result;
+    }
+    return result;
 }
 
 CRresult moveToJointPos(int robot_handle, const double joint[6]) {
@@ -110,6 +167,13 @@ bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *
         return true;
     }
     return false;
+}
+
+bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM], double flangeEule[ROB_AXIS_NUM]){
+    double flangePos[ROB_AXIS_NUM];
+    cr_kineForward(robot_handle, const_cast<double*>(joint), flangePos);
+    cr_AxisAngle2Eule(flangePos, flangeEule);
+    return true;
 }
 
 // ============================================================

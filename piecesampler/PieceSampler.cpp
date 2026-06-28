@@ -88,6 +88,7 @@ void PieceSampler::genExposures() {
      double logMin = std::log10(minExp + 1.0);
     double logMax = std::log10(maxExp);
     for (int i = 0; i < n; i++) {
+        double logVal = logMin + (logMax - logMin) * i / (n - 1);     
         _exp_values[i] = (int)std::round(std::pow(10.0, logVal));
     }
  #endif

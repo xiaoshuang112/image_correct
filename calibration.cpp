@@ -101,8 +101,9 @@ void display_menu() {
     std::cout << "5. CircleSample 测试图采集" << std::endl;
     std::cout << "6. 工件检测采样" << std::endl;
     std::cout << "7. 退出程序" << std::endl;
+    std::cout << "8. 奇异点测试分析" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-7): ";
+    std::cout << "请选择操作 (1-8): ";
 }
 
 
@@ -718,6 +719,107 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     }
 }
 
+bool tryMoveByLineOrJoint(int robotHandle, double tcpAxisPosZ[6], double x_off, double y_off, double z_off){
+    CRresult ret = moveToJointPosByLine(robotHandle, tcpAxisPosZ);
+    //cr_get_jointActualPos(robotHandle, jointPos);
+    if (sucess != ret)
+    {                     
+        bool   ok = moveToTcpAxisPos(robotHandle, tcpAxisPosZ);                    
+        if(!ok)
+                return false;
+        else
+          std::cout << "movel失败， moveJ成功：x_off=" << x_off << ", y_ff=" << y_off << ", z=" <<  z_off << std::endl;
+    }
+   return true;
+}
+
+// ============================================================
+// 奇异点测试分析（菜单项 8）
+// ============================================================
+static void singularity_test() {
+    std::cout << "\n===== 奇异点测试分析 =====" << std::endl;
+    std::cout << "机械臂将遍历 x/y 偏移组合，逐步上抬直到不可达" << std::endl;
+    std::cout << "请确保机器人处于安全状态，按 Enter 开始..." << std::endl;
+    std::cin.get();
+
+    
+    double tcpAxisPoseInit[ROB_AXIS_NUM] = {-805.5958993, -50.970954, -192.117255, -140.155821, -99.117461, -9.923929};
+    moveToTcpAxisPos(robotHandle, tcpAxisPoseInit);
+    // if (cr_get_tcpActualPose(robotHandle, tcpAxisPoseInit) != sucess)     {
+    //     std::cerr << "获取初始tcp轴角失败" << std::endl;
+    //     return;
+    // }
+    
+    std::cout << std::fixed << std::setprecision(1);
+    std::cout << "\n初始法兰位姿 (X Y Z RX RY RZ): "
+              << tcpAxisPoseInit[0] << " " << tcpAxisPoseInit[1] << " " << tcpAxisPoseInit[2] << "  "
+              << tcpAxisPoseInit[3] << " " << tcpAxisPoseInit[4] << " " << tcpAxisPoseInit[5] << std::endl;
+
+    const double x_offsets[] = { -200, -100, 0, 100, 200, 300};
+    const double y_offsets[] = {-500, -400, -300, -200, 0, 200, 300, 400, 500};
+    const double step_z = 50.0;  // 5cm
+
+    std::cout << "\n" << std::string(75, '-') << std::endl;
+    std::cout << std::left
+              << std::setw(8) << "X偏移"
+              << std::setw(8) << "Y偏移"
+              << std::setw(10) << "初始Z"
+              << std::setw(10) << "最大Z"
+              << std::setw(10) << "抬升"
+              << std::setw(6) << "步数"
+              << "结果" << std::endl;
+    std::cout << std::string(75, '-') << std::endl;
+
+    for (double x_off : x_offsets) {
+        for (double y_off : y_offsets) {
+            double tcpAxisPos[ROB_AXIS_NUM], tcpAxisPosZ[ROB_AXIS_NUM], jointPos[ROB_AXIS_NUM];
+            memcpy(tcpAxisPos, tcpAxisPoseInit, sizeof(tcpAxisPoseInit));
+            tcpAxisPos[0] = tcpAxisPoseInit[0] + x_off;
+            tcpAxisPos[1] = tcpAxisPoseInit[1] + y_off;
+            bool ok = moveToTcpAxisPos(robotHandle, tcpAxisPos);
+            if (!ok) {
+                std::cout << std::left
+                          << std::setw(8) << x_off
+                          << std::setw(8) << y_off
+                          << "运动失败" << std::endl;
+                continue;
+            }
+
+            // 逐步上抬
+            int steps = 0;
+            double max_z = tcpAxisPos[2];
+            memcpy(tcpAxisPosZ, tcpAxisPos, sizeof(tcpAxisPosZ));
+
+            while (true) {
+                tcpAxisPosZ[2] += step_z;
+                if(!tryMoveByLineOrJoint(robotHandle, tcpAxisPosZ, x_off, y_off, tcpAxisPosZ[2] -tcpAxisPos[2]))
+                   break;               
+
+                steps++;
+                max_z = tcpAxisPosZ[2];
+            }
+
+            double lift = max_z - tcpAxisPos[2];
+            std::cout << std::fixed << std::setprecision(1);
+            std::cout << std::left
+                      << std::setw(8) << x_off
+                      << std::setw(8) << y_off
+                      << std::setw(10) << tcpAxisPos[2]
+                      << std::setw(10) << max_z
+                      << std::setw(10) << lift
+                      << std::setw(6) << steps
+                      << (steps > 0 ? "OK" : "失败") << std::endl;
+
+            // 回到初始点
+            //moveToJointPosByLine(robotHandle, tcpAxisPoseInit);
+            tryMoveByLineOrJoint(robotHandle, tcpAxisPoseInit, -1, -1, -1);
+        }
+    }
+
+    std::cout << std::string(75, '-') << std::endl;
+    std::cout << "测试完成" << std::endl;
+}
+
 // ============================================================
 // CLI 命令处理（返回 true 表示已处理，main 应退出）
 // ============================================================
@@ -791,11 +893,11 @@ int main(int argc, char** argv) {
     load_config(g_appPath+"config.yaml");
 
     // 初始化机器人
-    // char *pchRobotIp = "192.168.1.6";
 
     CRresult result;
     std::cout << "robot_ip: " << g_cfg.robot_ip << ", port: " << g_cfg.robot_port << ", pwd: " << g_cfg.robot_pwd << std::endl;
     result = cr_create_robot(&robotHandle, g_cfg.robot_ip.c_str(), g_cfg.robot_port, g_cfg.robot_pwd.c_str());  // 机械臂连接 
+
     if (result != sucess){
         std::cout <<"[main] 连接机械臂失败\n"<<std::flush;
         return -1;
@@ -807,8 +909,6 @@ int main(int argc, char** argv) {
 #else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
 #endif
-
-    // int cam = open_camera();
     
     while (true) {
         display_menu();
@@ -819,6 +919,7 @@ int main(int argc, char** argv) {
         case 1:
             ret = open_camera();
             if (-1==ret) break;
+
             auto_handeye_calibration(150, (char*)g_cfg.robot_ip.c_str());
             break;
         case 2:
@@ -840,8 +941,11 @@ int main(int argc, char** argv) {
         case 7:
             std::cout << "感谢使用机器人手眼标定系统，再见！" << std::endl;
             return 0;
+        case 8:
+            singularity_test();
+            break;
         default:
-            std::cout << "无效选择，请重新输入 (1-7)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-8)" << std::endl;
         }
 
         // 清空输入缓冲区
