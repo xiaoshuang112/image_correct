@@ -102,8 +102,9 @@ void display_menu() {
     std::cout << "6. 工件检测采样" << std::endl;
     std::cout << "7. 退出程序" << std::endl;
     std::cout << "8. 奇异点测试分析" << std::endl;
+    std::cout << "9. 眼在手上本地数据标定" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-8): ";
+    std::cout << "请选择操作 (1-9): ";
 }
 
 
@@ -684,6 +685,131 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
 }
 
 // ============================================================
+// 眼在手上本地数据标定入口（菜单项 9）
+// 图像与机械臂位姿已采集完成，仅离线计算相机内参与手眼矩阵
+// ============================================================
+
+// 菜单选项 → 旋转角度: 0:0  1:-90  2:90  3:180
+static int rotationChoiceToAngle(int choice) {
+    switch (choice) {
+    case 1:  return -90;
+    case 2:  return 90;
+    case 3:  return 180;
+    default: return 0;
+    }
+}
+
+static void rotateImageForCalibration(const cv::Mat& src, cv::Mat& dst, int angle_deg) {
+    if (angle_deg == 90)
+        cv::rotate(src, dst, cv::ROTATE_90_CLOCKWISE);
+    else if (angle_deg == -90)
+        cv::rotate(src, dst, cv::ROTATE_90_COUNTERCLOCKWISE);
+    else if (angle_deg == 180 || angle_deg == -180)
+        cv::rotate(src, dst, cv::ROTATE_180);
+    else
+        dst = src.clone();
+}
+
+// 将 src_dir 中的图像按指定角度旋转后写入工作目录，并复制 rob_pos.csv
+// 成功返回工作目录，失败返回空字符串
+static std::string prepareRotatedDataset(const std::string& src_dir, int angle_deg) {
+    std::string work_dir = src_dir + "rotated_" + std::to_string(angle_deg) + "/";
+
+    if (fs::exists(work_dir))
+        fs::remove_all(work_dir);
+    fs::create_directories(work_dir);
+
+    int count = 0;
+    for (const auto& entry : fs::directory_iterator(src_dir)) {
+        if (entry.path().extension() != ".jpg") continue;
+        cv::Mat img = cv::imread(entry.path().string());
+        if (img.empty()) continue;
+        cv::Mat rotated;
+        rotateImageForCalibration(img, rotated, angle_deg);
+        cv::imwrite(work_dir + entry.path().filename().string(), rotated);
+        count++;
+    }
+    if (count == 0) {
+        std::cerr << "[localEyeInHand] 未找到可旋转的图像" << std::endl;
+        return "";
+    }
+
+    std::error_code ec;
+    fs::copy_file(src_dir + "rob_pos.csv", work_dir + "rob_pos.csv",
+                  fs::copy_options::overwrite_existing, ec);
+    if (ec) {
+        std::cerr << "[localEyeInHand] 复制 rob_pos.csv 失败: " << ec.message() << std::endl;
+        return "";
+    }
+
+    std::cout << "[localEyeInHand] 已生成旋转数据: " << work_dir
+              << " (" << count << " 张, " << angle_deg << "°)" << std::endl;
+    return work_dir;
+}
+
+static void local_eye_in_hand_calibration_wrapper() {
+    std::cout << "\n========== 眼在手上本地数据标定 ==========" << std::endl;
+
+    // 数据目录（默认为半自动眼在手上标定的采集目录）
+    std::string save_dir = g_paramPath + "semi_eye_in_hand/";
+    std::cout << "数据目录 (含图像与 rob_pos.csv) [" << save_dir << "]: ";
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    std::string user_dir;
+    std::getline(std::cin, user_dir);
+    if (!user_dir.empty()) {
+        save_dir = user_dir;
+        if (save_dir.back() != '/' && save_dir.back() != '\\')
+            save_dir += '/';
+    }
+
+    if (!fs::exists(save_dir + "rob_pos.csv")) {
+        std::cerr << "[localEyeInHand] 未找到位姿文件: " << save_dir + "rob_pos.csv" << std::endl;
+        return;
+    }
+    int jpg_count = 0;
+    for (const auto& entry : fs::directory_iterator(save_dir))
+        if (entry.path().extension() == ".jpg") jpg_count++;
+    if (jpg_count == 0) {
+        std::cerr << "[localEyeInHand] 数据目录中没有图像: " << save_dir << std::endl;
+        return;
+    }
+    std::cout << "[localEyeInHand] 找到 " << jpg_count << " 张图像" << std::endl;
+
+    // 选择标定前的图像旋转角度
+    std::cout << "\n请选择标定前的图像旋转角度:" << std::endl;
+    std::cout << "  0: 0° (不旋转)" << std::endl;
+    std::cout << "  1: -90° (逆时针)" << std::endl;
+    std::cout << "  2: 90° (顺时针)" << std::endl;
+    std::cout << "  3: 180°" << std::endl;
+    std::cout << "请选择 (0-3) [0]: ";
+    int rot_choice = 0;
+    std::cin >> rot_choice;
+    int angle_deg = rotationChoiceToAngle(rot_choice);
+
+    // 需要旋转时生成旋转副本目录，否则直接使用原始数据
+    std::string work_dir = save_dir;
+    if (angle_deg != 0) {
+        std::cout << "[localEyeInHand] 图像旋转角度: " << angle_deg << "°" << std::endl;
+        work_dir = prepareRotatedDataset(save_dir, angle_deg);
+        if (work_dir.empty()) return;
+    }
+
+    CharucoBoardConfig board_cfg;
+    cv::Mat camera_matrix, dist_coeffs;  // 空: 由本地数据重新标定内参
+
+    CalibrationResult result;
+    bool ok = calibrateEyeInHandFromDisk(work_dir, board_cfg,
+                                         camera_matrix, dist_coeffs, result,
+                                         g_paramPath + "hand_eye_result.yaml");
+
+    if (ok) {
+        saveCalibratedCameraParams(cv::Mat(), result.camera_matrix, result.dist_coeffs);
+    } else {
+        std::cerr << "\n[localEyeInHand] 标定失败: " << result.message << std::endl;
+    }
+}
+
+// ============================================================
 // 眼在手外标定入口（菜单项 6）
 // ============================================================
 static void auto_eye_to_hand_calibration(char* pchRobotIP) {
@@ -944,8 +1070,11 @@ int main(int argc, char** argv) {
         case 8:
             singularity_test();
             break;
+        case 9:
+            local_eye_in_hand_calibration_wrapper();
+            break;
         default:
-            std::cout << "无效选择，请重新输入 (1-8)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-9)" << std::endl;
         }
 
         // 清空输入缓冲区
