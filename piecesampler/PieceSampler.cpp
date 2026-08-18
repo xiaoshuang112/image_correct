@@ -43,13 +43,20 @@ PieceSampler::PieceSampler(std::shared_ptr<AICamera>& camera, const PieceSampler
     m_oz = offset.at<double>(2);
 }
 
-void PieceSampler::computeFixedPose(double px, double py, double pz, double out_pose[6]) {
+void PieceSampler::computeFixedPose(double px, double py, double pz, double flangAA[6], double out_pose[6]) {
     out_pose[0] = px - m_ox;
     out_pose[1] = py - m_oy;
     out_pose[2] = pz - m_oz;
+    if(m_config.has_position){
     out_pose[3] = m_rvec.at<double>(0);
     out_pose[4] = m_rvec.at<double>(1);
     out_pose[5] = m_rvec.at<double>(2);
+    }
+    else{
+        out_pose[3] = flangAA[3];
+        out_pose[4] = flangAA[4];
+        out_pose[5] = flangAA[5];
+    }
 }
 
 CRresult PieceSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
@@ -71,12 +78,21 @@ void PieceSampler::genExposures() {
         n = 2;
 
     _exp_values.resize(n);
-    // double logMin = std::log10(minExp + 1.0);
-    // double logMax = std::log10(maxExp);
+
+#ifdef useORB
     for (int i = 0; i < n; i++) {
-        _exp_values[i] = minExp + (maxExp - minExp) * i / (n - 1);
-        //_exp_values[i] = logVal;//(int)std::round(std::pow(10.0, logVal));
+        _exp_values[i] = minExp + (maxExp - minExp) * i / (n - 1);     
     }
+#endif
+#ifdef useMVS
+     double logMin = std::log10(minExp + 1.0);
+    double logMax = std::log10(maxExp);
+    for (int i = 0; i < n; i++) {
+        double logVal = logMin + (logMax - logMin) * i / (n - 1);     
+        _exp_values[i] = (int)std::round(std::pow(10.0, logVal));
+    }
+ #endif
+    
 
     std::cout << "  Exposure range: " << minExp << " ~ " << maxExp << " us, using "
               << n << " log-spaced values" << std::endl;
@@ -170,7 +186,7 @@ int PieceSampler::run() {
     const auto& cfg = m_config;
 
     if (cfg.backgrounds.empty() || cfg.workpiece_configs.empty() ||
-        cfg.xy_offsets.empty() || cfg.z_heights.empty() || cfg.exposure_indices.empty()) {
+        cfg.x_offsets.empty() || cfg.y_offsets.empty() || cfg.z_heights.empty() || cfg.exposure_indices.empty()) {
         std::cerr << "[PieceSampler] Incomplete configuration" << std::endl;
         return 0;
     }
@@ -180,21 +196,42 @@ int PieceSampler::run() {
 
     int n_bg  = (int)cfg.backgrounds.size();
     int n_wp  = (int)cfg.workpiece_configs.size();
-    int n_xy  = (int)cfg.xy_offsets.size();
+    int n_x   = (int)cfg.x_offsets.size();
+    int n_y   = (int)cfg.y_offsets.size();
     int n_z   = (int)cfg.z_heights.size();
     int n_exp = (int)cfg.exposure_indices.size();
-    int total_poses = n_bg * n_wp * n_z * n_xy * n_xy;
+    int total_poses = n_bg * n_wp * n_z * n_x * n_y;
     int total_images = total_poses * n_exp;
 
-    double cx = cfg.position.x;
-    double cy = cfg.position.y;
-    double cz = cfg.position.z;
+    double cx, cy, cz, cur_flange[ROB_AXIS_NUM];
+    if (cfg.has_position) {
+        cx = cfg.position.x;
+        cy = cfg.position.y;
+        cz = cfg.position.z;
+    } else {
+        // Read current flange pose via forward kinematics
+        double cur_joints[ROB_AXIS_NUM];
+        if (cr_get_jointActualPos(robotHandle, cur_joints) != sucess ||
+            cr_kineForward(robotHandle, cur_joints, cur_flange) != sucess) {
+            std::cerr << "[PieceSampler] Failed to read current robot pose" << std::endl;
+            return 0;
+        }
+        // Camera position = flange position + constant offset
+        cx = cur_flange[0] + m_ox;
+        cy = cur_flange[1] + m_oy;
+        cz = cur_flange[2] + m_oz;
+        std::cout << "\n  [Position not set in config, using current robot pose as center]" << std::endl;
+    }
 
     std::cout << "\n========== Piece Sampler ==========" << std::endl;
     std::cout << "  Workpiece center: (" << cx << ", " << cy << ", " << cz << ") mm" << std::endl;
-    std::cout << "  XY grid offsets:";
-    for (double d : cfg.xy_offsets) std::cout << " " << d;
-    std::cout << " (" << n_xy << "x" << n_xy << " = " << (n_xy * n_xy) << " pts)" << std::endl;
+    std::cout << "  X offsets:";
+    for (double d : cfg.x_offsets) std::cout << " " << d;
+    std::cout << " (" << n_x << ")" << std::endl;
+    std::cout << "  Y offsets:";
+    for (double d : cfg.y_offsets) std::cout << " " << d;
+    std::cout << " (" << n_y << ")" << std::endl;
+    std::cout << "  Grid: " << n_x << " x " << n_y << " = " << (n_x * n_y) << " pts" << std::endl;
     std::cout << "  Z heights:";
     for (double h : cfg.z_heights) std::cout << " " << h;
     std::cout << std::endl;
@@ -216,23 +253,7 @@ int PieceSampler::run() {
     std::filesystem::create_directories(cfg.output_dir);
 
     // Check for existing checkpoint
-    int start_bg = 0, start_wp = 0, start_z = 0, start_xy = 0;
-    // if (loadCheckpoint(start_bg, start_wp, start_z, start_xy)) {
-    //     std::cout << "检测到上次未完成采集 (背景=" << start_bg
-    //               << " 工件=" << start_wp
-    //               << " Z=" << start_z
-    //               << " XY=" << start_xy << ")" << std::endl;
-    //     std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
-    //     std::string line;
-    //     std::getline(std::cin, line);
-    //     if (line == "r" || line == "R") {
-    //         start_bg = start_wp = start_z = start_xy = 0;
-    //         std::remove(checkpointPath().c_str());
-    //         std::cout << "已重新开始" << std::endl;
-    //     } else {
-    //         std::cout << "从断点继续" << std::endl;
-    //     }
-    // }
+    int start_bg = 0, start_wp = 0, start_z = 0, start_xy = 0;   
 
     int cumulative = 0;
 
@@ -261,17 +282,17 @@ int PieceSampler::run() {
             int z_start = (bi == start_bg && wi == wp_start) ? start_z : 0;
             double max_z = *std::max_element(cfg.z_heights.begin(), cfg.z_heights.end());
             for (int zi = z_start; zi < n_z; zi++) {
-                double dz = cfg.z_heights[zi], z_shrink = sqrt(dz / max_z);
+                double dz = cfg.z_heights[zi], z_shrink = 1;//sqrt(dz / max_z);
 
                 int xy_start = (bi == start_bg && wi == wp_start && zi == z_start) ? start_xy : 0;
-                for (int xyi = xy_start; xyi < n_xy * n_xy; xyi++) {
-                    int xi = xyi / n_xy;
-                    int yi = xyi % n_xy;
-                    double dx = cfg.xy_offsets[xi] * z_shrink;
-                    double dy = cfg.xy_offsets[yi] * z_shrink;
+                for (int xyi = xy_start; xyi < n_x * n_y; xyi++) {
+                    int xi = xyi / n_y;
+                    int yi = xyi % n_y;
+                    double dx = cfg.x_offsets[xi] * z_shrink;
+                    double dy = cfg.y_offsets[yi] * z_shrink;
 
                     double pose[6];
-                    computeFixedPose(cx + dx, cy + dy, cz + dz, pose);
+                    computeFixedPose(cx + dx, cy + dy, cz + dz, cur_flange, pose);
 
                     if (sucess != moveToFlangeAxisPos(pose)) {
                         std::cerr << "[PieceSampler] Move failed at "

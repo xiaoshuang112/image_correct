@@ -12,12 +12,17 @@
 #ifdef useMVS
 struct CONFIG {
     std::string cam_sn = "";
-    std::string cam_ip = "192.168.1.11";
+    std::string cam_ip = "192.168.0.10";
     uint16_t cam_port = 8090;
 
+    // 机器人连接参数
+    std::string robot_ip = "192.168.1.6";
+    int robot_port = 2323;
+    std::string robot_pwd = "123";
+
     // 4056 x 3040
-    int cam_width = 1280;
-    int cam_height = 1024;
+    int cam_width = 2448;
+    int cam_height = 2048;
     int fps = 15;
     bool enableDepth = false;
     int grid_num_heng = 9; // # 棋盘格 横向格子数
@@ -34,6 +39,11 @@ struct CONFIG {
     std::string cam_ip = "192.168.1.10";
     uint16_t cam_port = 8090;
 
+    // 机器人连接参数
+    std::string robot_ip = "192.168.1.6";
+    int robot_port = 2323;
+    std::string robot_pwd = "123";
+
     // 4056 x 3040
     int cam_width = 1280;
     int cam_height = 800;
@@ -45,6 +55,8 @@ struct CONFIG {
 
     CONFIG() = default;
 };
+
+
 
 
 #endif

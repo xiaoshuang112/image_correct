@@ -2,7 +2,7 @@
 #define ORBBEC_CAMERA_V2_HPP
 
 #include "AICamera.hpp"
-#include "exposure_fusion.hpp"
+#include "utils/exposure_fusion.hpp"
 
 #include <atomic>
 #include <cstdint>

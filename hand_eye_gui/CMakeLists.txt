@@ -112,6 +112,7 @@ set(QRC_FILE
 
 file(GLOB TOP_SRCS
     ${CMAKE_SOURCE_DIR}/*.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/*.cpp
     ${CMAKE_SOURCE_DIR}/circlesampler/*.cpp
     ${CMAKE_SOURCE_DIR}/piecesampler/*.cpp
     ${CMAKE_SOURCE_DIR}/testcameradeepth/*.cpp

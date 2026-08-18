@@ -13,7 +13,7 @@ SET(useMVS TRUE)
 
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
-    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
 endif()
 
 # 禁用 MSVC 安全警告
@@ -51,6 +51,7 @@ else()
     # # public
     set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
     include_directories(${SRC_DIR})
+    include_directories(${SRC_DIR}/calibration)
 
     set(depthai_DIR "/usr/local")
 
@@ -115,8 +116,8 @@ endif()
 
 
 SET(SRC_LISTS
-charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp eye_to_hand_calibration.cpp
-    calibration.cpp exposure_fusion.cpp
+calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
+    calibration.cpp utils/exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
@@ -125,9 +126,10 @@ charuco_detector.cpp auto_eye_in_hand_charuco_calibration.cpp eye_to_hand_calibr
 
 SET(SRC_LIBS 
 )
+set(CAITU_COMPILE_DEFINITIONS)
 
 if(useORB)
-    add_definitions(-DuseORB)
+    list(APPEND CAITU_COMPILE_DEFINITIONS useORB)
     list(APPEND SRC_LISTS
         cameras/OrbbecCamera.cpp
     )
@@ -137,7 +139,7 @@ if(useORB)
 endif()
 
 if(useOAK)
-    add_definitions(-DuseOAK)
+    list(APPEND CAITU_COMPILE_DEFINITIONS useOAK)
     list(APPEND SRC_LISTS
        cameras/OAKCamera.cpp
         # cameras/OrbbecCamera.cpp
@@ -148,7 +150,7 @@ if(useOAK)
 endif()
 
 if(useMVS)
-    add_definitions(-DuseMVS)
+    list(APPEND CAITU_COMPILE_DEFINITIONS useMVS)
     list(APPEND SRC_LISTS
         cameras/MVSCamera.cpp
     )
@@ -159,12 +161,25 @@ endif()
 
 
 add_executable(${PROJECT_NAME} ${SRC_LISTS})
+target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )
+
+# ============================================================
+#  反畸变工具
+# ============================================================
+add_executable(anti_distortion tools/anti_distortion.cpp)
+target_link_libraries(anti_distortion ${OpenCV_LIBS})
+
+# ============================================================
+#  FK 验证工具
+# ============================================================
+add_executable(verify_fk tools/verify_fk.cpp)
+target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 
 # ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
-option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
+option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" OFF)
 if(BUILD_QT_GUI)
     find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
     if(Qt5_FOUND)

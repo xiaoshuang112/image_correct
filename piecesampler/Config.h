@@ -6,11 +6,14 @@
 #include <opencv2/opencv.hpp>
 
 struct PieceSamplerConfig {
-    // Workpiece center position in robot base frame (mm)
+    // Workpiece center position in robot base frame (mm).
+    // If not set in config file, the robot's current flange position is used as center.
     cv::Point3d position;
+    bool has_position = false;    // true if 'position' was explicitly set in config
 
-    // XY grid offsets from center (mm), e.g. [-500, -300, 0, 300, 500]
-    std::vector<double> xy_offsets;
+    // X and Y grid offsets from center (mm), e.g. [-500, -300, 0, 300, 500]
+    std::vector<double> x_offsets;
+    std::vector<double> y_offsets;
 
     // Z heights above workpiece (mm), e.g. [300, 500, 700]
     std::vector<double> z_heights;

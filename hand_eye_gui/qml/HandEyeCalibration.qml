@@ -63,6 +63,7 @@ ApplicationWindow {
         Rectangle {
             Layout.fillWidth: true
             implicitHeight: topColumn.implicitHeight + 20
+            enabled: !calibrationController.running
             radius: 8
             color: bgPanel
             border.color: borderColor
@@ -502,6 +503,7 @@ ApplicationWindow {
                         }
                         TextField {
                             id: tcpOffsetField
+                            enabled: !calibrationController.running
                             text: calibrationController.cameraToTcpEnd
                             font.pixelSize: 21
                             color: textPrimary

@@ -1,6 +1,8 @@
 #ifndef DIAGNOSTIC_LOGGER_HPP
 #define DIAGNOSTIC_LOGGER_HPP
 
+#ifdef QT_GUI
+
 #include <QString>
 
 #include <functional>
@@ -75,5 +77,17 @@ private:
     DiagnosticLogger::instance().log(DiagnosticLogger::Level::Error, category, message, __FILE__, __LINE__, __func__)
 #define APP_LOG_FATAL(category, message) \
     DiagnosticLogger::instance().log(DiagnosticLogger::Level::Fatal, category, message, __FILE__, __LINE__, __func__)
+
+#else
+
+// 非 Qt 目标继续使用各模块原有的 stdout/stderr 输出，不引入 Qt 依赖。
+// 参数不展开，因此调用处的 QString 格式化表达式也不会参与编译。
+#define APP_LOG_DEBUG(category, message) do { } while (false)
+#define APP_LOG_INFO(category, message) do { } while (false)
+#define APP_LOG_WARNING(category, message) do { } while (false)
+#define APP_LOG_ERROR(category, message) do { } while (false)
+#define APP_LOG_FATAL(category, message) do { } while (false)
+
+#endif // QT_GUI
 
 #endif // DIAGNOSTIC_LOGGER_HPP

@@ -1,7 +1,7 @@
 #include "CalibrationController.hpp"
 #include "CameraImageProvider.hpp"
-#include "auto_eye_in_hand_charuco_calibration.hpp"
-#include "eye_to_hand_calibration.hpp"
+#include "calibration/auto_eye_in_hand_charuco_calibration.hpp"
+#include "calibration/eye_to_hand_calibration.hpp"
 #include "utils/robot_util.hpp"
 #include "DiagnosticLogger.hpp"
 
@@ -83,6 +83,10 @@ CalibrationController::~CalibrationController()
         .arg(m_running).arg(m_previewActive).arg(m_cameraOpened).arg(m_robotConnected));
     stopCalibration();
     waitForCalibrationThread();
+
+    // 事件循环退出后，工作线程投递的完成事件可能还未执行。
+    // 此时线程已经 join，可以安全地直接复位，保证硬件资源能够释放。
+    m_running = false;
 
     stopPreview();
     closeCamera();
@@ -174,24 +178,40 @@ void CalibrationController::loadConfigYaml()
 // ===================================================================
 
 void CalibrationController::setRobotIp(const QString& v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "robot_ip_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_robotIp != v) {
         APP_LOG_INFO("config", QString("robot_ip_changed from=%1 to=%2").arg(m_robotIp, v));
         m_robotIp = v; emit robotIpChanged();
     }
 }
 void CalibrationController::setRobotPort(int v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "robot_port_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_robotPort != v) {
         APP_LOG_INFO("config", QString("robot_port_changed from=%1 to=%2").arg(m_robotPort).arg(v));
         m_robotPort = v; emit robotPortChanged();
     }
 }
 void CalibrationController::setRobotPasswd(const QString& v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "robot_password_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_robotPasswd != v) {
         APP_LOG_INFO("config", "robot_password_changed value_redacted=true");
         m_robotPasswd = v; emit robotPasswdChanged();
     }
 }
 void CalibrationController::setCameraToTcpEnd(int v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "camera_to_tcp_end_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_cameraToTcpEnd != v) {
         APP_LOG_INFO("config", QString("camera_to_tcp_end_changed from=%1 to=%2")
             .arg(m_cameraToTcpEnd).arg(v));
@@ -199,6 +219,10 @@ void CalibrationController::setCameraToTcpEnd(int v) {
     }
 }
 void CalibrationController::setCalibrationType(const QString& v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "calibration_type_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_calibrationType != v) {
         APP_LOG_INFO("config", QString("calibration_type_changed from=%1 to=%2")
             .arg(m_calibrationType, v));
@@ -206,18 +230,30 @@ void CalibrationController::setCalibrationType(const QString& v) {
     }
 }
 void CalibrationController::setCameraIp(const QString& v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "camera_ip_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_cameraIp != v) {
         APP_LOG_INFO("config", QString("camera_ip_changed from=%1 to=%2").arg(m_cameraIp, v));
         m_cameraIp = v; emit cameraIpChanged();
     }
 }
 void CalibrationController::setCameraPort(int v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "camera_port_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_cameraPort != v) {
         APP_LOG_INFO("config", QString("camera_port_changed from=%1 to=%2").arg(m_cameraPort).arg(v));
         m_cameraPort = v; emit cameraPortChanged();
     }
 }
 void CalibrationController::setPreviewWidth(int v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "preview_width_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_previewWidth != v) {
         APP_LOG_INFO("config", QString("preview_width_changed from=%1 to=%2")
             .arg(m_previewWidth).arg(v));
@@ -225,6 +261,10 @@ void CalibrationController::setPreviewWidth(int v) {
     }
 }
 void CalibrationController::setPreviewHeight(int v) {
+    if (m_running) {
+        APP_LOG_WARNING("config", "preview_height_change_ignored reason=calibration_running");
+        return;
+    }
     if (m_previewHeight != v) {
         APP_LOG_INFO("config", QString("preview_height_changed from=%1 to=%2")
             .arg(m_previewHeight).arg(v));
@@ -243,6 +283,10 @@ QString CalibrationController::diagnosticLogPath() const
 
 void CalibrationController::connectRobot()
 {
+    if (m_running) {
+        setStatus("标定运行中，不能更改机器人连接");
+        return;
+    }
     if (m_robotConnected) {
         APP_LOG_INFO("robot", "connect_skipped reason=already_connected");
         setStatus("机器人已连接");
@@ -282,9 +326,12 @@ void CalibrationController::disconnectRobot()
 {
     APP_LOG_INFO("robot", QString("disconnect_begin connected=%1 handle=%2")
         .arg(m_robotConnected).arg(static_cast<qulonglong>(m_robotHandle)));
+    if (m_running) {
+        APP_LOG_WARNING("robot", "disconnect_rejected reason=calibration_running");
+        setStatus("请先取消标定并等待结束，再断开机器人");
+        return;
+    }
     stopPreview();
-    stopCalibration();
-    waitForCalibrationThread();
 
     if (m_robotConnected) {
         if (m_robotHandle != 0) {
@@ -370,6 +417,11 @@ bool CalibrationController::checkAndRestoreRobotHand()
 
 void CalibrationController::openCamera()
 {
+    if (m_running) {
+        APP_LOG_WARNING("camera", "open_rejected reason=calibration_running");
+        setStatus("标定运行中，不能更改相机连接");
+        return;
+    }
     if (m_cameraOpened) {
         APP_LOG_INFO("camera", "open_skipped reason=already_open");
         return;
@@ -484,8 +536,11 @@ void CalibrationController::closeCamera()
     APP_LOG_INFO("camera", QString("close_begin opened=%1 instance=%2")
         .arg(m_cameraOpened)
         .arg(reinterpret_cast<quintptr>(m_camera.get()), 0, 16));
-    stopCalibration();
-    waitForCalibrationThread();
+    if (m_running) {
+        APP_LOG_WARNING("camera", "close_rejected reason=calibration_running");
+        setStatus("请先取消标定并等待结束，再关闭相机");
+        return;
+    }
     stopPreview();
 
     if (m_camera) {
@@ -705,16 +760,26 @@ void CalibrationController::startCalibration()
 
     waitForCalibrationThread();
 
-    m_calibThread = std::thread(
-        &CalibrationController::calibrationThreadFunc,
-        this,
-        m_calibrationType,
-        m_robotIp,
-        m_robotPort,
-        m_robotPasswd,
-        m_cameraToTcpEnd,
-        m_camera);
-    APP_LOG_INFO("calibration", "worker_thread_created");
+    try {
+        m_calibThread = std::thread(
+            &CalibrationController::calibrationThreadFunc,
+            this,
+            m_calibrationType,
+            m_robotIp,
+            m_robotPort,
+            m_cameraToTcpEnd,
+            m_camera);
+        APP_LOG_INFO("calibration", "worker_thread_created");
+    } catch (const std::exception& e) {
+        m_running = false;
+        const QString message = QString("无法启动标定线程: %1").arg(
+            QString::fromLocal8Bit(e.what()));
+        APP_LOG_ERROR("calibration", QString("worker_thread_create_failed message=%1")
+            .arg(QString::fromLocal8Bit(e.what())));
+        setStatus(message);
+        emit runningChanged();
+        emit calibrationFinished(false, message);
+    }
 }
 
 void CalibrationController::stopCalibration()
@@ -742,7 +807,6 @@ void CalibrationController::calibrationThreadFunc(
     QString calibrationType,
     QString robotIp,
     int robotPort,
-    QString robotPassword,
     int cameraToTcpEnd,
     std::shared_ptr<AICamera> camera)
 {
@@ -793,7 +857,6 @@ void CalibrationController::calibrationThreadFunc(
             CalibrationResult result;
 
             QByteArray ip = robotIp.toLocal8Bit();
-            const std::string password = robotPassword.toStdString();
             bool ok = autoEyeInHandCharucoCalibration(
                 m_robotHandle,
                 ip.data(),
@@ -805,9 +868,7 @@ void CalibrationController::calibrationThreadFunc(
                 result,
                 m_calibrationPath,
                 m_paramPath + "hand_eye_result.yaml",
-                calibrationCallback,
-                robotPort,
-                password);
+                calibrationCallback);
 
             APP_LOG_INFO("calibration", QString("eye_in_hand_core_returned success=%1 cancelled=%2 "
                                                  "valid_frames=%3 error_mm=%4 message=%5")
@@ -862,7 +923,7 @@ void CalibrationController::calibrationThreadFunc(
     // ================================================================
     //  眼在手外 (eye_to_hand)
     // ================================================================
-    } else {
+        } else {
 
         setStatus("眼在手外标定 — 准备中...");
 
@@ -978,7 +1039,7 @@ void CalibrationController::calibrationThreadFunc(
                     QString::fromStdString(result.message));
             }
         }
-    }
+        }
     } catch (const cv::Exception& e) {
         APP_LOG_ERROR("calibration", QString("worker_exception type=opencv code=%1 file=%2 line=%3 message=%4")
             .arg(e.code).arg(QString::fromStdString(e.file)).arg(e.line)

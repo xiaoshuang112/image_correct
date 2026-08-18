@@ -11,7 +11,7 @@
 
 #include "my_base.h"
 #include "cameras/AICamera.hpp"
-#include "charuco_detector.hpp"
+#include "calibration/charuco_detector.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
 
@@ -136,7 +136,6 @@ private:
     void calibrationThreadFunc(QString calibrationType,
                                QString robotIp,
                                int robotPort,
-                               QString robotPassword,
                                int cameraToTcpEnd,
                                std::shared_ptr<AICamera> camera);
     void waitForCalibrationThread();
