@@ -7,8 +7,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFileInfo>
-#include <QMutexLocker>
 #include <QDebug>
+#include <QThread>
 
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/filesystem.hpp>
@@ -61,6 +61,10 @@ CalibrationController::~CalibrationController()
     stopCalibration();
     if (m_calibThread.joinable())
         m_calibThread.join();
+
+    // 事件循环退出后，工作线程投递的完成事件可能还未执行。
+    // 此时线程已经 join，可以安全地直接复位，保证硬件资源能够释放。
+    m_running = false;
 
     stopPreview();
     closeCamera();
@@ -130,30 +134,39 @@ void CalibrationController::loadConfigYaml()
 // ===================================================================
 
 void CalibrationController::setRobotIp(const QString& v) {
+    if (m_running) return;
     if (m_robotIp != v) { m_robotIp = v; emit robotIpChanged(); }
 }
 void CalibrationController::setRobotPort(int v) {
+    if (m_running) return;
     if (m_robotPort != v) { m_robotPort = v; emit robotPortChanged(); }
 }
 void CalibrationController::setRobotPasswd(const QString& v) {
+    if (m_running) return;
     if (m_robotPasswd != v) { m_robotPasswd = v; emit robotPasswdChanged(); }
 }
 void CalibrationController::setCameraToTcpEnd(int v) {
+    if (m_running) return;
     if (m_cameraToTcpEnd != v) { m_cameraToTcpEnd = v; emit cameraToTcpEndChanged(); }
 }
 void CalibrationController::setCalibrationType(const QString& v) {
+    if (m_running) return;
     if (m_calibrationType != v) { m_calibrationType = v; emit calibrationTypeChanged(); }
 }
 void CalibrationController::setCameraIp(const QString& v) {
+    if (m_running) return;
     if (m_cameraIp != v) { m_cameraIp = v; emit cameraIpChanged(); }
 }
 void CalibrationController::setCameraPort(int v) {
+    if (m_running) return;
     if (m_cameraPort != v) { m_cameraPort = v; emit cameraPortChanged(); }
 }
 void CalibrationController::setPreviewWidth(int v) {
+    if (m_running) return;
     if (m_previewWidth != v) { m_previewWidth = v; emit previewWidthChanged(); }
 }
 void CalibrationController::setPreviewHeight(int v) {
+    if (m_running) return;
     if (m_previewHeight != v) { m_previewHeight = v; emit previewHeightChanged(); }
 }
 
@@ -163,6 +176,10 @@ void CalibrationController::setPreviewHeight(int v) {
 
 void CalibrationController::connectRobot()
 {
+    if (m_running) {
+        setStatus("标定运行中，不能更改机器人连接");
+        return;
+    }
     if (m_robotConnected) {
         setStatus("机器人已连接");
         return;
@@ -191,8 +208,11 @@ void CalibrationController::connectRobot()
 
 void CalibrationController::disconnectRobot()
 {
+    if (m_running) {
+        setStatus("请先取消标定并等待结束，再断开机器人");
+        return;
+    }
     stopPreview();
-    stopCalibration();
 
     if (m_robotConnected) {
         cr_destroy_robot(m_robotHandle);
@@ -260,6 +280,10 @@ bool CalibrationController::checkAndRestoreRobotHand()
 
 void CalibrationController::openCamera()
 {
+    if (m_running) {
+        setStatus("标定运行中，不能更改相机连接");
+        return;
+    }
     if (m_cameraOpened) return;
 
     // 关闭旧相机（如果存在且配置可能已变更）
@@ -297,6 +321,16 @@ void CalibrationController::openCamera()
     // 读取并保存相机内参
     auto intrinsics = m_camera->getCameraIntrinsics(m_previewWidth, m_previewHeight);
     if (!intrinsics.empty()) {
+        const bool valid_intrinsics =
+            intrinsics.size() >= 4 &&
+            intrinsics[0].size() >= 3 &&
+            intrinsics[1].size() >= 3 &&
+            intrinsics[3].size() <= 5;
+        if (!valid_intrinsics) {
+            qWarning() << "[CalibrationController] 相机内参格式无效，跳过保存";
+            setStatus("相机已打开，但内参格式无效");
+            return;
+        }
         cv::FileStorage out(m_paramPath + "camera_params.yaml",
                             cv::FileStorage::WRITE);
         cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
@@ -322,6 +356,10 @@ void CalibrationController::openCamera()
 
 void CalibrationController::closeCamera()
 {
+    if (m_running) {
+        setStatus("请先取消标定并等待结束，再关闭相机");
+        return;
+    }
     stopPreview();
 
     if (m_camera) {
@@ -407,19 +445,28 @@ void CalibrationController::publishFrame(const cv::Mat& bgr)
 {
     if (bgr.empty() || !m_imageProvider) return;
 
-    QImage qimg(bgr.data, bgr.cols, bgr.rows,
-                static_cast<int>(bgr.step),
-                QImage::Format_RGB888);
-    // OpenCV 默认 BGR → QImage 期望 RGB
-    cv::Mat rgb;
+    QImage qimg;
+    cv::Mat converted;
     if (bgr.channels() == 3) {
-        cv::cvtColor(bgr, rgb, cv::COLOR_BGR2RGB);
-        qimg = QImage(rgb.data, rgb.cols, rgb.rows,
-                      static_cast<int>(rgb.step),
+        cv::cvtColor(bgr, converted, cv::COLOR_BGR2RGB);
+        qimg = QImage(converted.data, converted.cols, converted.rows,
+                      static_cast<int>(converted.step),
                       QImage::Format_RGB888);
+    } else if (bgr.channels() == 1) {
+        qimg = QImage(bgr.data, bgr.cols, bgr.rows,
+                      static_cast<int>(bgr.step),
+                      QImage::Format_Grayscale8);
+    } else if (bgr.channels() == 4) {
+        cv::cvtColor(bgr, converted, cv::COLOR_BGRA2RGBA);
+        qimg = QImage(converted.data, converted.cols, converted.rows,
+                      static_cast<int>(converted.step),
+                      QImage::Format_RGBA8888);
+    } else {
+        qWarning() << "[CalibrationController] 不支持的图像通道数:" << bgr.channels();
+        return;
     }
 
-    m_imageProvider->setImage(qimg.copy());  // 深拷贝，rgb 析构后仍然有效
+    m_imageProvider->setImage(qimg.copy());  // 深拷贝，局部 Mat 析构后仍然有效
 }
 
 // ===================================================================
@@ -454,7 +501,16 @@ void CalibrationController::startCalibration()
     if (m_calibThread.joinable())
         m_calibThread.join();
 
-    m_calibThread = std::thread(&CalibrationController::calibrationThreadFunc, this);
+    try {
+        m_calibThread = std::thread(&CalibrationController::calibrationThreadFunc, this);
+    } catch (const std::exception& e) {
+        m_running = false;
+        const QString message = QString("无法启动标定线程: %1").arg(
+            QString::fromLocal8Bit(e.what()));
+        setStatus(message);
+        emit runningChanged();
+        emit calibrationFinished(false, message);
+    }
 }
 
 void CalibrationController::stopCalibration()
@@ -466,13 +522,16 @@ void CalibrationController::stopCalibration()
 
 void CalibrationController::calibrationThreadFunc()
 {
-    // 重定向控制台输出到 QML 日志
-    redirectConsole();
+    bool consoleRedirected = false;
+    try {
+        // 重定向控制台输出到 QML 日志
+        redirectConsole();
+        consoleRedirected = true;
 
-    // ================================================================
-    //  眼在手内 (eye_in_hand)
-    // ================================================================
-    if (m_calibrationType == "eye_in_hand") {
+        // ================================================================
+        //  眼在手内 (eye_in_hand)
+        // ================================================================
+        if (m_calibrationType == "eye_in_hand") {
 
         setStatus("眼在手内标定 — 准备中...");
 
@@ -553,7 +612,7 @@ void CalibrationController::calibrationThreadFunc()
     // ================================================================
     //  眼在手外 (eye_to_hand)
     // ================================================================
-    } else {
+        } else {
 
         setStatus("眼在手外标定 — 准备中...");
 
@@ -639,14 +698,36 @@ void CalibrationController::calibrationThreadFunc()
                     QString::fromStdString(result.message));
             }
         }
+        }
+    } catch (const cv::Exception& e) {
+        const QString message = QString("OpenCV 异常: %1").arg(
+            QString::fromLocal8Bit(e.what()));
+        setStatus(message);
+        emit calibrationFinished(false, message);
+    } catch (const fs::filesystem_error& e) {
+        const QString message = QString("文件系统异常: %1").arg(
+            QString::fromLocal8Bit(e.what()));
+        setStatus(message);
+        emit calibrationFinished(false, message);
+    } catch (const std::exception& e) {
+        const QString message = QString("标定异常: %1").arg(
+            QString::fromLocal8Bit(e.what()));
+        setStatus(message);
+        emit calibrationFinished(false, message);
+    } catch (...) {
+        const QString message = "标定发生未知异常";
+        setStatus(message);
+        emit calibrationFinished(false, message);
     }
 
 done:
-    restoreConsole();
-    m_running = false;
-    m_progress = 0;
-    // 通过 invokeMethod 确保主线程更新属性
+    if (consoleRedirected)
+        restoreConsole();
+
+    // 状态属性只在 QObject 所属的 GUI 线程修改。
     QMetaObject::invokeMethod(this, [this]() {
+        m_running = false;
+        m_progress = 0;
         emit runningChanged();
         emit progressChanged();
     }, Qt::QueuedConnection);
@@ -696,9 +777,9 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
 
 void CalibrationController::redirectConsole()
 {
-    // 清除之前的日志
-    m_logText.clear();
+    // 清除之前的日志。此函数由标定线程调用，实际修改放到 GUI 线程。
     QMetaObject::invokeMethod(this, [this]() {
+        m_logText.clear();
         emit logTextChanged();
     }, Qt::QueuedConnection);
 
@@ -732,15 +813,20 @@ void CalibrationController::restoreConsole()
 
 void CalibrationController::appendLog(const QString& line)
 {
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this, line]() {
+            appendLog(line);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     // 仅保留最近 500 行，避免内存无限增长
     m_logText += line;
     if (m_logText.count('\n') > 500) {
         int idx = m_logText.indexOf('\n');
         m_logText = m_logText.mid(idx + 1);
     }
-    QMetaObject::invokeMethod(this, [this]() {
-        emit logTextChanged();
-    }, Qt::QueuedConnection);
+    emit logTextChanged();
 }
 
 // ===================================================================
@@ -749,29 +835,43 @@ void CalibrationController::appendLog(const QString& line)
 
 void CalibrationController::setStatus(const QString& msg)
 {
-    QMutexLocker lock(&m_statusMutex);
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this, msg]() {
+            setStatus(msg);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     if (m_statusMessage != msg) {
         m_statusMessage = msg;
-        QMetaObject::invokeMethod(this, [this]() {
-            emit statusMessageChanged();
-        }, Qt::QueuedConnection);
+        emit statusMessageChanged();
     }
 }
 
 void CalibrationController::setProgress(int p)
 {
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this, p]() {
+            setProgress(p);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     if (m_progress != p) {
         m_progress = p;
-        QMetaObject::invokeMethod(this, [this]() {
-            emit progressChanged();
-        }, Qt::QueuedConnection);
+        emit progressChanged();
     }
 }
 
 void CalibrationController::setResult(const QString& text)
 {
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this, text]() {
+            setResult(text);
+        }, Qt::QueuedConnection);
+        return;
+    }
+
     m_resultText = text;
-    QMetaObject::invokeMethod(this, [this]() {
-        emit resultTextChanged();
-    }, Qt::QueuedConnection);
+    emit resultTextChanged();
 }

@@ -143,7 +143,7 @@ static double tryCandidatePoses(int robot_handle,
         }
 
         if (nullptr!=g_callback) {
-            int call_ret = g_callback("", 0, 1);
+            int call_ret = g_callback(nullptr, 0, 1);
             if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
@@ -195,7 +195,7 @@ static void searchXYSteps(int robot_handle,
         }
 
         if (nullptr!=g_callback) {
-            int call_ret = g_callback("", 0, 1);
+            int call_ret = g_callback(nullptr, 0, 1);
             if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
@@ -654,13 +654,18 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- Phase 2: 计算动态 Z 值 ----
-    double z_values[3];
+    double z_values[3] = {0.0, 0.0, 0.0};
     {
         if (computeZValues(robot_handle, camera, cameraToTcpEnd, detector, z_values)) {
             std::cout << "[autoCalib] 动态 Z 值: "
                       << z_values[0] << ", " << z_values[1] << ", " << z_values[2] << std::endl;
         } else {
-            std::cout << "[autoCalib] Z 值计算失败，使用固定偏移 [-300,0,+300]" << std::endl;
+            // generateCandidates() 需要绝对 Z 坐标。高度估计失败后无法可靠
+            // 判断标定板高度和安全工作空间，不能把未初始化值或相对偏移量
+            // 当作绝对坐标继续传给机器人 SDK。
+            result.message = "Z 值计算失败，已停止标定以避免不安全运动";
+            std::cerr << "[autoCalib] " << result.message << std::endl;
+            return false;
         }
     }
 

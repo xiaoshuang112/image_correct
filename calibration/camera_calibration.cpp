@@ -31,10 +31,17 @@ static bool calibrateCameraFiltered(
     camera_matrix = cv::Mat::eye(3, 3, CV_64F);
     dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
     std::vector<cv::Mat> rvecs, tvecs;
-    double final_err = cv::calibrateCamera(object_points_l, image_points_l, image_size,
-                                            camera_matrix, dist_coeffs,
-                                            rvecs, tvecs);
-    std::cout << "[autoCalib] 最终标定, " << n_final << " 帧, 重投影误差: "
+    double final_err;
+    try {
+        final_err = cv::calibrateCamera(object_points_l, image_points_l, image_size,
+                                        camera_matrix, dist_coeffs,
+                                        rvecs, tvecs);
+    } catch (const cv::Exception& e) {
+        std::cerr << "[autoCalib] 最终相机标定异常: " << e.what() << std::endl;
+        return false;
+    }
+    std::cout << "[autoCalib] 最终标定, " << object_points_l.size()
+              << " 帧, 重投影误差: "
               << final_err << " px" << std::endl;
     std::cout << "[autoCalib] 相机矩阵:\n" << camera_matrix << std::endl;
     return true;
@@ -48,7 +55,7 @@ static void refineCameraIntrinsics(
     const std::vector<std::vector<cv::Point2f>>& all_img,
     const cv::Size& image_size) {
 
-    int n = (int)all_obj.size(), miniNum = std::min<int>(50, all_obj.size());
+    int n = (int)all_obj.size();
     if (n < 5) return;
 
     // 逐帧 solvePnP + 重投影误差 (快: ~0.2ms/帧)
@@ -64,6 +71,8 @@ static void refineCameraIntrinsics(
         double sum = 0.0;
         for (size_t j = 0; j < proj.size(); j++)
             sum += cv::norm(proj[j] - all_img[i][j]);
+        if (proj.empty())
+            continue;
         recs.push_back({i, sum / proj.size()});
     }
     if ((int)recs.size() < 5) return;
@@ -71,7 +80,9 @@ static void refineCameraIntrinsics(
     std::sort(recs.begin(), recs.end(),
               [](const Rec& a, const Rec& b) { return a.err < b.err; });
 
-    double median = recs[miniNum / 2].err;
+    // solvePnP 可能会跳过退化帧，因此中位数索引必须基于 recs，
+    // 不能继续使用输入帧数量，否则会发生越界访问。
+    double median = recs[recs.size() / 2].err;
     double thresh = median * 1.2;
 
     std::vector<std::vector<cv::Point3f>> good_obj;
@@ -87,8 +98,15 @@ static void refineCameraIntrinsics(
     if ((int)good_obj.size() < 5) return;
 
     std::vector<cv::Mat> rvecs, tvecs;
-    double final_err = cv::calibrateCamera(good_obj, good_img, image_size, K, D, rvecs, tvecs,
-                         cv::CALIB_USE_INTRINSIC_GUESS);
+    double final_err;
+    try {
+        final_err = cv::calibrateCamera(good_obj, good_img, image_size,
+                                        K, D, rvecs, tvecs,
+                                        cv::CALIB_USE_INTRINSIC_GUESS);
+    } catch (const cv::Exception& e) {
+        std::cerr << "[refineCam] 相机内参精化异常: " << e.what() << std::endl;
+        return;
+    }
     std::cout << "[refineCam] 精化完成: " << good_obj.size() << " 帧, err=" << final_err << " px" << std::endl;
     std::cout << "[autoCalib] 相机矩阵:\n" << K << std::endl;
 }
@@ -122,12 +140,32 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs, int wantedNum){
     const int min_frames = 5;
-    int batch_size = 50;
-    float keepRatio =std::max<float>(0.3, std::min<float>((float)(wantedNum *1.5)  / image_points.size() + 0.1, 1.0));
+    constexpr size_t target_batch_size = 50;
 
-    size_t n_total = object_points.size();
-    int nTimes = n_total / batch_size;
-    batch_size = n_total / nTimes + 1;
+    if (object_points.size() != image_points.size()) {
+        std::cerr << "[autoCalib] 物点/像点帧数不一致: "
+                  << object_points.size() << "/" << image_points.size() << std::endl;
+        return false;
+    }
+
+    const size_t n_total = object_points.size();
+    if (n_total < static_cast<size_t>(min_frames)) {
+        std::cerr << "[autoCalib] 有效帧数不足: " << n_total
+                  << " (need >=" << min_frames << ")" << std::endl;
+        return false;
+    }
+
+    const float keepRatio = std::max<float>(
+        0.3f,
+        std::min<float>((static_cast<float>(wantedNum) * 1.5f) /
+                            static_cast<float>(n_total) + 0.1f,
+                        1.0f));
+
+    // 保留原有的分批方式，只把批次数下限限制为 1。旧代码在
+    // n_total < 50 时 nTimes 为 0，下一行会触发整数除零（SIGFPE）。
+    const size_t nTimes = std::max<size_t>(
+        1, n_total / target_batch_size);
+    const size_t batch_size = n_total / nTimes + 1;
 
 
     struct FrameRecord {
@@ -150,8 +188,18 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
         cv::Mat K = cv::Mat::eye(3, 3, CV_64F);
         cv::Mat D = cv::Mat::zeros(5, 1, CV_64F);
         std::vector<cv::Mat> rvecs, tvecs;
-        double err = cv::calibrateCamera(batch_obj, batch_img, image_size,
-                                          K, D, rvecs, tvecs);
+        double err;
+        try {
+            err = cv::calibrateCamera(batch_obj, batch_img, image_size,
+                                      K, D, rvecs, tvecs);
+        } catch (const cv::Exception& e) {
+            std::cerr << "[autoCalib] 批次相机标定异常: " << e.what() << std::endl;
+            return false;
+        }
+        if (rvecs.size() != n_batch || tvecs.size() != n_batch) {
+            std::cerr << "[autoCalib] 批次标定输出数量异常" << std::endl;
+            return false;
+        }
         std::cout << "[autoCalib] 批次 " << (start / batch_size) << "/" <<nTimes
                   << ": , 重投影误差 " << err << " px" << std::endl;
 
@@ -164,7 +212,14 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
             double sum_err = 0.0;
             for (size_t j = 0; j < proj.size(); j++)
                 sum_err += cv::norm(proj[j] - batch_img[i][j]);
+            if (proj.empty())
+                continue;
             batch_records.push_back({batch_obj[i], batch_img[i], sum_err / proj.size()});
+        }
+
+        if (batch_records.empty()) {
+            std::cerr << "[autoCalib] 批次内没有可用的投影结果" << std::endl;
+            return false;
         }
 
         // 取前 30%（误差最小）
@@ -172,7 +227,9 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
                   [](const FrameRecord& a, const FrameRecord& b) {
                       return a.error < b.error;
                   });
-        size_t n_keep = std::max<int>(size_t(1), (int)(n_batch * keepRatio));
+        size_t n_keep = std::max<size_t>(
+            1, static_cast<size_t>(batch_records.size() * keepRatio));
+        n_keep = std::min(n_keep, batch_records.size());
         for (size_t i = 0; i < n_keep; i++)
             good_frames.push_back(batch_records[i]);
         std::cout << "[autoCalib]  保留 " << n_keep << "/" << n_batch

@@ -5,10 +5,10 @@
 #include <QString>
 #include <QImage>
 #include <QTimer>
-#include <QMutex>
 #include <thread>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <iostream>
 #include <sstream>
 
@@ -27,20 +27,26 @@ public:
     explicit LogStreambuf(Callback cb) : m_cb(std::move(cb)) {}
 protected:
     int overflow(int c) override {
-        if (c != EOF) {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        if (!traits_type::eq_int_type(c, traits_type::eof())) {
             m_buf += static_cast<char>(c);
-            if (c == '\n') { flush(); }
+            if (c == '\n') { flushUnlocked(); }
         }
-        return c;
+        return traits_type::not_eof(c);
     }
-    int sync() override { flush(); return 0; }
+    int sync() override {
+        std::lock_guard<std::mutex> lock(m_mutex);
+        flushUnlocked();
+        return 0;
+    }
 private:
-    void flush() {
+    void flushUnlocked() {
         if (!m_buf.empty() && m_cb) m_cb(m_buf);
         m_buf.clear();
     }
     std::string m_buf;
     Callback m_cb;
+    std::mutex m_mutex;
 };
 
 /**
@@ -226,8 +232,6 @@ private:
     std::string m_paramPath;
     std::string m_calibrationPath;
 
-    // 线程安全
-    mutable QMutex m_statusMutex;
 };
 
 #endif // CALIBRATION_CONTROLLER_HPP

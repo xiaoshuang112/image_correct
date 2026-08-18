@@ -39,7 +39,7 @@ bool executeCollection_bk(int robot_handle,
                        const std::string& save_dir,
                        AI_det_callback callback) {
     int total = (int)candidates.size();
-    int captured = 0, freeRobotHandle = 0;
+    int captured = 0;
 
     if (save_dir.empty()) {
         std::cerr << "[autoCalib] 保存目录为空" << std::endl;
@@ -85,9 +85,12 @@ bool executeCollection_bk(int robot_handle,
             moveToJointPos(robot_handle, init_joint);
             moveToJointPosByLine(robot_handle, dst_joint);
             if(operate_timeout == ret_move){
-                 std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;
-                robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
-                freeRobotHandle = 1;
+                // robot_handle 是按值传入的。在此处销毁并重连只会更新局部副本，
+                // 控制器仍持有已经销毁的旧句柄。安全做法是终止本轮标定，
+                // 由控制器在工作线程结束后统一执行重连。
+                std::cerr << "\n[autoCalib] 机器人运动超时，终止本轮标定，请重新连接机器人"
+                          << std::endl;
+                return false;
             }
             continue;
         }
@@ -154,8 +157,6 @@ bool executeCollection_bk(int robot_handle,
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
               << "/" << total
               << ", 数据保存到: " << save_dir << std::endl;
-    if(freeRobotHandle)
-       cr_destroy_robot(robot_handle);
     return captured > 0;
 }
 
@@ -169,7 +170,7 @@ bool executeCollection(int robot_handle,
                        const std::string& save_dir,
                        AI_det_callback callback) {
     int total = (int)candidates.size();
-    int captured = 0, freeRobotHandle = 0;
+    int captured = 0;
 
     if (save_dir.empty()) {
         std::cerr << "[autoCalib] 保存目录为空" << std::endl;
@@ -204,9 +205,9 @@ bool executeCollection(int robot_handle,
         CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
         if(sucess != ret_move){            
             if(operate_timeout == ret_move){
-                 std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;
-                robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
-                freeRobotHandle = 1;
+                std::cerr << "\n[autoCalib] 机器人运动超时，终止本轮标定，请重新连接机器人"
+                          << std::endl;
+                return false;
             }
             continue;
         }
@@ -273,8 +274,6 @@ bool executeCollection(int robot_handle,
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
               << "/" << total
               << ", 数据保存到: " << save_dir << std::endl;
-    if(freeRobotHandle)
-       cr_destroy_robot(robot_handle);
     return captured > 0;
 }
 

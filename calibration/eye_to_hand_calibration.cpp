@@ -351,8 +351,12 @@ static bool computeBoardPosesFromImages(
             std::cout << "[eyeToHand]   " << path << " 位姿估计失败，跳过" << std::endl;
             continue;
         }
-        else 
-           robot_poses_dst.push_back(robot_poses[i]);
+        if (static_cast<size_t>(i) >= robot_poses.size()) {
+            std::cerr << "[eyeToHand] 图像数量超过机器人位姿数量，停止位姿计算: "
+                      << i + 1 << "/" << robot_poses.size() << std::endl;
+            return false;
+        }
+        robot_poses_dst.push_back(robot_poses[static_cast<size_t>(i)]);
 
         camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
     }

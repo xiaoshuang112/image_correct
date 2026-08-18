@@ -2,6 +2,8 @@
 #include "utils/exposure_fusion.hpp"
 #include <iostream>
 #include <cstring>
+#include <cstdint>
+#include <limits>
 #include <arpa/inet.h>
 
 MVSCamera::MVSCamera(const CONFIG& config) : AICamera(config) {}
@@ -180,8 +182,17 @@ cv::Mat MVSCamera::captureOneFrame(int timeoutMs) {
     int h = stFrameInfo.nExtendHeight;
     if (w <= 0 || h <= 0) return cv::Mat();
 
+    const uint64_t frameBytes = static_cast<uint64_t>(w) *
+                                static_cast<uint64_t>(h) * 3U;
+    if (frameBytes > m_nDataSize ||
+        frameBytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
+        std::cerr << "[MVSCamera] invalid frame size: " << w << "x" << h
+                  << ", buffer=" << m_nDataSize << std::endl;
+        return cv::Mat();
+    }
+
     cv::Mat frame(h, w, CV_8UC3);
-    memcpy(frame.data, m_pData, w * h * 3);
+    memcpy(frame.data, m_pData, static_cast<size_t>(frameBytes));
     return frame;
 }
 
