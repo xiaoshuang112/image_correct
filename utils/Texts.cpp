@@ -402,11 +402,13 @@ namespace util::TextOps {
     }
 
     std::string const FormatDateTime(short year, short month, short date, short hour, short minute, short second) {
-        char dateTime[32] = {0};
+        char dateTime[64] = {0};
         // SYSTEMTIME tm;
         // GetLocalTime(&tm);
         // sprintf_s(dateTime, "%04d-%02d-%02d %02d:%02d:%02d", tm.wYear, tm.wMonth, tm.wDay, tm.wHour, tm.wMinute, tm.wSecond);
-        sprintf/*_s*/(dateTime, "%04d-%02d-%02d %02d:%02d:%02d", year, month, date, hour, minute, second);
+        std::snprintf(dateTime, sizeof(dateTime),
+                      "%04d-%02d-%02d %02d:%02d:%02d",
+                      year, month, date, hour, minute, second);
         return std::string(dateTime);
     }
 } // namespace util::TextOps

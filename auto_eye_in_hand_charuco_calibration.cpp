@@ -26,6 +26,7 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <limits>
 
 #include "utils/robot_util.hpp"
 #include "utils/calib_transform.hpp"
@@ -327,7 +328,7 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
 // candidates: 欧拉位姿列表 [x,y,z,rx,ry,rz] (mm, deg)
 // use_center: 评分模式 (true=中心距, false=面积)
 // best_joint: 输出，最佳候选的关节角
-// 返回最佳评分 (全失败返回 -1)
+// 返回最佳评分（全失败返回负无穷）
 // 注意：函数会临时运动到候选位姿做评估，返回前会回到原始位置
 static double tryCandidatePoses(int robot_handle,
     std::shared_ptr<AICamera>& camera,
@@ -338,14 +339,15 @@ static double tryCandidatePoses(int robot_handle,
     // 保存原始关节角
     double initJointPos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
     if (cr_get_jointActualPos((RobotHandle)robot_handle, initJointPos) != sucess)
-        return -1.0;
+        return -std::numeric_limits<double>::infinity();
     if(cr_get_tcpActualPose(robot_handle, tcp_aa)!= sucess)
-       return -1.0;
+       return -std::numeric_limits<double>::infinity();
     
     double bestFlangeEule_j[ROB_AXIS_NUM];
     double best_s = -1e18;
     bool found = false;
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j);
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j))
+        return -std::numeric_limits<double>::infinity();
     for (const auto& euler : candidates) {
              
         if(moveToFlangeEulePos(robot_handle, (double*)euler.data())!= true)
@@ -360,12 +362,13 @@ static double tryCandidatePoses(int robot_handle,
         }
 
         if (nullptr!=g_callback) {
-            int call_ret = g_callback("", 0, 1);
+            int call_ret = g_callback(nullptr, 0, 1);
             if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
 
-                return -1.0;
+                moveToJointPos(robot_handle, initJointPos);
+                return -std::numeric_limits<double>::infinity();
             }            
         }    
 
@@ -374,22 +377,24 @@ static double tryCandidatePoses(int robot_handle,
     // 回到原始位置（由调用方决定是否运动到最佳位姿）
     moveToJointPos(robot_handle, initJointPos);   
     if (!found){          
-        return -1.0;}
+        return -std::numeric_limits<double>::infinity();}
 
     std::copy(bestFlangeEule_j, bestFlangeEule_j + ROB_AXIS_NUM, bestFlangeEule);
     return best_s;
 }
 
 // 多步长 XY 搜索（Phase 2 / Phase 4 共用）
-static void searchXYSteps(int robot_handle,
+static bool searchXYSteps(int robot_handle,
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
     const double* steps, int num_steps,
     double tcp_aa[6]) {
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess)
+        return false;
 
     double flangeEulePos[ROB_AXIS_NUM];
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+        return false;
 
     for (int i = 0; i < num_steps; i++) {
         double step = steps[i];
@@ -405,24 +410,26 @@ static void searchXYSteps(int robot_handle,
         double bestFlangeEule[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, xy_candidates, bestFlangeEule) > score) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEule);  
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEule))
+                return false;
             //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);   
-            convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);         
+            if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+                !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+                return false;
         }
 
         if (nullptr!=g_callback) {
-            int call_ret = g_callback("", 0, 1);
+            int call_ret = g_callback(nullptr, 0, 1);
             if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
 
-                return;
+                return false;
             }            
         }           
 
     }
-    moveToTcpAxisPos(robot_handle, tcp_aa);    
+    return moveToTcpAxisPos(robot_handle, tcp_aa);
 }
 
 float bound_camera_angle(float angle){
@@ -435,12 +442,14 @@ float bound_camera_angle(float angle){
 
 bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
     double flangeEulePos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];   
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos); 
+    if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+        !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+        return false;
     flangeEulePos[3] = -180.0;
     flangeEulePos[4] = 0.0;
         
-    moveToFlangeEulePos(robot_handle, flangeEulePos);
+    if (!moveToFlangeEulePos(robot_handle, flangeEulePos))
+        return false;
     if(pFlangeEulePos!= NULL){
       memcpy(pFlangeEulePos, flangeEulePos, sizeof(flangeEulePos));      
     }
@@ -461,8 +470,9 @@ bool autoFindBestPose(int robot_handle,
 
     // ---- 固定 rx=-180°, ry=0°（标定板水平），保留 rz ----
     double flangeEulePos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
-    rotateFlangeToHorizon(robot_handle, flangeEulePos);
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (!rotateFlangeToHorizon(robot_handle, flangeEulePos) ||
+        cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess)
+        return false;
 
     // 标定板总角点数
     cv::Size board_sz = detector.getChessboardSize();
@@ -501,11 +511,13 @@ bool autoFindBestPose(int robot_handle,
         double best_s = tryCandidatePoses(robot_handle, camera, detector,
                                            false, z_candidates, bestFlangeEule);
         if (best_s > cur_score) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEule);            
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEule) ||
+                cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess)
+                return false;
             std::cout << "[autoFindBestPose] Phase1 选定 Z=" << tcp_aa[2] << std::endl;
         }
-        moveToTcpAxisPos(robot_handle, tcp_aa);        
+        if (!moveToTcpAxisPos(robot_handle, tcp_aa))
+            return false;
     }
     frame = camera->captureOneFrame(1500);
     // ================================================================
@@ -519,8 +531,9 @@ bool autoFindBestPose(int robot_handle,
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
         const double steps[] = {240, 120, 60};
-        searchXYSteps(robot_handle, camera, detector,
-                       steps, std::size(steps), tcp_aa);
+        if (!searchXYSteps(robot_handle, camera, detector,
+                           steps, std::size(steps), tcp_aa))
+            return false;
     }
     frame = camera->captureOneFrame(1500);
 
@@ -562,7 +575,8 @@ bool autoFindBestPose(int robot_handle,
             return true;
         }
         
-        convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+        if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+            return false;
         //ret = cr_AxisAngle2Eule(tcp_aa, eulePos);
         // 利用像素面积比估算 Z 调整（area ∝ 1/Z²）
         std::vector<cv::Point2f> hull;
@@ -591,17 +605,20 @@ bool autoFindBestPose(int robot_handle,
         double bestFlangeEulePos[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, zrz_candidates, bestFlangeEulePos) > cur_s) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEulePos);            
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEulePos))
+                return false;
             cv::Mat frame = camera->captureOneFrame(1500);            
-            if(cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) == sucess)                        
-                convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
-                flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
+            if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+                !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+                return false;
+            flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
         } else {
             std::cout << "[autoFindBestPose] Z+rz 无改善, iter=" << iter << std::endl;
             break;
         }
     }
-    moveToTcpAxisPos(robot_handle, tcp_aa);    
+    if (!moveToTcpAxisPos(robot_handle, tcp_aa))
+        return false;
     frame = camera->captureOneFrame(1500);
     // ================================================================
     // Phase 4: XY 精细搜索
@@ -609,11 +626,14 @@ bool autoFindBestPose(int robot_handle,
 
     std::cout << "[autoFindBestPose] Phase4: XY 精细搜索..." << std::endl;
     const double steps_fine[] = {60, 30, 15};    
-    searchXYSteps(robot_handle, camera, detector, steps_fine, std::size(steps_fine), tcp_aa);
+    if (!searchXYSteps(robot_handle, camera, detector,
+                       steps_fine, std::size(steps_fine), tcp_aa))
+        return false;
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
-        moveToTcpAxisPos(robot_handle, tcp_aa);
+        if (!moveToTcpAxisPos(robot_handle, tcp_aa))
+            return false;
         frame = camera->captureOneFrame(1500);       
     }
 
@@ -642,7 +662,7 @@ static double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2
         for (int c = 0; c < depth.cols; c++) {
             if (mask.at<uchar>(r, c)) {
                 ushort d = depth.at<ushort>(r, c);
-                if (d > 0 || d > 3000) { sum += d; cnt++; }
+                if (d > 0 && d <= 3000) { sum += d; cnt++; }
             }
         }
     }
@@ -654,11 +674,12 @@ static bool computeZValues(int robot_handle,
     int cameraToTcpEnd,
     CharucoDetector& detector,
     double z_out_[3]) {
-    double tcp_aa[ROB_AXIS_NUM], tcpEulePos[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM], outZ[3];
+    double tcp_aa[ROB_AXIS_NUM], tcpEulePos[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM];
     //double orig_joint[ROB_AXIS_NUM];
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos);
-    cr_AxisAngle2Eule(tcp_aa, tcpEulePos);
+    if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+        !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos) ||
+        cr_AxisAngle2Eule(tcp_aa, tcpEulePos) != sucess)
+        return false;
     // 估计相机到标定板的距离
     cv::Mat frame;
     std::vector<cv::Point2f> corners;
@@ -843,8 +864,9 @@ bool generateCandidates(int robot_handle,
                         std::vector<PoseCandidate>& candidates) {
     double euler[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM], 
          flangeEulePos[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+    if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+        !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos))
+        return false;
     cv::Mat frame = camera->captureOneFrame(1500);
     //cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
     int total = 0, ik_ok = 0;
@@ -881,16 +903,28 @@ bool generateCandidates(int robot_handle,
     return !candidates.empty();
 }
 
-int reconnectRobotHandle(int old_handle, char* pchRobotIP){
+int reconnectRobotHandle(int old_handle, char* pchRobotIP,
+                         int robot_port,
+                         const std::string& robot_password,
+                         AI_det_callback callback){
     CRresult result = error;
     cr_destroy_robot(old_handle);
-    int waitingTime = 120000, try_time=0;
+    old_handle = 0;
+    const int waitingTime = 1000;
+    int try_time = 0;
     while(result != sucess){
-        
-       std::cout << "[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect\n" << std::flush;
-       std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));          
-       result = cr_create_robot(&old_handle, pchRobotIP, 2323, "123");  // 机械臂连接        
-       try_time ++;
+        if (callback && callback(nullptr, 0, 0) == -1) {
+            std::cerr << "[reconnectRobotHandle] reconnect cancelled" << std::endl;
+            return 0;
+        }
+
+        std::cout << "[reconnectRobotHandle] wait to re-connect robot handle: "
+                  << "waiting " << waitingTime << " milliseconds for "
+                  << try_time << " connect\n" << std::flush;
+        std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));
+        result = cr_create_robot(&old_handle, pchRobotIP, robot_port,
+                                 const_cast<char*>(robot_password.c_str()));
+        try_time++;
     }    
     if( result == sucess)
         std::cout << "[reconnectRobotHandle] success!!\n" << std::flush;
@@ -901,14 +935,16 @@ int reconnectRobotHandle(int old_handle, char* pchRobotIP){
 // Phase 4: 逐点运动 + 采集
 // ============================================================
 
-bool executeCollection(int robot_handle,
+bool executeCollection(int& robot_handle,
                        char* pchRobotIP,
+                       int robot_port,
+                       const std::string& robot_password,
                        std::shared_ptr<AICamera>& camera,
                        CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,
                        const std::string& save_dir,AI_det_callback callback) {
     int total = (int)candidates.size();
-    int captured = 0, freeRobotHandle = 0;
+    int captured = 0;
 
     if (save_dir.empty()) {
         std::cerr << "[autoCalib] 保存目录为空" << std::endl;
@@ -945,8 +981,10 @@ bool executeCollection(int robot_handle,
             //int waitingTime = 60000;
             if(operate_timeout == ret_move){   
                  std::cout << "\n[autoCalib] failure to move: " << i << "/" << total << ", waiting for reconnect\n" << std::flush;       
-                robot_handle = reconnectRobotHandle(robot_handle, pchRobotIP);
-                freeRobotHandle = 1;
+                robot_handle = reconnectRobotHandle(
+                    robot_handle, pchRobotIP, robot_port, robot_password, callback);
+                if (robot_handle == 0)
+                    return false;
             }
             continue;
         }       
@@ -1014,8 +1052,6 @@ bool executeCollection(int robot_handle,
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
               << "/" << total
               << ", 数据保存到: " << save_dir << std::endl;
-    if(freeRobotHandle)
-       cr_destroy_robot(robot_handle);
     return captured > 0;
 }
 
@@ -1326,18 +1362,39 @@ bool loadImagesFromDisk(const std::string& save_dir,
     return true;
 }
 
+constexpr size_t calibrationBatchCount(size_t frame_count,
+                                       size_t max_batch_size = 50) {
+    return (frame_count + max_batch_size - 1) / max_batch_size;
+}
+
+constexpr size_t calibrationBatchSize(size_t frame_count,
+                                      size_t max_batch_size = 50) {
+    const size_t count = calibrationBatchCount(frame_count, max_batch_size);
+    return count == 0 ? 0 : (frame_count + count - 1) / count;
+}
+
+static_assert(calibrationBatchCount(5) == 1 && calibrationBatchSize(5) == 5);
+static_assert(calibrationBatchCount(49) == 1 && calibrationBatchSize(49) == 49);
+static_assert(calibrationBatchCount(51) == 2 && calibrationBatchSize(51) == 26);
+
 bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& object_points,
     std::vector<std::vector<cv::Point2f>>& image_points,
     const cv::Size& image_size,
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs, int wantedNum){
-    const int min_frames = 5;
-    int batch_size = 50;
-    float keepRatio =std::max<float>(0.3, std::min<float>((float)(wantedNum *1.5)  / image_points.size() + 0.1, 1.0));
-    
-    size_t n_total = object_points.size();
-    int nTimes = n_total / batch_size;
-    batch_size = n_total / nTimes + 1;
+    const size_t min_frames = 5;
+    const size_t max_batch_size = 50;
+    const size_t n_total = object_points.size();
+    if (n_total < min_frames || image_points.size() != n_total || wantedNum <= 0)
+        return false;
+
+    const float keepRatio = std::clamp(
+        static_cast<float>(wantedNum * 1.5) / static_cast<float>(n_total) + 0.1f,
+        0.3f, 1.0f);
+
+    // Ceiling division keeps both values non-zero for small data sets.
+    const size_t nTimes = calibrationBatchCount(n_total, max_batch_size);
+    const size_t batch_size = calibrationBatchSize(n_total, max_batch_size);
     
 
     struct FrameRecord {
@@ -1362,15 +1419,18 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
         std::vector<cv::Mat> rvecs, tvecs;
         double err = cv::calibrateCamera(batch_obj, batch_img, image_size,
                                           K, D, rvecs, tvecs);
-        std::cout << "[autoCalib] 批次 " << (start / batch_size) << "/" <<nTimes
+        std::cout << "[autoCalib] 批次 " << (start / batch_size + 1) << "/" << nTimes
                   << ": , 重投影误差 " << err << " px" << std::endl;
 
         // 计算每帧投影误差
         std::vector<FrameRecord> batch_records;
         batch_records.reserve(n_batch);
-        for (size_t i = 0; i < n_batch; i++) {
+        const size_t usable = std::min({n_batch, rvecs.size(), tvecs.size()});
+        for (size_t i = 0; i < usable; i++) {
             std::vector<cv::Point2f> proj;
             cv::projectPoints(batch_obj[i], rvecs[i], tvecs[i], K, D, proj);
+            if (proj.empty() || proj.size() != batch_img[i].size())
+                continue;
             double sum_err = 0.0;
             for (size_t j = 0; j < proj.size(); j++)
                 sum_err += cv::norm(proj[j] - batch_img[i][j]);
@@ -1382,7 +1442,11 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
                   [](const FrameRecord& a, const FrameRecord& b) {
                       return a.error < b.error;
                   });
-        size_t n_keep = std::max<int>(size_t(1), (int)(n_batch * keepRatio));
+        if (batch_records.empty())
+            continue;
+        const size_t n_keep = std::clamp<size_t>(
+            static_cast<size_t>(std::ceil(batch_records.size() * keepRatio)),
+            1, batch_records.size());
         for (size_t i = 0; i < n_keep; i++)
             good_frames.push_back(batch_records[i]);
         std::cout << "[autoCalib]  保留 " << n_keep << "/" << n_batch
@@ -1397,7 +1461,7 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
               });
 
     size_t n_final = std::min(good_frames.size(), size_t(wantedNum));
-    if (n_final < (size_t)min_frames) {
+    if (n_final < min_frames) {
         // std::cerr << "[autoCalib] 合格帧不足 (" << n_final << "), 使用全部帧标定"
         //           << std::endl;
         // camera_matrix = cv::Mat::eye(3, 3, CV_64F);
@@ -1436,6 +1500,12 @@ static bool calibrateCameraFiltered(
     const cv::Size& image_size,
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs) {
+    if (object_points.size() < 5 ||
+        object_points.size() != image_points.size() ||
+        image_size.empty()) {
+        return false;
+    }
+
     int n_final = 65;
     float fRatio = sqrt((float)n_final / image_points.size());
     int  wantedNum =std::max<int>( (int)(image_points.size() * fRatio), std::min<int>(image_points.size(), n_final * 2)); 
@@ -1465,7 +1535,7 @@ static void refineCameraIntrinsics(
     const std::vector<std::vector<cv::Point2f>>& all_img,
     const cv::Size& image_size) {
 
-    int n = (int)all_obj.size(), miniNum = std::min<int>(50, all_obj.size());
+    int n = (int)all_obj.size();
     if (n < 5) return;
 
     // 逐帧 solvePnP + 重投影误差 (快: ~0.2ms/帧)
@@ -1488,7 +1558,7 @@ static void refineCameraIntrinsics(
     std::sort(recs.begin(), recs.end(),
               [](const Rec& a, const Rec& b) { return a.err < b.err; });
     
-    double median = recs[miniNum / 2].err;
+    const double median = recs[recs.size() / 2].err;
     double thresh = median * 1.2;
 
     std::vector<std::vector<cv::Point3f>> good_obj;
@@ -1602,13 +1672,23 @@ bool calibrateHandEyeFromDisk(
     while (std::getline(pf, line)) {
         if (line.empty()) continue;
         std::stringstream ss(line);
-        double pose[6];
+        double pose[6] = {};
+        bool complete = true;
         for (int i = 0; i < 6; i++) {
             std::string val;
-            if (!std::getline(ss, val, ',')) break;
-            pose[i] = std::stod(val);
+            if (!std::getline(ss, val, ',')) {
+                complete = false;
+                break;
+            }
+            try {
+                pose[i] = std::stod(val);
+            } catch (const std::exception&) {
+                complete = false;
+                break;
+            }
         }
-        flange_poses.push_back(axisAnglePoseToTransform(pose));
+        if (complete)
+            flange_poses.push_back(axisAnglePoseToTransform(pose));
     }
 
     // 扫描图像文件
@@ -1708,7 +1788,7 @@ bool calibrateHandEyeFromDisk(
 }
 
 bool autoEyeInHandCharucoCalibration(
-    int robot_handle,
+    int& robot_handle,
     char* pchRobotIP,
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
@@ -1718,7 +1798,9 @@ bool autoEyeInHandCharucoCalibration(
     CalibrationResult& result,
     const std::string& save_dir,
     const std::string& output_yaml,
-    AI_det_callback callback) {
+    AI_det_callback callback,
+    int robot_port,
+    const std::string& robot_password) {
 
     g_save_dir = save_dir;
     g_callback = callback;
@@ -1729,8 +1811,11 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 1b: 自动寻找最佳位姿 ----
     double tcp_aa[ROB_AXIS_NUM];   
-    rotateFlangeToHorizon(robot_handle, NULL);
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (!rotateFlangeToHorizon(robot_handle, nullptr) ||
+        cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess) {
+        result.message = "获取或调整机器人初始位姿失败";
+        return false;
+    }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
     if (!autoFindBestPose(robot_handle, camera, detector,
                             save_dir, callback)) {
@@ -1746,6 +1831,15 @@ bool autoEyeInHandCharucoCalibration(
                       << z_values[0] << ", " << z_values[1] << ", " << z_values[2] << std::endl;
         } else {
             std::cout << "[autoCalib] Z 值计算失败，使用固定偏移 [-300,0,+300]" << std::endl;
+            double flangeEule[ROB_AXIS_NUM];
+            if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+                !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEule)) {
+                result.message = "无法生成备用 Z 值";
+                return false;
+            }
+            z_values[0] = flangeEule[2] + 300.0;
+            z_values[1] = flangeEule[2];
+            z_values[2] = flangeEule[2] - 300.0;
         }
     }
 
@@ -1758,7 +1852,8 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- Phase 4: 逐点运动 + 采集 ----
-    if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
+    if (!executeCollection(robot_handle, pchRobotIP, robot_port, robot_password,
+                            camera, detector,
                             candidates, save_dir, callback)) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;

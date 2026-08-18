@@ -1,22 +1,33 @@
 #include "OrbbecCamera.hpp"
 #include "exposure_fusion.hpp"
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
 
 OrbbecCameraV2::OrbbecCameraV2(const CONFIG& config)
     : AICamera(config) {
+    APP_LOG_INFO("orbbec", QString("instance_created endpoint=%1:%2 serial=%3 requested=%4x%5@%6 depth=%7")
+        .arg(QString::fromStdString(m_config.cam_ip)).arg(m_config.cam_port)
+        .arg(QString::fromStdString(m_config.cam_sn))
+        .arg(m_config.cam_width).arg(m_config.cam_height).arg(m_config.fps)
+        .arg(m_config.enableDepth));
 }
 
 OrbbecCameraV2::~OrbbecCameraV2() {
+    APP_LOG_INFO("orbbec", "instance_destroying");
     close();
 }
 
 bool OrbbecCameraV2::open() {
     if (m_isOpened) {
+        APP_LOG_INFO("orbbec", "open_skipped reason=already_open");
         return true;
     }
 
+    APP_LOG_INFO("orbbec", QString("open_begin requested=%1x%2@%3 serial=%4")
+        .arg(m_config.cam_width).arg(m_config.cam_height).arg(m_config.fps)
+        .arg(QString::fromStdString(m_config.cam_sn)));
     try {
         // 1. 创建 Context（只创建一次）
         m_context = std::make_shared<ob::Context>();
@@ -54,15 +65,21 @@ bool OrbbecCameraV2::open() {
                         // 没有指定序列号，使用第一个设备
                         m_device = device;
                         deviceFound = true;
-                        std::cout << "Connected to camera (first device): " << info->name() 
+                        std::cout << "Connected to camera (first device): " << info->name()
                                   << ", SN: " << info->serialNumber() << std::endl;
+                        APP_LOG_INFO("orbbec", QString("device_selected index=%1 name=%2 serial=%3 selection=first")
+                            .arg(i).arg(QString::fromStdString(info->name()))
+                            .arg(QString::fromStdString(info->serialNumber())));
                         break;
                     } else if (info->serialNumber() == m_config.cam_sn) {
                         // 通过序列号匹配
                         m_device = device;
                         deviceFound = true;
-                        std::cout << "Connected to camera: " << m_config.cam_ip 
+                        std::cout << "Connected to camera: " << m_config.cam_ip
                                   << ", SN: " << info->serialNumber() << std::endl;
+                        APP_LOG_INFO("orbbec", QString("device_selected index=%1 name=%2 serial=%3 selection=serial")
+                            .arg(i).arg(QString::fromStdString(info->name()))
+                            .arg(QString::fromStdString(info->serialNumber())));
                         break;
                     }
                 }
@@ -75,6 +92,8 @@ bool OrbbecCameraV2::open() {
         }
         
         if (!deviceFound || !m_device) {
+            APP_LOG_ERROR("orbbec", QString("device_not_found attempts=10 requested_serial=%1")
+                .arg(QString::fromStdString(m_config.cam_sn)));
             std::cerr << "Failed to find camera";
             if (!m_config.cam_sn.empty()) {
                 std::cerr << " with SN: " << m_config.cam_sn;
@@ -190,12 +209,16 @@ bool OrbbecCameraV2::open() {
         }
         
         if (!frameReceived) {
+            APP_LOG_ERROR("orbbec", "pipeline_validation_failed attempts=5 timeout_ms=3000");
             std::cerr << "Pipeline started but no frame received within timeout" << std::endl;
             close();
             return false;
         }
         
         m_isOpened = true;
+        m_captureAttempts = 0;
+        m_captureSuccesses = 0;
+        m_consecutiveCaptureFailures = 0;
         std::cout << "Camera started: " << m_config.cam_width << "x" << m_config.cam_height
                   << " @ " << m_config.fps << "fps" << std::endl;
 
@@ -212,41 +235,82 @@ bool OrbbecCameraV2::open() {
                   << (m_device->isPropertySupported(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, OB_PERMISSION_WRITE) ? "YES" : "NO")
                   << std::endl;
 
+        APP_LOG_INFO("orbbec", QString("open_complete color=%1x%2@%3 format=%4 depth=%5")
+            .arg(m_videoStreamProfile ? m_videoStreamProfile->width() : 0)
+            .arg(m_videoStreamProfile ? m_videoStreamProfile->height() : 0)
+            .arg(m_videoStreamProfile ? m_videoStreamProfile->fps() : 0)
+            .arg(m_videoStreamProfile ? static_cast<int>(m_videoStreamProfile->format()) : -1)
+            .arg(m_config.enableDepth));
         return true;
     }
     catch (const ob::Error& e) {
+        APP_LOG_ERROR("orbbec", QString("open_exception type=orbbec message=%1 function=%2 args=%3")
+            .arg(QString::fromUtf8(e.getMessage()))
+            .arg(QString::fromUtf8(e.getFunction()))
+            .arg(QString::fromUtf8(e.getArgs())));
         std::cerr << "Open failed: " << e.getMessage() << std::endl;
+        close();
+        return false;
+    }
+    catch (const std::exception& e) {
+        APP_LOG_ERROR("orbbec", QString("open_exception type=std message=%1")
+            .arg(QString::fromUtf8(e.what())));
+        std::cerr << "Open failed: " << e.what() << std::endl;
+        close();
+        return false;
+    }
+    catch (...) {
+        APP_LOG_ERROR("orbbec", "open_exception type=unknown");
+        std::cerr << "Open failed with an unknown error" << std::endl;
         close();
         return false;
     }
 }
 
-
 void OrbbecCameraV2::close() {
-    if (!m_isOpened) return;
-
+    const bool wasOpened = m_isOpened;
+    APP_LOG_INFO("orbbec", QString("close_begin opened=%1 attempts=%2 successes=%3 consecutive_failures=%4")
+        .arg(wasOpened).arg(m_captureAttempts.load()).arg(m_captureSuccesses.load())
+        .arg(m_consecutiveCaptureFailures.load()));
     try {
         if (m_pipeline) {
             m_pipeline->stop();
-            m_pipeline.reset();
-            m_pipeline = nullptr;
         }
-        m_formatConverter.reset();
-        m_configPtr.reset();
-        m_device.reset();
-        m_context.reset();
-
-        m_isOpened = false;
-        std::cout << "Camera closed" << std::endl;
     }
     catch (const ob::Error& e) {
+        APP_LOG_ERROR("orbbec", QString("close_exception type=orbbec message=%1")
+            .arg(QString::fromUtf8(e.getMessage())));
         std::cerr << "Close error: " << e.getMessage() << std::endl;
     }
+    catch (const std::exception& e) {
+        APP_LOG_ERROR("orbbec", QString("close_exception type=std message=%1")
+            .arg(QString::fromUtf8(e.what())));
+        std::cerr << "Close error: " << e.what() << std::endl;
+    }
+    catch (...) {
+        APP_LOG_ERROR("orbbec", "close_exception type=unknown");
+        std::cerr << "Close failed with an unknown error" << std::endl;
+    }
+
+    // Always release partially-created resources, including open() failures.
+    m_pipeline.reset();
+    m_formatConverter.reset();
+    m_videoStreamProfile.reset();
+    m_configPtr.reset();
+    m_device.reset();
+    m_context.reset();
+    m_isOpened = false;
+    std::cout << "Camera closed" << std::endl;
+    APP_LOG_INFO("orbbec", QString("close_complete was_opened=%1").arg(wasOpened));
 }
 
 cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
+    const uint64_t attempt = ++m_captureAttempts;
     if (!m_isOpened) {
-        std::cerr << "Camera not opened" << std::endl;
+        const uint64_t failures = ++m_consecutiveCaptureFailures;
+        if (failures == 1 || failures % 100 == 0)
+            APP_LOG_ERROR("orbbec", QString("capture_rejected reason=not_open attempt=%1 consecutive_failures=%2")
+                .arg(attempt).arg(failures));
         return cv::Mat();
     }
 
@@ -254,7 +318,10 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
         // 等待帧集合
         auto frameSet = m_pipeline->waitForFrameset(timeoutMs);
         if (!frameSet) {
-            std::cerr << "Wait for frameset timeout" << std::endl;
+            const uint64_t failures = ++m_consecutiveCaptureFailures;
+            if (failures == 1 || failures % 100 == 0)
+                APP_LOG_WARNING("orbbec", QString("capture_timeout timeout_ms=%1 attempt=%2 consecutive_failures=%3")
+                    .arg(timeoutMs).arg(attempt).arg(failures));
             return cv::Mat();
         }
 
@@ -266,6 +333,11 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
         }
 
         // Convert the color frame to RGB format.
+        if (!m_formatConverter) {
+            std::cerr << "Format converter is not available" << std::endl;
+            return cv::Mat();
+        }
+
         if (colorFrame->format() != OB_FORMAT_RGB) {
             if (colorFrame->format() == OB_FORMAT_MJPG) {
                 m_formatConverter->setFormatConvertType(FORMAT_MJPG_TO_RGB);
@@ -278,12 +350,27 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
             }
             else {
                 std::cout << "Color format is not support!" << std::endl;
+                return cv::Mat();
             }
-            colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
+            auto converted = m_formatConverter->process(colorFrame);
+            if (!converted) {
+                std::cerr << "Failed to convert color frame to RGB" << std::endl;
+                return cv::Mat();
+            }
+            colorFrame = converted->as<ob::ColorFrame>();
+            if (!colorFrame)
+                return cv::Mat();
         }
         // Processed the color frames to BGR format, use OpenCV to save to disk.
         m_formatConverter->setFormatConvertType(FORMAT_RGB_TO_BGR);
-        colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
+        auto converted = m_formatConverter->process(colorFrame);
+        if (!converted) {
+            std::cerr << "Failed to convert RGB frame to BGR" << std::endl;
+            return cv::Mat();
+        }
+        colorFrame = converted->as<ob::ColorFrame>();
+        if (!colorFrame)
+            return cv::Mat();
 
 
         // 获取帧数据
@@ -301,11 +388,39 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
         cv::Mat bgrImage(cv::Size(width, height), CV_8UC3, data);
 
         // 深拷贝
-        return bgrImage.clone();
+        cv::Mat result = bgrImage.clone();
+        const uint64_t failuresBeforeSuccess = m_consecutiveCaptureFailures.exchange(0);
+        const uint64_t success = ++m_captureSuccesses;
+        if (success == 1 || success % 500 == 0 || failuresBeforeSuccess >= 10) {
+            APP_LOG_DEBUG("orbbec", QString("capture_success success=%1 attempt=%2 recovered_failures=%3 "
+                                             "size=%4x%5 timeout_ms=%6")
+                .arg(success).arg(attempt).arg(failuresBeforeSuccess)
+                .arg(result.cols).arg(result.rows).arg(timeoutMs));
+        }
+        return result;
 
     }
     catch (const ob::Error& e) {
+        ++m_consecutiveCaptureFailures;
+        APP_LOG_ERROR("orbbec", QString("capture_exception type=orbbec attempt=%1 message=%2 function=%3 args=%4")
+            .arg(attempt)
+            .arg(QString::fromUtf8(e.getMessage()))
+            .arg(QString::fromUtf8(e.getFunction()))
+            .arg(QString::fromUtf8(e.getArgs())));
         std::cerr << "Capture error: " << e.getMessage() << std::endl;
+        return cv::Mat();
+    }
+    catch (const std::exception& e) {
+        ++m_consecutiveCaptureFailures;
+        APP_LOG_ERROR("orbbec", QString("capture_exception type=std attempt=%1 message=%2")
+            .arg(attempt).arg(QString::fromUtf8(e.what())));
+        std::cerr << "Capture error: " << e.what() << std::endl;
+        return cv::Mat();
+    }
+    catch (...) {
+        ++m_consecutiveCaptureFailures;
+        APP_LOG_ERROR("orbbec", QString("capture_exception type=unknown attempt=%1").arg(attempt));
+        std::cerr << "Capture failed with an unknown error" << std::endl;
         return cv::Mat();
     }
 }

@@ -4,6 +4,9 @@
 #include "AICamera.hpp"
 #include "exposure_fusion.hpp"
 
+#include <atomic>
+#include <cstdint>
+
 // 禁用 MSVC 安全警告
 #ifdef _MSC_VER
 #pragma warning(disable : 4996)
@@ -60,6 +63,9 @@ private:
     std::shared_ptr<ob::Config> m_configPtr;
     std::shared_ptr<ob::FormatConvertFilter> m_formatConverter;
     std::shared_ptr<ob::VideoStreamProfile> m_videoStreamProfile = nullptr;
+    std::atomic<uint64_t> m_captureAttempts{0};
+    std::atomic<uint64_t> m_captureSuccesses{0};
+    std::atomic<uint64_t> m_consecutiveCaptureFailures{0};
 };
 
 #endif // ORBBEC_CAMERA_V2_HPP

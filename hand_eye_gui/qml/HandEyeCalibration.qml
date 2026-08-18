@@ -25,7 +25,7 @@ ApplicationWindow {
     // =================================================================
     readonly property color bgDark:    "#1a1e24"
     readonly property color bgPanel:   "#21262d"
-    readonly property color border:    "#30363d"
+    readonly property color borderColor: "#30363d"
     readonly property color accent:    "#1e88e5"
     readonly property color accentRed: "#da3633"
     readonly property color textPrimary: "#e6edf3"
@@ -65,7 +65,7 @@ ApplicationWindow {
             implicitHeight: topColumn.implicitHeight + 20
             radius: 8
             color: bgPanel
-            border.color: border
+            border.color: borderColor
 
             ColumnLayout {
                 id: topColumn
@@ -83,7 +83,7 @@ ApplicationWindow {
                         text: calibrationController.robotIp
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 130
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: calibrationController.robotIp = text
                     }
 
@@ -92,7 +92,7 @@ ApplicationWindow {
                         text: calibrationController.robotPort
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 65
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.robotPort = v
@@ -104,13 +104,14 @@ ApplicationWindow {
                         text: calibrationController.robotPasswd
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 80
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: calibrationController.robotPasswd = text
                     }
 
                     Button {
                         text: calibrationController.robotConnected ? "断开" : "连接"
                         font.pixelSize: 21; font.bold: true
+                        enabled: !calibrationController.running
                         background: Rectangle {
                             radius: 6
                             color: parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : accent
@@ -136,6 +137,7 @@ ApplicationWindow {
                     Button {
                         id: btnEyeInHand
                         checkable: true
+                        enabled: !calibrationController.running
                         checked: calibrationController.calibrationType === "eye_in_hand"
                         text: "眼在手内"
                         font.pixelSize: 21; font.bold: true
@@ -155,6 +157,7 @@ ApplicationWindow {
                     Button {
                         id: btnEyeToHand
                         checkable: true
+                        enabled: !calibrationController.running
                         checked: calibrationController.calibrationType === "eye_to_hand"
                         text: "眼在手外"
                         font.pixelSize: 21; font.bold: true
@@ -182,7 +185,7 @@ ApplicationWindow {
                         text: calibrationController.cameraIp
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 170
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: calibrationController.cameraIp = text
                     }
 
@@ -191,7 +194,7 @@ ApplicationWindow {
                         text: calibrationController.cameraPort
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 65
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.cameraPort = v
@@ -203,7 +206,7 @@ ApplicationWindow {
                         text: calibrationController.previewWidth
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 75
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.previewWidth = v
@@ -214,7 +217,7 @@ ApplicationWindow {
                         text: calibrationController.previewHeight
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 75
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: border }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
                         onEditingFinished: {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.previewHeight = v
@@ -234,7 +237,7 @@ ApplicationWindow {
             height: 56
             radius: 8
             color: bgPanel
-            border.color: border
+            border.color: borderColor
 
             RowLayout {
                 anchors.fill: parent
@@ -355,7 +358,7 @@ ApplicationWindow {
             height: 42
             radius: 6
             color: "#161b22"
-            border.color: border
+            border.color: borderColor
 
             RowLayout {
                 anchors.fill: parent
@@ -390,7 +393,7 @@ ApplicationWindow {
             height: 36
             radius: 6
             color: "#161b22"
-            border.color: border
+            border.color: borderColor
             visible: calibrationController.running
 
             ProgressBar {
@@ -435,7 +438,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 2
                 radius: 8
                 color: "#0d1117"
-                border.color: border
+                border.color: borderColor
 
                 Image {
                     id: cameraImage
@@ -467,7 +470,7 @@ ApplicationWindow {
                 Layout.preferredWidth: 1
                 radius: 8
                 color: "#0d1117"
-                border.color: border
+                border.color: borderColor
 
                 ColumnLayout {
                     anchors.fill: parent
@@ -485,7 +488,7 @@ ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
-                        color: border
+                        color: borderColor
                     }
 
                     // TCP 偏移（仅眼在手内模式）
@@ -504,7 +507,7 @@ ApplicationWindow {
                             color: textPrimary
                             Layout.preferredWidth: 60
                             background: Rectangle {
-                                radius: 4; color: "#161b22"; border.color: border
+                                radius: 4; color: "#161b22"; border.color: borderColor
                             }
                             onEditingFinished: {
                                 var v = parseInt(text)
@@ -536,15 +539,32 @@ ApplicationWindow {
                     Rectangle {
                         Layout.fillWidth: true
                         height: 1
-                        color: border
+                        color: borderColor
                     }
 
-                    // ---- 控制台日志 ----
+                    // ---- 持久化诊断日志 ----
                     Label {
-                        text: "控制台输出"
+                        text: "诊断日志"
                         color: textPrimary
                         font.pixelSize: 24
                         font.bold: true
+                    }
+
+                    TextField {
+                        Layout.fillWidth: true
+                        readOnly: true
+                        selectByMouse: true
+                        text: calibrationController.diagnosticLogPath
+                        color: textDim
+                        font.pixelSize: 14
+                        font.family: "monospace"
+                        background: Rectangle {
+                            radius: 4
+                            color: "#161b22"
+                            border.color: borderColor
+                        }
+                        ToolTip.visible: hovered
+                        ToolTip.text: "远程分析时请提供该文件及 .1～.5 归档"
                     }
 
                     Flickable {

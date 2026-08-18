@@ -12,8 +12,9 @@ SET(useOAK FALSE)
 SET(useMVS TRUE)
 
 
-set(CMAKE_BUILD_TYPE "Debug")
-# set(CMAKE_BUILD_TYPE "Release")
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Debug" CACHE STRING "Build type" FORCE)
+endif()
 
 # 禁用 MSVC 安全警告
 if(MSVC)

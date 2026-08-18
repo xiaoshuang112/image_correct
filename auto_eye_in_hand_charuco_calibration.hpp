@@ -47,7 +47,7 @@ struct CalibrationResult {
  * @return true/false
  */
 bool autoEyeInHandCharucoCalibration(
-    int robot_handle,
+    int& robot_handle,
     char* pchRobotIP,
     std::shared_ptr<AICamera>& camera,
     const CharucoBoardConfig& board_config,
@@ -57,7 +57,9 @@ bool autoEyeInHandCharucoCalibration(
     CalibrationResult& result,
     const std::string& save_dir = "",
     const std::string& output_yaml = "",
-    AI_det_callback callback=nullptr
+    AI_det_callback callback = nullptr,
+    int robot_port = 2323,
+    const std::string& robot_password = "123"
 );
 
 /**

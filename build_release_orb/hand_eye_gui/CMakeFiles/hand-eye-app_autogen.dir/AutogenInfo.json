@@ -1,0 +1,303 @@
+{
+	"BUILD_DIR" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/hand-eye-app_autogen",
+	"CMAKE_BINARY_DIR" : "/home/nvidia/work/caitu-nano/build_release_orb",
+	"CMAKE_CURRENT_BINARY_DIR" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui",
+	"CMAKE_CURRENT_SOURCE_DIR" : "/home/nvidia/work/caitu-nano/hand_eye_gui",
+	"CMAKE_EXECUTABLE" : "/usr/bin/cmake",
+	"CMAKE_LIST_FILES" : 
+	[
+		"/home/nvidia/work/caitu-nano/hand_eye_gui/CMakeLists.txt",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5/Qt5ConfigVersion.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5/Qt5Config.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5/Qt5ModuleLocation.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Core/Qt5CoreConfigVersion.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Core/Qt5CoreConfig.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Quick/Qt5QuickConfigVersion.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Quick/Qt5QuickConfig.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5QuickControls2/Qt5QuickControls2ConfigVersion.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5QuickControls2/Qt5QuickControls2Config.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Widgets/Qt5WidgetsConfigVersion.cmake",
+		"/usr/lib/aarch64-linux-gnu/cmake/Qt5Widgets/Qt5WidgetsConfig.cmake",
+		"/home/nvidia/work/caitu-nano/hand_eye_gui/resources.qrc"
+	],
+	"CMAKE_SOURCE_DIR" : "/home/nvidia/work/caitu-nano",
+	"DEP_FILE" : "",
+	"DEP_FILE_RULE_NAME" : "",
+	"HEADERS" : 
+	[
+		[
+			"/home/nvidia/work/caitu-nano/auto_eye_in_hand_charuco_calibration.hpp",
+			"Mu",
+			"YCDLW3T4OG/moc_auto_eye_in_hand_charuco_calibration.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/cameras/OrbbecCamera.hpp",
+			"Mu",
+			"RN5AHXU73L/moc_OrbbecCamera.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/charuco_detector.hpp",
+			"Mu",
+			"YCDLW3T4OG/moc_charuco_detector.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/circlesampler/CircleSampler.h",
+			"Mu",
+			"SUHFDL2GCR/moc_CircleSampler.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/circlesampler/Config.h",
+			"Mu",
+			"SUHFDL2GCR/moc_Config.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/exposure_fusion.hpp",
+			"Mu",
+			"YCDLW3T4OG/moc_exposure_fusion.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/eye_to_hand_calibration.hpp",
+			"Mu",
+			"YCDLW3T4OG/moc_eye_to_hand_calibration.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/CalibrationController.hpp",
+			"Mu",
+			"EWIEGA46WW/moc_CalibrationController.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/CameraImageProvider.hpp",
+			"Mu",
+			"EWIEGA46WW/moc_CameraImageProvider.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/DiagnosticLogger.hpp",
+			"Mu",
+			"EWIEGA46WW/moc_DiagnosticLogger.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/auth_check.hpp",
+			"Mu",
+			"EWIEGA46WW/moc_auth_check.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/piecesampler/Config.h",
+			"Mu",
+			"DLJYECLRVS/moc_Config.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/piecesampler/PieceSampler.h",
+			"Mu",
+			"DLJYECLRVS/moc_PieceSampler.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthRemedy.h",
+			"Mu",
+			"O4Z7V6THH5/moc_DepthRemedy.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthTestConfig.h",
+			"Mu",
+			"O4Z7V6THH5/moc_DepthTestConfig.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthTester.h",
+			"Mu",
+			"O4Z7V6THH5/moc_DepthTester.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/utils/Texts.h",
+			"Mu",
+			"5L7XZVTLFN/moc_Texts.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/utils/Util.h",
+			"Mu",
+			"5L7XZVTLFN/moc_Util.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/utils/calib_transform.hpp",
+			"Mu",
+			"5L7XZVTLFN/moc_calib_transform.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/utils/putText.h",
+			"Mu",
+			"5L7XZVTLFN/moc_putText.cpp",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/utils/robot_util.hpp",
+			"Mu",
+			"5L7XZVTLFN/moc_robot_util.cpp",
+			null
+		]
+	],
+	"HEADER_EXTENSIONS" : [ "h", "hh", "h++", "hm", "hpp", "hxx", "in", "txx" ],
+	"INCLUDE_DIR" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/hand-eye-app_autogen/include",
+	"MOC_COMPILATION_FILE" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/hand-eye-app_autogen/mocs_compilation.cpp",
+	"MOC_DEFINITIONS" : 
+	[
+		"APP_BUILD_TIMESTAMP=\"2026-08-18T15:42:58Z\"",
+		"APP_BUILD_TYPE=\"Release\"",
+		"APP_GIT_COMMIT=\"fd9ded5359c8\"",
+		"ARM64",
+		"DEFAULT_CAM_HEIGHT=800",
+		"DEFAULT_CAM_WIDTH=1280",
+		"QT_CORE_LIB",
+		"QT_GUI",
+		"QT_GUI_LIB",
+		"QT_MESSAGELOGCONTEXT",
+		"QT_NETWORK_LIB",
+		"QT_NO_DEBUG",
+		"QT_QMLMODELS_LIB",
+		"QT_QML_LIB",
+		"QT_QUICKCONTROLS2_LIB",
+		"QT_QUICK_LIB",
+		"QT_WIDGETS_LIB",
+		"useMVS",
+		"useORB"
+	],
+	"MOC_DEPEND_FILTERS" : 
+	[
+		[
+			"Q_PLUGIN_METADATA",
+			"[\n][ \t]*Q_PLUGIN_METADATA[ \t]*\\([^\\)]*FILE[ \t]*\"([^\"]+)\""
+		]
+	],
+	"MOC_INCLUDES" : 
+	[
+		"/home/nvidia/work/caitu-nano",
+		"/home/nvidia/work/caitu-nano/libs/cr_sdk/include",
+		"/opt/MVS/include",
+		"/usr/local/include/opencv4",
+		"/usr/include/aarch64-linux-gnu/qt5",
+		"/usr/include/aarch64-linux-gnu/qt5/QtCore",
+		"/usr/lib/aarch64-linux-gnu/qt5/mkspecs/linux-g++",
+		"/usr/include/aarch64-linux-gnu/qt5/QtQuick",
+		"/usr/include/aarch64-linux-gnu/qt5/QtQmlModels",
+		"/usr/include/aarch64-linux-gnu/qt5/QtQml",
+		"/usr/include/aarch64-linux-gnu/qt5/QtNetwork",
+		"/usr/include/aarch64-linux-gnu/qt5/QtGui",
+		"/usr/include/aarch64-linux-gnu/qt5/QtQuickControls2",
+		"/usr/include/aarch64-linux-gnu/qt5/QtWidgets",
+		"/usr/local/include",
+		"/usr/include/c++/11",
+		"/usr/include/aarch64-linux-gnu/c++/11",
+		"/usr/include/c++/11/backward",
+		"/usr/lib/gcc/aarch64-linux-gnu/11/include",
+		"/usr/include/aarch64-linux-gnu",
+		"/usr/include"
+	],
+	"MOC_MACRO_NAMES" : [ "Q_OBJECT", "Q_GADGET", "Q_NAMESPACE", "Q_NAMESPACE_EXPORT" ],
+	"MOC_OPTIONS" : [],
+	"MOC_PATH_PREFIX" : false,
+	"MOC_PREDEFS_CMD" : 
+	[
+		"/usr/bin/c++",
+		"-dM",
+		"-E",
+		"-c",
+		"/usr/share/cmake-3.22/Modules/CMakeCXXCompilerABI.cpp"
+	],
+	"MOC_PREDEFS_FILE" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/hand-eye-app_autogen/moc_predefs.h",
+	"MOC_RELAXED_MODE" : false,
+	"MOC_SKIP" : [],
+	"MULTI_CONFIG" : false,
+	"PARALLEL" : 1,
+	"PARSE_CACHE_FILE" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/CMakeFiles/hand-eye-app_autogen.dir/ParseCache.txt",
+	"QT_MOC_EXECUTABLE" : "/usr/lib/qt5/bin/moc",
+	"QT_UIC_EXECUTABLE" : "",
+	"QT_VERSION_MAJOR" : 5,
+	"QT_VERSION_MINOR" : 15,
+	"SETTINGS_FILE" : "/home/nvidia/work/caitu-nano/build_release_orb/hand_eye_gui/CMakeFiles/hand-eye-app_autogen.dir/AutogenUsed.txt",
+	"SOURCES" : 
+	[
+		[
+			"/home/nvidia/work/caitu-nano/auto_eye_in_hand_charuco_calibration.cpp",
+			"Mu",
+			null
+		],
+		[ "/home/nvidia/work/caitu-nano/cameras/OrbbecCamera.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/charuco_detector.cpp", "Mu", null ],
+		[
+			"/home/nvidia/work/caitu-nano/circlesampler/CircleSampler.cpp",
+			"Mu",
+			null
+		],
+		[ "/home/nvidia/work/caitu-nano/circlesampler/Config.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/exposure_fusion.cpp", "Mu", null ],
+		[
+			"/home/nvidia/work/caitu-nano/eye_to_hand_calibration.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/CalibrationController.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/CameraImageProvider.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/DiagnosticLogger.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/hand_eye_gui/auth_check.cpp",
+			"Mu",
+			null
+		],
+		[ "/home/nvidia/work/caitu-nano/hand_eye_gui/main.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/piecesampler/Config.cpp", "Mu", null ],
+		[
+			"/home/nvidia/work/caitu-nano/piecesampler/PieceSampler.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthRemedy.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthTestConfig.cpp",
+			"Mu",
+			null
+		],
+		[
+			"/home/nvidia/work/caitu-nano/testcameradeepth/DepthTester.cpp",
+			"Mu",
+			null
+		],
+		[ "/home/nvidia/work/caitu-nano/utils/Texts.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/utils/Util.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/utils/calib_transform.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/utils/putText.cpp", "Mu", null ],
+		[ "/home/nvidia/work/caitu-nano/utils/robot_util.cpp", "Mu", null ]
+	],
+	"VERBOSITY" : 0
+}

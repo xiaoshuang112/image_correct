@@ -1,8 +1,21 @@
 #include "robot_util.hpp"
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 #include <iostream>
 #include <thread>
 #include <chrono>
 #include <cmath>
+
+namespace {
+
+QString formatSixValues(const double values[6])
+{
+    return QString("[%1,%2,%3,%4,%5,%6]")
+        .arg(values[0], 0, 'f', 4).arg(values[1], 0, 'f', 4)
+        .arg(values[2], 0, 'f', 4).arg(values[3], 0, 'f', 4)
+        .arg(values[4], 0, 'f', 4).arg(values[5], 0, 'f', 4);
+}
+
+} // namespace
 
 // ============================================================
 // 运动到目标关节角（等效 goto_jointpos）
@@ -17,9 +30,19 @@ static bool jointsWithinTolerance(const double actual[6], const double target[6]
 }
 
 CRresult moveToJointPos(int robot_handle, const double joint[6]) {
+    const auto startedAt = std::chrono::steady_clock::now();
+    APP_LOG_INFO("robot.motion", QString("joint_move_begin handle=%1 target=%2")
+        .arg(robot_handle).arg(formatSixValues(joint)));
     double pose[6] = {0, 0, 0, 0, 0, 0};
-    cr_get_jointActualPos(robot_handle, pose);
-    PointControlParaSimple simple;
+    CRresult ret = cr_get_jointActualPos(robot_handle, pose);
+    if (ret != sucess) {
+        APP_LOG_ERROR("robot.motion", QString("get_initial_joint_failed handle=%1 error=%2")
+            .arg(robot_handle).arg(ret));
+        std::cerr << "[robot_util] cr_get_jointActualPos failed: "
+                  << ret << std::endl;
+        return ret;
+    }
+    PointControlParaSimple simple{};
     for (int i = 0; i < ROB_AXIS_NUM; i++) {
         simple.pose[i] = pose[i];
         simple.jointpos[i] = joint[i];
@@ -32,34 +55,58 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     simple.pointTransType = pointTransStop;
     simple.motiontriggerMode = MovetriggerbyOnlyRpc;
 
-    PointControlPara para;
-    CRresult ret = cr_move_pointControlPara_transfer(
+    PointControlPara para{};
+    ret = cr_move_pointControlPara_transfer(
         (RobotHandle)robot_handle, simple, &para);
     if (ret != sucess) {
+        APP_LOG_ERROR("robot.motion", QString("point_parameter_conversion_failed error=%1 target=%2")
+            .arg(ret).arg(formatSixValues(joint)));
         std::cerr << "[robot_util] cr_move_pointControlPara_transfer failed: "
                   << ret << std::endl;
         return ret;
     }
     ret = cr_move_joint((RobotHandle)robot_handle, para, TRUE);
     if (ret != sucess) {
+        APP_LOG_ERROR("robot.motion", QString("joint_move_command_failed error=%1 target=%2")
+            .arg(ret).arg(formatSixValues(joint)));
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
     }
 
     // 等待机器人实际到位（轮询实际关节角，到位后再加稳定延时）
-    double actual[6];
+    double actual[6] = {0, 0, 0, 0, 0, 0};
     const double tol_deg = 0.5;
     const int max_polls = 200;       // 最多等 10 秒
     const int poll_ms = 50;
+    bool reached = false;
+    int readFailures = 0;
+    int polls = 0;
     for (int wait = 0; wait < max_polls; wait++) {
+        polls = wait + 1;
         std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
-        if (cr_get_jointActualPos((RobotHandle)robot_handle, actual) != sucess)
+        if (cr_get_jointActualPos((RobotHandle)robot_handle, actual) != sucess) {
+            ++readFailures;
             continue;
+        }
         if (jointsWithinTolerance(actual, joint, tol_deg)) {
             // 到位后再稳定 200ms，消除残余抖动
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            reached = true;
             break;
         }
+    }
+
+    const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - startedAt).count();
+    if (reached) {
+        APP_LOG_INFO("robot.motion", QString("joint_move_complete elapsed_ms=%1 polls=%2 "
+                                              "read_failures=%3 actual=%4")
+            .arg(elapsedMs).arg(polls).arg(readFailures).arg(formatSixValues(actual)));
+    } else {
+        APP_LOG_ERROR("robot.motion", QString("joint_move_timeout elapsed_ms=%1 polls=%2 "
+                                               "read_failures=%3 target=%4 last_actual=%5")
+            .arg(elapsedMs).arg(polls).arg(readFailures)
+            .arg(formatSixValues(joint), formatSixValues(actual)));
     }
 
     return ret;
@@ -106,8 +153,7 @@ bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double 
 bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos) {
     double flangeAxisPos[ROB_AXIS_NUM];
     if (convertTcpAxisPos2FlangPos(robot_handle, tcpAxisPos, flangeAxisPos)) {
-        cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
-        return true;
+        return cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos) == sucess;
     }
     return false;
 }
@@ -118,8 +164,7 @@ bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *
 bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos) {
     double joint[6];
     if (convertFlangeAxisPos2Joint(robot_handle, axisAnglePos, joint)) {
-        moveToJointPos(robot_handle, joint);
-        return true;
+        return moveToJointPos(robot_handle, joint) == sucess;
     }
     return false;
 }
@@ -139,6 +184,7 @@ bool moveToTcpAxisPos(int robotHandle, double *tcpAnglePos) {
 // ============================================================
 bool moveToFlangeEulePos(int robotHandle, double *flangeEulePos) {
     double flangeAxisAnglePos[6];
-    cr_Eule2AxisAngle(flangeEulePos, flangeAxisAnglePos);
+    if (cr_Eule2AxisAngle(flangeEulePos, flangeAxisAnglePos) != sucess)
+        return false;
     return moveToFlangeAxisPos(robotHandle, flangeAxisAnglePos);
 }

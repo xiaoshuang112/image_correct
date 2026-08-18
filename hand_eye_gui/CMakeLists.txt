@@ -57,7 +57,7 @@ endif()
 #  相机 SDK 检测（ORB 和 MVS 互斥）
 # ============================================================
 
-option(USE_ORB "Build with Orbbec camera (disable MVS)" OFF)
+option(USE_ORB "Build with Orbbec camera (disable MVS)" ON)
 
 if(USE_ORB)
     # ---- ORB 模式 ----
@@ -92,6 +92,7 @@ endif()
 # ============================================================
 set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/DiagnosticLogger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CalibrationController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/auth_check.cpp
@@ -99,6 +100,7 @@ set(GUI_SRCS
 
 # MOC 需要处理的头文件
 set(GUI_HDRS
+    ${CMAKE_CURRENT_SOURCE_DIR}/DiagnosticLogger.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CalibrationController.hpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.hpp
 )
@@ -197,6 +199,24 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     OUTPUT_NAME "hand-eye-${CAM_SUFFIX}"
+)
+
+string(TIMESTAMP APP_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
+execute_process(
+    COMMAND git rev-parse --short=12 HEAD
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE APP_GIT_COMMIT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(NOT APP_GIT_COMMIT)
+    set(APP_GIT_COMMIT "unknown")
+endif()
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    QT_MESSAGELOGCONTEXT
+    APP_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
+    APP_BUILD_TIMESTAMP="${APP_BUILD_TIMESTAMP}"
+    APP_GIT_COMMIT="${APP_GIT_COMMIT}"
 )
 
 # 继承父目录的宏定义（useMVS 等）

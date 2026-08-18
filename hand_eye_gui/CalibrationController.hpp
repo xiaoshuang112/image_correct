@@ -5,12 +5,9 @@
 #include <QString>
 #include <QImage>
 #include <QTimer>
-#include <QMutex>
 #include <thread>
 #include <atomic>
 #include <memory>
-#include <iostream>
-#include <sstream>
 
 #include "my_base.h"
 #include "cameras/AICamera.hpp"
@@ -19,29 +16,6 @@
 #include "basestruct.h"
 
 class CameraImageProvider;
-
-/// 拦截 std::cout / std::cerr 的自定义 streambuf，每行输出回调
-class LogStreambuf : public std::streambuf {
-public:
-    using Callback = std::function<void(const std::string&)>;
-    explicit LogStreambuf(Callback cb) : m_cb(std::move(cb)) {}
-protected:
-    int overflow(int c) override {
-        if (c != EOF) {
-            m_buf += static_cast<char>(c);
-            if (c == '\n') { flush(); }
-        }
-        return c;
-    }
-    int sync() override { flush(); return 0; }
-private:
-    void flush() {
-        if (!m_buf.empty() && m_cb) m_cb(m_buf);
-        m_buf.clear();
-    }
-    std::string m_buf;
-    Callback m_cb;
-};
 
 /**
  * @brief 手眼标定 QML 控制器
@@ -71,6 +45,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
     Q_PROPERTY(QString resultText     READ resultText     NOTIFY resultTextChanged)
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
+    Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
 
 public:
     explicit CalibrationController(QObject* parent = nullptr);
@@ -97,6 +72,7 @@ public:
     QString statusMessage() const   { return m_statusMessage; }
     QString resultText() const      { return m_resultText; }
     QString logText() const         { return m_logText; }
+    QString diagnosticLogPath() const;
 
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
@@ -157,7 +133,13 @@ private:
     void onPreviewTick();
 
     // ---- 标定线程 ----
-    void calibrationThreadFunc();
+    void calibrationThreadFunc(QString calibrationType,
+                               QString robotIp,
+                               int robotPort,
+                               QString robotPassword,
+                               int cameraToTcpEnd,
+                               std::shared_ptr<AICamera> camera);
+    void waitForCalibrationThread();
 
     // ---- 内部辅助 ----
     void setStatus(const QString& msg);
@@ -167,10 +149,6 @@ private:
 
     /// 将 cv::Mat (BGR) 转为 QImage (RGB)，线程安全发送到 ImageProvider
     void publishFrame(const cv::Mat& bgr);
-
-    /// 重定向 stdout/stderr 到日志
-    void redirectConsole();
-    void restoreConsole();
 
     /// 追加日志（线程安全）
     void appendLog(const QString& line);
@@ -202,12 +180,6 @@ private:
     QString  m_resultText;
     QString  m_logText;
 
-    // 控制台重定向
-    LogStreambuf* m_coutBuf  = nullptr;
-    LogStreambuf* m_cerrBuf  = nullptr;
-    std::streambuf* m_oldCout = nullptr;
-    std::streambuf* m_oldCerr = nullptr;
-
     // 硬件句柄
     RobotHandle m_robotHandle = 0;
     std::shared_ptr<AICamera> m_camera;
@@ -216,18 +188,21 @@ private:
     CameraImageProvider* m_imageProvider = nullptr;
     QTimer*              m_previewTimer  = nullptr;
     std::unique_ptr<CharucoDetector> m_previewDetector;
+    quint64 m_previewFrameCount = 0;
+    quint64 m_previewEmptyCount = 0;
+    bool m_haveBoardDetectionState = false;
+    bool m_lastBoardDetected = false;
 
     // 标定线程
     std::thread        m_calibThread;
     std::atomic<bool>  m_cancelRequested{false};
+    std::atomic<int>   m_lastLoggedProgress{-1};
 
     // 路径
     std::string m_appPath;
     std::string m_paramPath;
     std::string m_calibrationPath;
 
-    // 线程安全
-    mutable QMutex m_statusMutex;
 };
 
 #endif // CALIBRATION_CONTROLLER_HPP
