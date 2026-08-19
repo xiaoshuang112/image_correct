@@ -35,15 +35,21 @@ static bool jointsWithinTolerance(const double actual[6], const double target[6]
 
 CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS_NUM])//, const std::vector<double>& basepose)
 {
-    double init_joint[ROB_AXIS_NUM];
-    cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
+    double init_joint[ROB_AXIS_NUM] = {};
+    CRresult result = cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
+    if (result != sucess) {
+        APP_LOG_ERROR("robot.motion", QString("line_move_get_initial_joint_failed handle=%1 error=%2")
+            .arg(robot_handle).arg(result));
+        std::cerr << "[moveLine] 读取当前关节角失败 ret=" << result << std::endl;
+        return result;
+    }
     // if ( jointpos.size()!=ROB_AXIS_NUM){        
     //     std::cerr << "moveLine失败：未连接或参数错误 " << std::endl;
     //     return robotmode_error;
     // }
     // 读取当前激活的TCP
 	int tcpindex = -1;
-	CRresult result =  cr_cfg_tcp_active_get(robot_handle, &tcpindex);
+	result = cr_cfg_tcp_active_get(robot_handle, &tcpindex);
 	if (result != sucess)
 	{		
         std::cerr << "[moveLine] 读取当前激活的TCP失败 " << std::endl;
@@ -157,6 +163,8 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
 
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - startedAt).count();
+    (void)polls;
+    (void)elapsedMs;
     if (reached) {
         APP_LOG_INFO("robot.motion", QString("joint_move_complete elapsed_ms=%1 polls=%2 "
                                               "read_failures=%3 actual=%4")
@@ -166,6 +174,7 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                                                "read_failures=%3 target=%4 last_actual=%5")
             .arg(elapsedMs).arg(polls).arg(readFailures)
             .arg(formatSixValues(joint), formatSixValues(actual)));
+        return operate_timeout;
     }
 
     return ret;
@@ -218,9 +227,19 @@ bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *
 }
 
 bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM], double flangeEule[ROB_AXIS_NUM]){
-    double flangePos[ROB_AXIS_NUM];
-    cr_kineForward(robot_handle, const_cast<double*>(joint), flangePos);
-    cr_AxisAngle2Eule(flangePos, flangeEule);
+    double flangePos[ROB_AXIS_NUM] = {};
+    CRresult ret = cr_kineForward(robot_handle, const_cast<double*>(joint), flangePos);
+    if (ret != sucess) {
+        APP_LOG_ERROR("robot.kinematics", QString("forward_kinematics_failed handle=%1 error=%2 joint=%3")
+            .arg(robot_handle).arg(ret).arg(formatSixValues(joint)));
+        return false;
+    }
+    ret = cr_AxisAngle2Eule(flangePos, flangeEule);
+    if (ret != sucess) {
+        APP_LOG_ERROR("robot.kinematics", QString("axis_to_euler_failed handle=%1 error=%2 flange_axis=%3")
+            .arg(robot_handle).arg(ret).arg(formatSixValues(flangePos)));
+        return false;
+    }
     return true;
 }
 

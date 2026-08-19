@@ -213,11 +213,24 @@ execute_process(
 if(NOT APP_GIT_COMMIT)
     set(APP_GIT_COMMIT "unknown")
 endif()
+execute_process(
+    COMMAND git status --porcelain --untracked-files=no
+    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+    OUTPUT_VARIABLE APP_GIT_STATUS_OUTPUT
+    OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET
+)
+if(APP_GIT_STATUS_OUTPUT)
+    set(APP_GIT_WORKTREE_STATE "dirty")
+else()
+    set(APP_GIT_WORKTREE_STATE "clean")
+endif()
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     QT_MESSAGELOGCONTEXT
     APP_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
     APP_BUILD_TIMESTAMP="${APP_BUILD_TIMESTAMP}"
     APP_GIT_COMMIT="${APP_GIT_COMMIT}"
+    APP_GIT_WORKTREE_STATE="${APP_GIT_WORKTREE_STATE}"
 )
 
 # 继承父目录的宏定义（useMVS 等）

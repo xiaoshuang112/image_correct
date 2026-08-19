@@ -16,7 +16,7 @@ OrbbecCameraV2::OrbbecCameraV2(const CONFIG& config)
 
 OrbbecCameraV2::~OrbbecCameraV2() {
     APP_LOG_INFO("orbbec", "instance_destroying");
-    close();
+    OrbbecCameraV2::close();
 }
 
 bool OrbbecCameraV2::open() {
@@ -48,8 +48,18 @@ bool OrbbecCameraV2::open() {
                 std::cout << "Found " << deviceList->deviceCount() << " device(s):" << std::endl;
                 for (uint32_t i = 0; i < deviceList->deviceCount(); i++) {
                     auto device = deviceList->getDevice(i);
+                    if (!device) {
+                        APP_LOG_WARNING("orbbec", QString("device_entry_invalid index=%1 reason=null_device")
+                            .arg(i));
+                        continue;
+                    }
                     auto info = device->getDeviceInfo();
-                    std::cout << "  Device " << i << ": " 
+                    if (!info) {
+                        APP_LOG_WARNING("orbbec", QString("device_entry_invalid index=%1 reason=null_info")
+                            .arg(i));
+                        continue;
+                    }
+                    std::cout << "  Device " << i << ": "
                               << info->name() << " (SN: " << info->serialNumber() << ")" << std::endl;
                 }
                 
@@ -57,7 +67,11 @@ bool OrbbecCameraV2::open() {
                 // 或者通过设备序号/序列号来识别
                 for (uint32_t i = 0; i < deviceList->deviceCount(); i++) {
                     auto device = deviceList->getDevice(i);
+                    if (!device)
+                        continue;
                     auto info = device->getDeviceInfo();
+                    if (!info)
+                        continue;
                     
                     // 如果配置中指定了设备序列号，用序列号匹配
                     // 否则直接使用第一个网络设备
@@ -109,6 +123,11 @@ bool OrbbecCameraV2::open() {
         
         // 3. 验证设备连接并打印设备信息
         auto deviceInfo = m_device->getDeviceInfo();
+        if (!deviceInfo) {
+            APP_LOG_ERROR("orbbec", "open_failed reason=null_device_info");
+            std::cerr << "Failed to read camera device information" << std::endl;
+            return false;
+        }
         std::cout << "Device Info: " << deviceInfo->name() 
                   << ", PID: 0x" << std::hex << deviceInfo->pid() << std::dec
                   << ", SN: " << deviceInfo->serialNumber()
@@ -130,7 +149,13 @@ bool OrbbecCameraV2::open() {
         // 打印所有可用的彩色流配置
         std::cout << "Available color profiles:" << std::endl;
         for (uint32_t i = 0; i < colorProfiles->count(); i++) {
-            auto profile = colorProfiles->getProfile(i)->as<ob::VideoStreamProfile>();
+            auto streamProfile = colorProfiles->getProfile(i);
+            if (!streamProfile) {
+                APP_LOG_WARNING("orbbec", QString("color_profile_invalid index=%1 reason=null_profile")
+                    .arg(i));
+                continue;
+            }
+            auto profile = streamProfile->as<ob::VideoStreamProfile>();
             if (profile) {
                 std::cout << "  " << profile->width() << "x" << profile->height() 
                           << " @ " << profile->fps() << "fps, Format: " << profile->format() << std::endl;
@@ -150,13 +175,18 @@ bool OrbbecCameraV2::open() {
         if (!colorProfile) {
             // 如果精确匹配失败，使用第一个可用的配置
             std::cout << "Exact match not found, using default profile" << std::endl;
-            colorProfile = colorProfiles->getProfile(OB_PROFILE_DEFAULT)
-                ->as<ob::VideoStreamProfile>();
+            auto defaultProfile = colorProfiles->getProfile(OB_PROFILE_DEFAULT);
+            if (defaultProfile)
+                colorProfile = defaultProfile->as<ob::VideoStreamProfile>();
         }
 
         if (colorProfile) {
             m_configPtr->enableStream(colorProfile);
             auto videoProfile = colorProfile->as<ob::VideoStreamProfile>();
+            if (!videoProfile) {
+                APP_LOG_ERROR("orbbec", "open_failed reason=color_profile_cast_failed");
+                return false;
+            }
             m_videoStreamProfile = videoProfile;
             std::cout << "Using color: " << videoProfile->width() << "x" << videoProfile->height() 
                       << " @ " << videoProfile->fps() << "fps, Format: " << videoProfile->format() << std::endl;
@@ -306,11 +336,12 @@ void OrbbecCameraV2::close() {
 
 cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
     const uint64_t attempt = ++m_captureAttempts;
-    if (!m_isOpened) {
+    if (!m_isOpened || !m_pipeline) {
         const uint64_t failures = ++m_consecutiveCaptureFailures;
         if (failures == 1 || failures % 100 == 0)
-            APP_LOG_ERROR("orbbec", QString("capture_rejected reason=not_open attempt=%1 consecutive_failures=%2")
-                .arg(attempt).arg(failures));
+            APP_LOG_ERROR("orbbec", QString("capture_rejected reason=not_open attempt=%1 consecutive_failures=%2 pipeline=%3")
+                .arg(attempt).arg(failures)
+                .arg(reinterpret_cast<quintptr>(m_pipeline.get()), 0, 16));
         return cv::Mat();
     }
 
@@ -328,12 +359,16 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
         // 获取彩色帧
         auto colorFrame = frameSet->getFrame(OB_FRAME_COLOR);
         if (!colorFrame) {
+            APP_LOG_WARNING("orbbec", QString("capture_missing_color_frame attempt=%1")
+                .arg(attempt));
             std::cerr << "Failed to get color frame" << std::endl;
             return cv::Mat();
         }
 
         // Convert the color frame to RGB format.
         if (!m_formatConverter) {
+            APP_LOG_ERROR("orbbec", QString("capture_converter_unavailable attempt=%1")
+                .arg(attempt));
             std::cerr << "Format converter is not available" << std::endl;
             return cv::Mat();
         }
@@ -349,37 +384,58 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
                 m_formatConverter->setFormatConvertType(FORMAT_YUYV_TO_RGB);
             }
             else {
+                APP_LOG_ERROR("orbbec", QString("capture_unsupported_color_format attempt=%1 format=%2")
+                    .arg(attempt).arg(static_cast<int>(colorFrame->format())));
                 std::cout << "Color format is not support!" << std::endl;
                 return cv::Mat();
             }
             auto converted = m_formatConverter->process(colorFrame);
             if (!converted) {
+                APP_LOG_ERROR("orbbec", QString("capture_color_conversion_returned_null attempt=%1 stage=to_rgb format=%2")
+                    .arg(attempt).arg(static_cast<int>(colorFrame->format())));
                 std::cerr << "Failed to convert color frame to RGB" << std::endl;
                 return cv::Mat();
             }
             colorFrame = converted->as<ob::ColorFrame>();
-            if (!colorFrame)
+            if (!colorFrame) {
+                APP_LOG_ERROR("orbbec", QString("capture_color_cast_failed attempt=%1 stage=to_rgb")
+                    .arg(attempt));
                 return cv::Mat();
+            }
         }
         // Processed the color frames to BGR format, use OpenCV to save to disk.
         m_formatConverter->setFormatConvertType(FORMAT_RGB_TO_BGR);
         auto converted = m_formatConverter->process(colorFrame);
         if (!converted) {
+            APP_LOG_ERROR("orbbec", QString("capture_color_conversion_returned_null attempt=%1 stage=rgb_to_bgr")
+                .arg(attempt));
             std::cerr << "Failed to convert RGB frame to BGR" << std::endl;
             return cv::Mat();
         }
         colorFrame = converted->as<ob::ColorFrame>();
-        if (!colorFrame)
+        if (!colorFrame) {
+            APP_LOG_ERROR("orbbec", QString("capture_color_cast_failed attempt=%1 stage=rgb_to_bgr")
+                .arg(attempt));
             return cv::Mat();
+        }
 
 
         // 获取帧数据
         auto videoFrame = colorFrame->as<const ob::VideoFrame>();
+        if (!videoFrame) {
+            APP_LOG_ERROR("orbbec", QString("capture_video_frame_cast_failed attempt=%1")
+                .arg(attempt));
+            return cv::Mat();
+        }
         int width = videoFrame->getWidth();
         int height = videoFrame->getHeight();
         void* data = videoFrame->getData();
 
         if (!data || width <= 0 || height <= 0) {
+            APP_LOG_ERROR("orbbec", QString("capture_invalid_frame_data attempt=%1 data=%2 size=%3x%4")
+                .arg(attempt)
+                .arg(reinterpret_cast<quintptr>(data), 0, 16)
+                .arg(width).arg(height));
             std::cerr << "Invalid frame data" << std::endl;
             return cv::Mat();
         }
@@ -428,19 +484,36 @@ cv::Mat OrbbecCameraV2::captureOneFrame(int timeoutMs) {
 
 
 int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs) {
-    if (!m_isOpened) {
+    bgrImage.release();
+    depthImage.release();
+    const uint64_t attempt = ++m_captureAttempts;
+
+    if (!m_isOpened || !m_pipeline) {
+        APP_LOG_ERROR("orbbec", QString("capture_depth_rejected attempt=%1 reason=camera_not_open pipeline=%2")
+            .arg(attempt)
+            .arg(reinterpret_cast<quintptr>(m_pipeline.get()), 0, 16));
         std::cerr << "Camera not opened" << std::endl;
+        return -1;
+    }
+
+    if (!m_formatConverter) {
+        APP_LOG_ERROR("orbbec", QString("capture_depth_rejected attempt=%1 reason=converter_unavailable")
+            .arg(attempt));
         return -1;
     }
 
     try {
         std::shared_ptr<ob::Frame> colorFrame = nullptr;
         std::shared_ptr<ob::Frame> depthFrame = nullptr;
+        int framesetTimeouts = 0;
+        int missingColorFrames = 0;
+        int missingDepthFrames = 0;
         for (size_t loop = 0; loop < 5; loop++)
         {
             // 等待帧集合
             auto frameSet = m_pipeline->waitForFrameset(timeoutMs);
             if (!frameSet) {
+                ++framesetTimeouts;
                 std::cerr << "Wait for frameset timeout" << std::endl;
                 continue;
             }
@@ -448,51 +521,78 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
             // 获取彩色帧
             if (nullptr == colorFrame)
             {
-                colorFrame = frameSet->getFrame(OB_FRAME_COLOR);
-
-                if (nullptr!=colorFrame)
+                auto candidateColorFrame = frameSet->getFrame(OB_FRAME_COLOR);
+                if (candidateColorFrame)
                 {
                     // Convert the color frame to RGB format.
-                    if (colorFrame->format() != OB_FORMAT_RGB) {
-                        if (colorFrame->format() == OB_FORMAT_MJPG) {
+                    if (candidateColorFrame->format() != OB_FORMAT_RGB) {
+                        if (candidateColorFrame->format() == OB_FORMAT_MJPG) {
                             m_formatConverter->setFormatConvertType(FORMAT_MJPG_TO_RGB);
                         }
-                        else if (colorFrame->format() == OB_FORMAT_UYVY) {
+                        else if (candidateColorFrame->format() == OB_FORMAT_UYVY) {
                             m_formatConverter->setFormatConvertType(FORMAT_UYVY_TO_RGB);
                         }
-                        else if (colorFrame->format() == OB_FORMAT_YUYV) {
+                        else if (candidateColorFrame->format() == OB_FORMAT_YUYV) {
                             m_formatConverter->setFormatConvertType(FORMAT_YUYV_TO_RGB);
                         }
                         else {
+                            APP_LOG_ERROR("orbbec", QString("capture_depth_unsupported_color_format attempt=%1 loop=%2 format=%3")
+                                .arg(attempt).arg(loop)
+                                .arg(static_cast<int>(candidateColorFrame->format())));
                             std::cout << "Color format is not support!" << std::endl;
+                            return -1;
                         }
-                        colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
+
+                        auto converted = m_formatConverter->process(candidateColorFrame);
+                        if (!converted) {
+                            APP_LOG_WARNING("orbbec", QString("capture_depth_color_conversion_returned_null attempt=%1 loop=%2 format=%3")
+                                .arg(attempt).arg(loop)
+                                .arg(static_cast<int>(candidateColorFrame->format())));
+                            ++missingColorFrames;
+                            continue;
+                        }
+                        candidateColorFrame = converted->as<ob::ColorFrame>();
+                        if (!candidateColorFrame) {
+                            APP_LOG_WARNING("orbbec", QString("capture_depth_color_cast_failed attempt=%1 loop=%2")
+                                .arg(attempt).arg(loop));
+                            ++missingColorFrames;
+                            continue;
+                        }
                     }
-                    // Processed the color frames to BGR format, use OpenCV to save to disk.
 
-                    // m_formatConverter->setFormatConvertType(FORMAT_RGB_TO_BGR);
-                    // colorFrame = m_formatConverter->process(colorFrame)->as<ob::ColorFrame>();
-
-                    if (colorFrame) {
-                        auto videoFrame = colorFrame->as<const ob::VideoFrame>();
+                    auto videoFrame = candidateColorFrame->as<const ob::VideoFrame>();
+                    if (!videoFrame) {
+                        APP_LOG_WARNING("orbbec", QString("capture_depth_video_cast_failed attempt=%1 loop=%2")
+                            .arg(attempt).arg(loop));
+                        ++missingColorFrames;
+                    } else {
                         int width = videoFrame->getWidth();
                         int height = videoFrame->getHeight();
                         void* data = videoFrame->getData();
 
                         if (data && width > 0 && height > 0) {
                             cv::Mat rgbImage(cv::Size(width, height), CV_8UC3, data);
-                            // rgbImage = rgbImage.clone();
                             cv::cvtColor(rgbImage, bgrImage, cv::COLOR_RGB2BGR);
+                            colorFrame = candidateColorFrame;
+                        } else {
+                            APP_LOG_WARNING("orbbec", QString("capture_depth_invalid_color_data attempt=%1 loop=%2 data=%3 size=%4x%5")
+                                .arg(attempt).arg(loop)
+                                .arg(reinterpret_cast<quintptr>(data), 0, 16)
+                                .arg(width).arg(height));
+                            ++missingColorFrames;
                         }
                     }
+                } else {
+                    ++missingColorFrames;
                 }
-                
             }
 
             // 获取深度帧
             if (nullptr == depthFrame)
             {
                 depthFrame = frameSet->getFrame(OB_FRAME_DEPTH);
+                if (!depthFrame)
+                    ++missingDepthFrames;
             }
 
             if (nullptr == depthFrame || nullptr == colorFrame)
@@ -504,26 +604,67 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
                 std::shared_ptr<ob::DepthFrame> depthData = depthFrame->as<ob::DepthFrame>();
                 if (nullptr==depthData)
                 {
+                    APP_LOG_WARNING("orbbec", QString("capture_depth_frame_cast_failed attempt=%1 loop=%2")
+                        .arg(attempt).arg(loop));
                     depthFrame = nullptr;
+                    ++missingDepthFrames;
                 }
                 else
                 {
-                    cv::Mat depthMat(depthData->height(), depthData->width(), CV_16UC1, depthData->data());
-                    // float scale = depthData->getValueScale();
-                    // std::cout<< "scale  "<< scale<<std::endl;
+                    const int width = depthData->width();
+                    const int height = depthData->height();
+                    void* data = depthData->data();
+                    if (!data || width <= 0 || height <= 0) {
+                        APP_LOG_WARNING("orbbec", QString("capture_depth_invalid_depth_data attempt=%1 loop=%2 data=%3 size=%4x%5")
+                            .arg(attempt).arg(loop)
+                            .arg(reinterpret_cast<quintptr>(data), 0, 16)
+                            .arg(width).arg(height));
+                        depthFrame = nullptr;
+                        ++missingDepthFrames;
+                        continue;
+                    }
+                    cv::Mat depthMat(height, width, CV_16UC1, data);
                     depthImage = depthMat.clone();
+                    APP_LOG_DEBUG("orbbec", QString("capture_depth_success attempt=%1 loop=%2 color=%3x%4 depth=%5x%6 "
+                                                     "frameset_timeouts=%7 missing_color=%8 missing_depth=%9")
+                        .arg(attempt).arg(loop)
+                        .arg(bgrImage.cols).arg(bgrImage.rows)
+                        .arg(depthImage.cols).arg(depthImage.rows)
+                        .arg(framesetTimeouts).arg(missingColorFrames).arg(missingDepthFrames));
                     break;
-                }           
+                }
 
             }
+        }
+        if (bgrImage.empty() || depthImage.empty()) {
+            APP_LOG_ERROR("orbbec", QString("capture_depth_failed attempt=%1 loops=5 timeout_ms=%2 "
+                                             "frameset_timeouts=%3 missing_color=%4 missing_depth=%5 "
+                                             "color_empty=%6 depth_empty=%7")
+                .arg(attempt).arg(timeoutMs).arg(framesetTimeouts)
+                .arg(missingColorFrames).arg(missingDepthFrames)
+                .arg(bgrImage.empty()).arg(depthImage.empty()));
+            return -1;
         }
         return 0;
     }
     catch (const ob::Error& e) {
+        APP_LOG_ERROR("orbbec", QString("capture_depth_exception type=orbbec attempt=%1 message=%2 function=%3 args=%4")
+            .arg(attempt)
+            .arg(QString::fromUtf8(e.getMessage()))
+            .arg(QString::fromUtf8(e.getFunction()))
+            .arg(QString::fromUtf8(e.getArgs())));
         std::cerr << "Capture with depth error: " << e.getMessage() << std::endl;
         return -1;
     }
+    catch (const std::exception& e) {
+        APP_LOG_ERROR("orbbec", QString("capture_depth_exception type=std attempt=%1 message=%2")
+            .arg(attempt).arg(QString::fromUtf8(e.what())));
+        std::cerr << "Capture with depth error: " << e.what() << std::endl;
+        return -1;
+    }
     catch (...) {
+        APP_LOG_ERROR("orbbec", QString("capture_depth_exception type=unknown attempt=%1")
+            .arg(attempt));
         std::cerr << "Capture with depth error: " << std::endl;
         return -1;
     }    

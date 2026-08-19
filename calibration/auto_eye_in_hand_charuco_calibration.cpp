@@ -26,9 +26,11 @@
 #include <sstream>
 #include <iomanip>
 #include <filesystem>
+#include <limits>
 
 #include "utils/robot_util.hpp"
 #include "utils/calib_transform.hpp"
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 #include "calibration_utils.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
 
@@ -61,8 +63,15 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
     bool use_center) {
+    if (!camera) {
+        APP_LOG_ERROR("calibration.pose_search", "pose_evaluation_failed reason=null_camera");
+        return {0, 0, cv::Point2f(0, 0)};
+    }
     cv::Mat f = camera->captureOneFrame(1500);
-    if (f.empty()) return {0, 0, cv::Point2f(0, 0)};
+    if (f.empty()) {
+        APP_LOG_WARNING("calibration.pose_search", "pose_evaluation_failed reason=empty_frame");
+        return {0, 0, cv::Point2f(0, 0)};
+    }
 
         if (nullptr!=g_callback) {
             auto now = std::chrono::high_resolution_clock::now();
@@ -75,7 +84,11 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
             cv::imwrite(img_name, f);
 
             int call_ret = g_callback((char*)img_name.c_str(), (int)img_name.length(), 1);
-
+            if (call_ret == -1) {
+                APP_LOG_WARNING("calibration.pose_search", "pose_evaluation_cancelled");
+                return {-std::numeric_limits<double>::infinity(), 0,
+                        cv::Point2f(0, 0)};
+            }
         }
 
 
@@ -120,15 +133,26 @@ static double tryCandidatePoses(int robot_handle,
     double bestFlangeEule[6]) {
     // 保存原始关节角
     double initJointPos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos((RobotHandle)robot_handle, initJointPos) != sucess)
+    CRresult ret = cr_get_jointActualPos((RobotHandle)robot_handle, initJointPos);
+    if (ret != sucess) {
+        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=joint_read error=%1")
+            .arg(ret));
         return -1.0;
-    if(cr_get_tcpActualPose(robot_handle, tcp_aa)!= sucess)
-       return -1.0;
+    }
+    ret = cr_get_tcpActualPose(robot_handle, tcp_aa);
+    if (ret != sucess) {
+        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=tcp_read error=%1")
+            .arg(ret));
+        return -1.0;
+    }
     
     double bestFlangeEule_j[ROB_AXIS_NUM];
     double best_s = -1e18;
     bool found = false;
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j);
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j)) {
+        APP_LOG_ERROR("calibration.pose_search", "candidate_search_failed reason=tcp_to_flange_conversion");
+        return -1.0;
+    }
     for (const auto& euler : candidates) {
              
         if(moveToFlangeEulePos(robot_handle, (double*)euler.data())!= true)
@@ -147,7 +171,12 @@ static double tryCandidatePoses(int robot_handle,
             if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
-
+                const CRresult restoreRet = moveToJointPos(robot_handle, initJointPos);
+                if (restoreRet != sucess)
+                    std::cerr << "[autoCalib] 取消后恢复机器人位置失败 ret="
+                              << restoreRet << std::endl;
+                APP_LOG_WARNING("calibration.pose_search", QString("candidate_search_cancelled restore_error=%1")
+                    .arg(restoreRet));
                 return -1.0;
             }            
         }    
@@ -155,7 +184,12 @@ static double tryCandidatePoses(int robot_handle,
     }
 
     // 回到原始位置（由调用方决定是否运动到最佳位姿）
-    moveToJointPos(robot_handle, initJointPos);   
+    const CRresult restoreRet = moveToJointPos(robot_handle, initJointPos);
+    if (restoreRet != sucess) {
+        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=restore_position error=%1")
+            .arg(restoreRet));
+        return -1.0;
+    }
     if (!found){          
         return -1.0;}
 
@@ -164,15 +198,23 @@ static double tryCandidatePoses(int robot_handle,
 }
 
 // 多步长 XY 搜索（Phase 2 / Phase 4 共用）
-static void searchXYSteps(int robot_handle,
+static bool searchXYSteps(int robot_handle,
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
     const double* steps, int num_steps,
     double tcp_aa[6]) {
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    CRresult ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (ret != sucess) {
+        APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=tcp_read error=%1")
+            .arg(ret));
+        return false;
+    }
 
-    double flangeEulePos[ROB_AXIS_NUM];
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+    double flangeEulePos[ROB_AXIS_NUM] = {};
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+        APP_LOG_ERROR("calibration.pose_search", "xy_search_failed reason=tcp_to_flange_conversion");
+        return false;
+    }
 
     for (int i = 0; i < num_steps; i++) {
         double step = steps[i];
@@ -188,10 +230,19 @@ static void searchXYSteps(int robot_handle,
         double bestFlangeEule[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, xy_candidates, bestFlangeEule) > score) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEule);  
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
+                APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=move_best step_index=%1 step_mm=%2")
+                    .arg(i).arg(step));
+                return false;
+            }
             //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);   
-            convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);         
+            ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+            if (ret != sucess ||
+                !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+                APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=refresh_pose step_index=%1 tcp_error=%2")
+                    .arg(i).arg(ret));
+                return false;
+            }
         }
 
         if (nullptr!=g_callback) {
@@ -200,12 +251,18 @@ static void searchXYSteps(int robot_handle,
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
 
-                return;
+                APP_LOG_WARNING("calibration.pose_search", QString("xy_search_cancelled step_index=%1")
+                    .arg(i));
+                return false;
             }            
         }           
 
     }
-    moveToTcpAxisPos(robot_handle, tcp_aa);    
+    if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
+        APP_LOG_ERROR("calibration.pose_search", "xy_search_failed reason=final_move");
+        return false;
+    }
+    return true;
 }
 
 // 一次公式反算找最佳位姿：板居中、面积 25-30%、长边平行
@@ -221,9 +278,20 @@ bool autoFindBestPose(int robot_handle,
     const double Z_MAX_OFFSET = 600.0;
 
     // ---- 固定 rx=-180°, ry=0°（标定板水平），保留 rz ----
-    double flangeEulePos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
-    rotateFlangeToHorizon(robot_handle, flangeEulePos);
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    double flangeEulePos[ROB_AXIS_NUM] = {};
+    double tcp_aa[ROB_AXIS_NUM] = {};
+    if (!rotateFlangeToHorizon(robot_handle, flangeEulePos)) {
+        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=initial_horizontal_rotation");
+        return false;
+    }
+    CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (tcpRet != sucess) {
+        APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=initial_tcp_read error=%1")
+            .arg(tcpRet));
+        return false;
+    }
+    APP_LOG_INFO("calibration.pose_search", QString("best_pose_begin handle=%1 save_dir=%2")
+        .arg(robot_handle).arg(QString::fromStdString(save_dir)));
 
     // 标定板总角点数
     cv::Size board_sz = detector.getChessboardSize();
@@ -262,11 +330,22 @@ bool autoFindBestPose(int robot_handle,
         double best_s = tryCandidatePoses(robot_handle, camera, detector,
                                            false, z_candidates, bestFlangeEule);
         if (best_s > cur_score) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEule);            
-            cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);          
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
+                APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=z_search reason=move_best");
+                return false;
+            }
+            tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+            if (tcpRet != sucess) {
+                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=z_search reason=tcp_read error=%1")
+                    .arg(tcpRet));
+                return false;
+            }
             std::cout << "[autoFindBestPose] Phase1 选定 Z=" << tcp_aa[2] << std::endl;
         }
-        moveToTcpAxisPos(robot_handle, tcp_aa);        
+        if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
+            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=z_search reason=final_move");
+            return false;
+        }
     }
     frame = camera->captureOneFrame(1500);
     // ================================================================
@@ -280,8 +359,11 @@ bool autoFindBestPose(int robot_handle,
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
         const double steps[] = {240, 120, 60};
-        searchXYSteps(robot_handle, camera, detector,
-                       steps, std::size(steps), tcp_aa);
+        if (!searchXYSteps(robot_handle, camera, detector,
+                           steps, std::size(steps), tcp_aa)) {
+            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=coarse_xy");
+            return false;
+        }
     }
     frame = camera->captureOneFrame(1500);
 
@@ -323,7 +405,11 @@ bool autoFindBestPose(int robot_handle,
             return true;
         }
         
-        convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+        if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+            APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=tcp_to_flange iter=%1")
+                .arg(iter));
+            return false;
+        }
         //ret = cr_AxisAngle2Eule(tcp_aa, eulePos);
         // 利用像素面积比估算 Z 调整（area ∝ 1/Z²）
         std::vector<cv::Point2f> hull;
@@ -345,24 +431,37 @@ bool autoFindBestPose(int robot_handle,
         std::tie(cur_s, n, bc) = evaluatePose(camera, detector, false);
 
         std::vector<std::array<double, 6>> zrz_candidates;
-        for (double frac = 0.5; frac <= 1.0 + 1e-9; frac += 0.5)
+        for (int fracStep = 1; fracStep <= 2; ++fracStep) {
+            const double frac = fracStep * 0.5;
             zrz_candidates.push_back({flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + dZ * frac,
                                       flangeEulePos[3], flangeEulePos[4], bound_camera_angle(flangeEulePos[5] + dRz_deg * frac)});
+        }
 
         double bestFlangeEulePos[ROB_AXIS_NUM];
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, zrz_candidates, bestFlangeEulePos) > cur_s) {
-            moveToFlangeEulePos(robot_handle, bestFlangeEulePos);            
-            cv::Mat frame = camera->captureOneFrame(1500);            
-            if(cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) == sucess)                        
-                convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
-                flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
+            if (!moveToFlangeEulePos(robot_handle, bestFlangeEulePos)) {
+                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=move_best iter=%1")
+                    .arg(iter));
+                return false;
+            }
+            tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+            if (tcpRet != sucess ||
+                !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=refresh_pose iter=%1 tcp_error=%2")
+                    .arg(iter).arg(tcpRet));
+                return false;
+            }
+            flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
         } else {
             std::cout << "[autoFindBestPose] Z+rz 无改善, iter=" << iter << std::endl;
             break;
         }
     }
-    moveToTcpAxisPos(robot_handle, tcp_aa);    
+    if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
+        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=zrz reason=final_move");
+        return false;
+    }
     frame = camera->captureOneFrame(1500);
     // ================================================================
     // Phase 4: XY 精细搜索
@@ -370,14 +469,22 @@ bool autoFindBestPose(int robot_handle,
 
     std::cout << "[autoFindBestPose] Phase4: XY 精细搜索..." << std::endl;
     const double steps_fine[] = {60, 30, 15};    
-    searchXYSteps(robot_handle, camera, detector, steps_fine, std::size(steps_fine), tcp_aa);
+    if (!searchXYSteps(robot_handle, camera, detector,
+                       steps_fine, std::size(steps_fine), tcp_aa)) {
+        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=fine_xy");
+        return false;
+    }
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
-        moveToTcpAxisPos(robot_handle, tcp_aa);
+        if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
+            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=final_position");
+            return false;
+        }
         frame = camera->captureOneFrame(1500);       
     }
 
+    APP_LOG_INFO("calibration.pose_search", "best_pose_complete");
     return true;
 }
 
@@ -390,11 +497,19 @@ static bool computeZValues(int robot_handle,
     int cameraToTcpEnd,
     CharucoDetector& detector,
     double z_out_[3]) {
-    double tcp_aa[ROB_AXIS_NUM], tcpEulePos[ROB_AXIS_NUM], oriFlangeEulePos[ROB_AXIS_NUM], outZ[3];
+    double tcp_aa[ROB_AXIS_NUM] = {};
+    double oriFlangeEulePos[ROB_AXIS_NUM] = {};
     //double orig_joint[ROB_AXIS_NUM];
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos);
-    cr_AxisAngle2Eule(tcp_aa, tcpEulePos);
+    const CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (tcpRet != sucess) {
+        APP_LOG_ERROR("calibration.height", QString("z_values_failed reason=tcp_read error=%1")
+            .arg(tcpRet));
+        return false;
+    }
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos)) {
+        APP_LOG_ERROR("calibration.height", "z_values_failed reason=tcp_to_flange_conversion");
+        return false;
+    }
     // 估计相机到标定板的距离
     cv::Mat frame;
     std::vector<cv::Point2f> corners;
@@ -414,7 +529,8 @@ static bool computeZValues(int robot_handle,
     double joint[ROB_AXIS_NUM];
     std::copy(oriFlangeEulePos, oriFlangeEulePos + ROB_AXIS_NUM, euler);
     double max_reach = MIN_SAFE_HEIGHT;
-    for (double h = 1400.0; h > MIN_SAFE_HEIGHT; h -= 10.0) {
+    for (int heightMm = 1400; heightMm > static_cast<int>(MIN_SAFE_HEIGHT); heightMm -= 10) {
+        const double h = static_cast<double>(heightMm);
         euler[2] = z_board + h;
         if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
             max_reach = h;
@@ -577,10 +693,20 @@ bool generateCandidates(int robot_handle,
                         std::shared_ptr<AICamera>& camera,
                         const double z_values[3],
                         std::vector<PoseCandidate>& candidates) {
-    double euler[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM], 
-         flangeEulePos[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
-    convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos);
+    double euler[ROB_AXIS_NUM] = {};
+    double tcp_aa[ROB_AXIS_NUM] = {};
+    double flangeEulePos[ROB_AXIS_NUM] = {};
+    double joint[ROB_AXIS_NUM] = {};
+    const CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (tcpRet != sucess) {
+        APP_LOG_ERROR("calibration.candidates", QString("candidate_generation_failed reason=tcp_read error=%1")
+            .arg(tcpRet));
+        return false;
+    }
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+        APP_LOG_ERROR("calibration.candidates", "candidate_generation_failed reason=tcp_to_flange_conversion");
+        return false;
+    }
     cv::Mat frame = camera->captureOneFrame(1500);
     //cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
     int total = 0, ik_ok = 0;
@@ -614,6 +740,8 @@ bool generateCandidates(int robot_handle,
 
     std::cout << "[autoCalib] 729 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
+    APP_LOG_INFO("calibration.candidates", QString("candidate_generation_complete total=%1 reachable=%2")
+        .arg(total).arg(ik_ok));
     return !candidates.empty();
 }
 } // anonymous namespace
@@ -643,9 +771,11 @@ bool autoEyeInHandCharucoCalibration(
     CharucoDetector detector(board_config);
 
     // ---- Phase 1b: 自动寻找最佳位姿 ----
-    double tcp_aa[ROB_AXIS_NUM];   
-    rotateFlangeToHorizon(robot_handle, NULL);
-    cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
+        result.message = "机器人水平姿态调整失败";
+        APP_LOG_ERROR("calibration", "auto_eye_in_hand_aborted phase=initial_rotation");
+        return false;
+    }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
     if (!autoFindBestPose(robot_handle, camera, detector,
                             save_dir, callback)) {

@@ -64,27 +64,24 @@ namespace fs = std::filesystem;
 
 
 std::string string_format(const char* format, ...) {
-#if 1 // 最大长度限制：1024 - 1
-    char buff[4096] = { 0 };
+    if (!format)
+        return {};
+
     va_list args;
     va_start(args, format);
-    vsprintf(buff, format, args);
+    va_list countArgs;
+    va_copy(countArgs, args);
+    const int count = vsnprintf(nullptr, 0, format, countArgs);
+    va_end(countArgs);
+    if (count < 0) {
+        va_end(args);
+        return {};
+    }
+
+    std::vector<char> buffer(static_cast<size_t>(count) + 1U, '\0');
+    vsnprintf(buffer.data(), buffer.size(), format, args);
     va_end(args);
-    std::string str(buff);
-    return str;
-#else // 无长度限制
-    va_list args;
-    va_start(args, format);
-    int count = vsnprintf(NULL, 0, format, args); // 使用vsnprintf：warning C4996; 使用vsnprintf_s：无法自动计算长度
-    va_end(args);
-    va_start(args, format);
-    char* buff = (char*)malloc(count * sizeof(wchar_t));
-    vsnprintf(buff, count, format, args);
-    va_end(args);
-    std::string str(buff, count);
-    free(buff);
-    return str;
-#endif
+    return std::string(buffer.data(), static_cast<size_t>(count));
 }
 
 

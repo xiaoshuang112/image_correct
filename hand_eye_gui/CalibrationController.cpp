@@ -386,10 +386,36 @@ bool CalibrationController::checkAndRestoreRobotHand()
         return false;
     }
 
-    // 等待 JointIdle
-    while (cr_get_robotMode(m_robotHandle, &robotMode) == sucess) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (robotMode == JointIdle) break;
+    const auto waitForMode = [this, &robotMode](enum RobotModes target,
+                                                const char* phase) {
+        constexpr int kPollIntervalMs = 100;
+        constexpr int kMaxPolls = 300;  // 最多等待 30 秒
+        QElapsedTimer timer;
+        timer.start();
+        for (int poll = 1; poll <= kMaxPolls; ++poll) {
+            const CRresult modeRet = cr_get_robotMode(m_robotHandle, &robotMode);
+            if (modeRet != sucess) {
+                APP_LOG_ERROR("robot", QString("mode_wait_failed phase=%1 error=%2 poll=%3 elapsed_ms=%4")
+                    .arg(QString::fromLatin1(phase)).arg(modeRet).arg(poll).arg(timer.elapsed()));
+                return false;
+            }
+            if (robotMode == target) {
+                APP_LOG_INFO("robot", QString("mode_wait_complete phase=%1 mode=%2 polls=%3 elapsed_ms=%4")
+                    .arg(QString::fromLatin1(phase)).arg(static_cast<int>(robotMode))
+                    .arg(poll).arg(timer.elapsed()));
+                return true;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
+        }
+        APP_LOG_ERROR("robot", QString("mode_wait_timeout phase=%1 target=%2 last_mode=%3 elapsed_ms=%4")
+            .arg(QString::fromLatin1(phase)).arg(static_cast<int>(target))
+            .arg(static_cast<int>(robotMode)).arg(timer.elapsed()));
+        return false;
+    };
+
+    if (!waitForMode(JointIdle, "power_on")) {
+        setStatus("等待机械臂上电就绪超时或通信失败");
+        return false;
     }
 
     res = cr_enable(m_robotHandle);
@@ -399,10 +425,9 @@ bool CalibrationController::checkAndRestoreRobotHand()
         return false;
     }
 
-    // 等待 ProgramStop
-    while (cr_get_robotMode(m_robotHandle, &robotMode) == sucess) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(50));
-        if (robotMode == ProgramStop) break;
+    if (!waitForMode(ProgramStop, "enable")) {
+        setStatus("等待机械臂使能就绪超时或通信失败");
+        return false;
     }
 
     setStatus("机械臂已上电使能");

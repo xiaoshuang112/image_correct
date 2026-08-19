@@ -33,6 +33,9 @@ bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& objec
 /**
  * @brief 从已采集的 ChArUco 图像标定相机内参
  *
+ * 检测全部图像，但非线性优化仅使用按画面覆盖度筛选的有限代表帧，
+ * 避免数百帧输入在嵌入式设备上长时间占满 CPU。
+ *
  * @param save_dir       采集数据目录（包含 000.jpg ...）
  * @param detector       ChArUco 检测器
  * @param camera_matrix  [out] 相机内参矩阵 3x3

@@ -731,9 +731,13 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir,
     // ---- 保存结果 ----
     {
         std::string out_file = save_dir + "/eye_to_hand_result.yaml";
-        saveCalibrationResult(out_file, "T_base_camera",
-                               result.T_base_camera, result.camera_matrix, result.dist_coeffs,
-                               result.reproj_error * 1000.0, result.valid_frames);
+        if (!saveCalibrationResult(out_file, "T_base_camera",
+                                   result.T_base_camera, result.camera_matrix, result.dist_coeffs,
+                                   result.reproj_error * 1000.0, result.valid_frames)) {
+            result.success = false;
+            result.message = "标定结果 YAML 写入失败: " + out_file;
+            return false;
+        }
     }
 
     std::cout << "\n========== 标定结果 ==========" << std::endl;

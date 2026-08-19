@@ -568,9 +568,14 @@ bool calibrateHandEyeFromDisk(
     estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
 
     if (!output_yaml.empty() && result.success) {
-        saveCalibrationResult(output_yaml, "T_flange_camera",
-                               result.T_flange_camera, result.camera_matrix, result.dist_coeffs,
-                               result.reproj_error * 1000.0, result.valid_frames);
+        if (!saveCalibrationResult(output_yaml, "T_flange_camera",
+                                   result.T_flange_camera, result.camera_matrix, result.dist_coeffs,
+                                   result.reproj_error * 1000.0, result.valid_frames)) {
+            result.success = false;
+            result.message = "标定结果 YAML 写入失败: " + output_yaml;
+            std::cerr << "[autoCalib] " << result.message << std::endl;
+            return false;
+        }
     }
 
     if (result.success) {

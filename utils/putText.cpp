@@ -42,6 +42,7 @@ static int is_mostly_arabic(const std::wstring& ws,
 #include "Util.h"
 #include <iostream>
 #include <filesystem>
+#include <sstream>
 
 extern std::string g_appPath;
 
@@ -158,6 +159,10 @@ private:
 
 void putTextZH(Mat& dst, const char* str, Point org, Scalar color, int fontSize, int font_type, const char* fn, bool italic, bool underline) {
     CV_Assert(dst.data != 0 && (dst.channels() == 1 || dst.channels() == 3));
+    if (!str) {
+        std::cerr << "putTextZH ignored null text" << std::endl;
+        return;
+    }
     int x, y, r, b;
     if (org.x > dst.cols || org.y > dst.rows) {
         return;
@@ -195,23 +200,22 @@ void putTextZH(Mat& dst, const char* str, Point org, Scalar color, int fontSize,
         return;
     }   
 
-    char buf[4096] = {0};
     cv::Size row_sz = ft2->getTextSize(str, fontSize, cv::FILLED, NULL);
     cv::Point pt_span(0, row_sz.height + 2);
     cv::Point pt_org = org;
 
-    strcpy(buf, str);
-    const char* ln = strtok(buf, "\n");
-    int outTextY = 0;
-    while (ln != 0) {
+    std::istringstream lines(str);
+    std::string line;
+    while (std::getline(lines, line)) {
+        if (line.empty())
+            continue;
         if (dst.rows - pt_org.y <= pt_span.y || dst.cols - pt_org.x <= pt_span.x * 6) {
             std::cout << "PutText overflow\n";
             break;
         }
 
-        ft2->putText(dst, ln, pt_org, fontSize, color, cv::FILLED, cv::LINE_AA, true);
+        ft2->putText(dst, line, pt_org, fontSize, color, cv::FILLED, cv::LINE_AA, true);
         pt_org += pt_span;
-        ln = strtok(0, "\n");
     }
 
     fontEnginePool->release(ft2,font_type);

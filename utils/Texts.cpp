@@ -19,72 +19,66 @@
 #include <sstream>
 #include <string>
 #include <cstring>
+#include <vector>
 #include <iconv.h>
 
 namespace util::TextOps {
     void utf8_to_gb(const char *src, char *dst, int len) {
-        int ret = 0;
-        size_t inlen = std::strlen(src) + 1;
-        size_t outlen = len;
+        if (!src || !dst || len <= 0)
+            return;
+
+        const size_t sourceLength = std::strlen(src);
+        std::vector<char> input(src, src + sourceLength + 1);
+        char* inbuf = input.data();
+        size_t inlen = sourceLength;
+        size_t outlen = static_cast<size_t>(len - 1);
+        dst[0] = '\0';
 
         // duanqn: The iconv function in Linux requires non-const char *
-        // So we need to copy the source string
-        char *inbuf = (char *) std::malloc(len);
-        char *inbuf_hold = inbuf;   // iconv may change the address of inbuf
-        // so we use another pointer to keep the address
-        std::memcpy(inbuf, src, len);
-
         char *outbuf = dst;
-        iconv_t cd;
-        cd = iconv_open("GBK", "UTF-8");
+        iconv_t cd = iconv_open("GBK", "UTF-8");
         if (cd != (iconv_t)-1) {
-            ret = iconv(cd, &inbuf, &inlen, &outbuf, &outlen);
-            if (ret != 0) {
+            const size_t ret = iconv(cd, &inbuf, &inlen, &outbuf, &outlen);
+            if (ret == static_cast<size_t>(-1)) {
                 std::printf("iconv failed err: %s\n", strerror(errno));
             }
-
+            *outbuf = '\0';
             iconv_close(cd);
         }
-        std::free(inbuf_hold);   // Don't pass in inbuf as it may have been modified
     }
 
     void gb_to_utf8(const char *src, char *dst, int len) {
-        int ret = 0;
-        size_t inlen = std::strlen(src) + 1;
-        size_t outlen = len;
+        if (!src || !dst || len <= 0)
+            return;
+
+        const size_t sourceLength = std::strlen(src);
+        std::vector<char> input(src, src + sourceLength + 1);
+        char* inbuf = input.data();
+        size_t inlen = sourceLength;
+        size_t outlen = static_cast<size_t>(len - 1);
 
         // duanqn: The iconv function in Linux requires non-const char *
-        // So we need to copy the source string
-        char *inbuf = (char *) std::malloc(len);
-        char *inbuf_hold = inbuf;   // iconv may change the address of inbuf
-        // so we use another pointer to keep the address
-        std::memcpy(inbuf, src, len);
-
-        char *outbuf2 = NULL;
-        char *outbuf = dst;
-        iconv_t cd;
+        std::vector<char> temporary;
+        char* outputStart = dst;
 
         // starkwong: if src==dst, the string will become invalid during conversion since UTF-8 is 3 chars in Chinese but GBK is mostly 2 chars
         if (src == dst) {
-            outbuf2 = (char *) std::malloc(len);
-            std::memset(outbuf2, 0, len);
-            outbuf = outbuf2;
+            temporary.assign(static_cast<size_t>(len), '\0');
+            outputStart = temporary.data();
         }
+        outputStart[0] = '\0';
+        char* outbuf = outputStart;
 
-        cd = iconv_open("UTF-8", "GBK");
+        iconv_t cd = iconv_open("UTF-8", "GBK");
         if (cd != (iconv_t)-1) {
-            ret = iconv(cd, &inbuf, &inlen, &outbuf, &outlen);
-            if (ret != 0)
+            const size_t ret = iconv(cd, &inbuf, &inlen, &outbuf, &outlen);
+            if (ret == static_cast<size_t>(-1))
                 std::printf("iconv failed err: %s\n", strerror(errno));
-
-            if (outbuf2 != NULL) {
-                std::strcpy(dst, outbuf2);
-                std::free(outbuf2);
-            }
-
+            *outbuf = '\0';
             iconv_close(cd);
         }
-        std::free(inbuf_hold);   // Don't pass in inbuf as it may have been modified
+        if (!temporary.empty())
+            std::memcpy(dst, temporary.data(), static_cast<size_t>(len));
     }
 
     namespace {
@@ -94,14 +88,18 @@ namespace util::TextOps {
     std::wstring from(std::string const &origin) {
         // std::size_t mbsrtowcs(wchar_t* dst, const char** src, std::size_t len, std::mbstate_t* ps);
         std::mbstate_t state = std::mbstate_t();
-        char const *data = origin.data();
-        size_t len = 0;
-        len = 1+std::mbsrtowcs/*_s*/(/*&len, */nullptr/*, 0*/, &data, origin.length(), &state);
-        wchar_t *unicode = new wchar_t[len + 1];
-        std::mbsrtowcs/*_s*/(/*&len, */unicode/*, len*/, &data, len, &state);
-        std::wstring result = unicode;
-        delete[] unicode;
-        return result;
+        char const *data = origin.c_str();
+        const size_t len = std::mbsrtowcs(nullptr, &data, 0, &state);
+        if (len == static_cast<size_t>(-1))
+            return {};
+
+        std::vector<wchar_t> unicode(len + 1, L'\0');
+        state = std::mbstate_t();
+        data = origin.c_str();
+        const size_t converted = std::mbsrtowcs(unicode.data(), &data, len, &state);
+        if (converted == static_cast<size_t>(-1))
+            return {};
+        return std::wstring(unicode.data(), converted);
         /*
         DWORD charCount = MultiByteToWideChar(charcode, 0, origin.data(), -1, NULL, 0);
         wchar_t* unicode = new wchar_t[charCount + 1];
@@ -116,15 +114,18 @@ namespace util::TextOps {
     std::string const to(std::wstring const &unicode) {
         // std::size_t wcsrtombs(char* dst, const wchar_t** src, std::size_t len, std::mbstate_t* ps);
         std::mbstate_t state = std::mbstate_t();
-        wchar_t const *data = unicode.data();
-        size_t len = 0;
-        len = std::wcsrtombs(nullptr, &data, 0, &state)+1;
-        char *native = new char[len + 1];
-        std::wcsrtombs(native, &data, len, &state);
+        wchar_t const *data = unicode.c_str();
+        const size_t len = std::wcsrtombs(nullptr, &data, 0, &state);
+        if (len == static_cast<size_t>(-1))
+            return {};
 
-        std::string result = native;
-        delete[] native;     
-        return result;
+        std::vector<char> native(len + 1, '\0');
+        state = std::mbstate_t();
+        data = unicode.c_str();
+        const size_t converted = std::wcsrtombs(native.data(), &data, len, &state);
+        if (converted == static_cast<size_t>(-1))
+            return {};
+        return std::string(native.data(), converted);
         /*
         DWORD byteCount = WideCharToMultiByte(charcode, NULL, unicode.c_str(), -1, NULL, 0, NULL, FALSE);
         char* native = new char[byteCount + 1];

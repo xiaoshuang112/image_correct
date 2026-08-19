@@ -1,62 +1,262 @@
 #include "camera_calibration.hpp"
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 
 #include <opencv2/calib3d.hpp>
+#include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <algorithm>
 #include <random>
 #include <filesystem>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <limits>
+#include <numeric>
 
 namespace {
 
-// ——— 分批标定 + 逐帧过滤 + 最终标定 ———
-// 每批最多 batch_size 帧，标定后只取误差最小的前 30% 进入候选池，
-// 最后从候选池取误差最小的 max_good 帧做最终标定。
+constexpr size_t kMaxInitialOptimizationFrames = 60;
+constexpr size_t kMaxRefineOptimizationFrames = 48;
+constexpr size_t kMinCalibrationFrames = 5;
+constexpr int kFastCalibrationSolverFlag = cv::CALIB_USE_LU;
+
+using Clock = std::chrono::steady_clock;
+
+static long long elapsedMilliseconds(const Clock::time_point& startedAt)
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               Clock::now() - startedAt)
+        .count();
+}
+
+struct ViewDescriptor {
+    size_t sourceIndex = 0;
+    std::array<double, 6> feature{};
+    size_t cornerCount = 0;
+};
+
+static ViewDescriptor describeView(size_t sourceIndex,
+                                   const std::vector<cv::Point2f>& points,
+                                   const cv::Size& imageSize)
+{
+    ViewDescriptor descriptor;
+    descriptor.sourceIndex = sourceIndex;
+    descriptor.cornerCount = points.size();
+    if (points.empty() || imageSize.width <= 0 || imageSize.height <= 0)
+        return descriptor;
+
+    cv::Point2d center(0.0, 0.0);
+    for (const auto& point : points) {
+        center.x += point.x;
+        center.y += point.y;
+    }
+    center.x /= static_cast<double>(points.size());
+    center.y /= static_cast<double>(points.size());
+
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(points, hull);
+    const double imageArea = static_cast<double>(imageSize.width) *
+                             static_cast<double>(imageSize.height);
+    const double hullArea = hull.size() >= 3 ? std::abs(cv::contourArea(hull)) : 0.0;
+    const double scale = imageArea > 0.0
+        ? std::sqrt(std::max(0.0, hullArea / imageArea))
+        : 0.0;
+
+    const cv::RotatedRect rectangle = cv::minAreaRect(points);
+    double angleDegrees = rectangle.angle;
+    if (rectangle.size.width < rectangle.size.height)
+        angleDegrees += 90.0;
+    const double angle = angleDegrees * CV_PI / 180.0;
+    const double major = std::max<double>(rectangle.size.width, rectangle.size.height);
+    const double minor = std::min<double>(rectangle.size.width, rectangle.size.height);
+    const double aspect = major > 1e-6 ? minor / major : 0.0;
+
+    descriptor.feature = {
+        center.x / static_cast<double>(imageSize.width),
+        center.y / static_cast<double>(imageSize.height),
+        scale,
+        aspect,
+        std::cos(2.0 * angle),
+        std::sin(2.0 * angle)
+    };
+    return descriptor;
+}
+
+static double viewDistanceSquared(const ViewDescriptor& lhs,
+                                  const ViewDescriptor& rhs)
+{
+    const double dx = lhs.feature[0] - rhs.feature[0];
+    const double dy = lhs.feature[1] - rhs.feature[1];
+    const double ds = lhs.feature[2] - rhs.feature[2];
+    const double da = lhs.feature[3] - rhs.feature[3];
+    const double dc = lhs.feature[4] - rhs.feature[4];
+    const double dn = lhs.feature[5] - rhs.feature[5];
+    return 4.0 * dx * dx + 4.0 * dy * dy + 9.0 * ds * ds +
+           da * da + 0.25 * dc * dc + 0.25 * dn * dn;
+}
+
+// 用最远点采样保留中心位置、成像尺度、透视形变和画面旋转均有差异的帧。
+// 这一步只做几何统计，不进入非线性优化，适合先处理数百帧输入。
+static std::vector<size_t> selectRepresentativeViews(
+    const std::vector<std::vector<cv::Point2f>>& imagePoints,
+    const cv::Size& imageSize,
+    const std::vector<size_t>& candidateIndices,
+    size_t maxFrames)
+{
+    if (candidateIndices.size() <= maxFrames)
+        return candidateIndices;
+
+    std::vector<ViewDescriptor> descriptors;
+    descriptors.reserve(candidateIndices.size());
+    size_t maxCornerCount = 1;
+    for (const size_t index : candidateIndices) {
+        descriptors.push_back(describeView(index, imagePoints[index], imageSize));
+        maxCornerCount = std::max(maxCornerCount, imagePoints[index].size());
+    }
+
+    // 从角点最完整的帧开始；相同角点数时保持磁盘顺序，结果可复现。
+    size_t seed = 0;
+    for (size_t i = 1; i < descriptors.size(); ++i) {
+        if (descriptors[i].cornerCount > descriptors[seed].cornerCount)
+            seed = i;
+    }
+
+    std::vector<bool> used(descriptors.size(), false);
+    std::vector<size_t> selectedDescriptorIndices;
+    selectedDescriptorIndices.reserve(maxFrames);
+    selectedDescriptorIndices.push_back(seed);
+    used[seed] = true;
+
+    while (selectedDescriptorIndices.size() < maxFrames) {
+        size_t best = descriptors.size();
+        double bestScore = -1.0;
+        for (size_t candidate = 0; candidate < descriptors.size(); ++candidate) {
+            if (used[candidate])
+                continue;
+
+            double minDistance = std::numeric_limits<double>::max();
+            for (const size_t selected : selectedDescriptorIndices) {
+                minDistance = std::min(
+                    minDistance,
+                    viewDistanceSquared(descriptors[candidate], descriptors[selected]));
+            }
+            const double cornerQuality = static_cast<double>(descriptors[candidate].cornerCount) /
+                                         static_cast<double>(maxCornerCount);
+            const double score = minDistance * (0.85 + 0.15 * cornerQuality) +
+                                 0.001 * cornerQuality;
+            if (score > bestScore) {
+                bestScore = score;
+                best = candidate;
+            }
+        }
+        if (best == descriptors.size())
+            break;
+        used[best] = true;
+        selectedDescriptorIndices.push_back(best);
+    }
+
+    std::vector<size_t> selected;
+    selected.reserve(selectedDescriptorIndices.size());
+    for (const size_t descriptorIndex : selectedDescriptorIndices)
+        selected.push_back(descriptors[descriptorIndex].sourceIndex);
+    return selected;
+}
+
+static bool calibrationResultIsValid(double error,
+                                     const cv::Mat& cameraMatrix,
+                                     const cv::Mat& distortion)
+{
+    return std::isfinite(error) && error >= 0.0 &&
+           cameraMatrix.rows == 3 && cameraMatrix.cols == 3 &&
+           cv::checkRange(cameraMatrix) && cv::checkRange(distortion);
+}
+
+// 初始优化只使用最多 60 个有代表性的视角，避免输入帧数直接放大
+// calibrateCamera 的非线性参数规模。
 static bool calibrateCameraFiltered(
     const std::vector<std::vector<cv::Point3f>>& object_points,
     const std::vector<std::vector<cv::Point2f>>& image_points,
     const cv::Size& image_size,
     cv::Mat& camera_matrix,
     cv::Mat& dist_coeffs) {
-    int n_final = 65;
-    float fRatio = sqrt((float)n_final / image_points.size());
-    int  wantedNum =std::max<int>( (int)(image_points.size() * fRatio), std::min<int>(image_points.size(), n_final * 2));
-    std::vector<std::vector<cv::Point3f>> object_points_l = object_points;
-    std::vector<std::vector<cv::Point2f>> image_points_l = image_points;
-    if(filterDataForCameraCalibration(object_points_l, image_points_l, image_size, camera_matrix, dist_coeffs, wantedNum))
-       filterDataForCameraCalibration(object_points_l, image_points_l, image_size, camera_matrix, dist_coeffs, n_final);
+    if (object_points.size() != image_points.size() ||
+        object_points.size() < kMinCalibrationFrames) {
+        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_rejected object_frames=%1 image_frames=%2")
+            .arg(object_points.size()).arg(image_points.size()));
+        return false;
+    }
 
+    std::vector<size_t> candidates(object_points.size());
+    std::iota(candidates.begin(), candidates.end(), size_t{0});
+    const std::vector<size_t> selected = selectRepresentativeViews(
+        image_points, image_size, candidates, kMaxInitialOptimizationFrames);
 
-    camera_matrix = cv::Mat::eye(3, 3, CV_64F);
-    dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
+    std::vector<std::vector<cv::Point3f>> selectedObjectPoints;
+    std::vector<std::vector<cv::Point2f>> selectedImagePoints;
+    selectedObjectPoints.reserve(selected.size());
+    selectedImagePoints.reserve(selected.size());
+    for (const size_t index : selected) {
+        selectedObjectPoints.push_back(object_points[index]);
+        selectedImagePoints.push_back(image_points[index]);
+    }
+
+    const auto startedAt = Clock::now();
+    std::cout << "[cameraCalib] 初始非线性优化: " << selected.size()
+              << "/" << object_points.size() << " 帧" << std::endl;
+    APP_LOG_INFO("camera.calibration", QString("initial_optimization_begin input_frames=%1 selected_frames=%2 cap=%3 image=%4x%5 solver=LU")
+        .arg(object_points.size()).arg(selected.size()).arg(kMaxInitialOptimizationFrames)
+        .arg(image_size.width).arg(image_size.height));
+
+    cv::Mat candidateMatrix = cv::Mat::eye(3, 3, CV_64F);
+    cv::Mat candidateDistortion = cv::Mat::zeros(5, 1, CV_64F);
     std::vector<cv::Mat> rvecs, tvecs;
-    double final_err;
+    double final_err = std::numeric_limits<double>::quiet_NaN();
     try {
-        final_err = cv::calibrateCamera(object_points_l, image_points_l, image_size,
-                                        camera_matrix, dist_coeffs,
-                                        rvecs, tvecs);
+        final_err = cv::calibrateCamera(selectedObjectPoints, selectedImagePoints, image_size,
+                                        candidateMatrix, candidateDistortion,
+                                        rvecs, tvecs, kFastCalibrationSolverFlag);
     } catch (const cv::Exception& e) {
+        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_exception selected_frames=%1 elapsed_ms=%2 message=%3")
+            .arg(selected.size()).arg(elapsedMilliseconds(startedAt))
+            .arg(QString::fromUtf8(e.what())));
         std::cerr << "[autoCalib] 最终相机标定异常: " << e.what() << std::endl;
         return false;
     }
-    std::cout << "[autoCalib] 最终标定, " << object_points_l.size()
-              << " 帧, 重投影误差: "
+
+    if (!calibrationResultIsValid(final_err, candidateMatrix, candidateDistortion)) {
+        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_invalid_result error=%1 selected_frames=%2")
+            .arg(final_err).arg(selected.size()));
+        return false;
+    }
+
+    camera_matrix = candidateMatrix;
+    dist_coeffs = candidateDistortion;
+    const long long elapsedMs = elapsedMilliseconds(startedAt);
+    std::cout << "[cameraCalib] 初始优化完成: " << selected.size()
+              << " 帧, " << elapsedMs << " ms, 重投影误差 "
               << final_err << " px" << std::endl;
-    std::cout << "[autoCalib] 相机矩阵:\n" << camera_matrix << std::endl;
+    APP_LOG_INFO("camera.calibration", QString("initial_optimization_complete selected_frames=%1 elapsed_ms=%2 rms_px=%3")
+        .arg(selected.size()).arg(elapsedMs).arg(final_err, 0, 'f', 6));
     return true;
 }
 
-// 相机内参精化: 用全部有效帧数据做离群过滤后重标定
-// K, D 入/出: 初始值来自 filtered 管线, 返回精化结果
-static void refineCameraIntrinsics(
+// 全部帧仅执行快速 solvePnP 误差评估；真正的第二次非线性优化最多 48 帧。
+// K, D 入/出: 初始值来自代表帧优化，精化失败时保留初始结果。
+static bool refineCameraIntrinsics(
     cv::Mat& K, cv::Mat& D,
     const std::vector<std::vector<cv::Point3f>>& all_obj,
     const std::vector<std::vector<cv::Point2f>>& all_img,
     const cv::Size& image_size) {
 
-    int n = (int)all_obj.size();
-    if (n < 5) return;
+    const auto stageStartedAt = Clock::now();
+    const int n = static_cast<int>(all_obj.size());
+    if (n < static_cast<int>(kMinCalibrationFrames) || all_img.size() != all_obj.size())
+        return false;
+
+    APP_LOG_INFO("camera.calibration", QString("refine_evaluation_begin input_frames=%1 optimization_cap=%2")
+        .arg(n).arg(kMaxRefineOptimizationFrames));
 
     // 逐帧 solvePnP + 重投影误差 (快: ~0.2ms/帧)
     struct Rec { int idx; double err; };
@@ -74,8 +274,16 @@ static void refineCameraIntrinsics(
         if (proj.empty())
             continue;
         recs.push_back({i, sum / proj.size()});
+        if ((i + 1) % 50 == 0 || i + 1 == n) {
+            APP_LOG_INFO("camera.calibration", QString("refine_evaluation_progress processed=%1 total=%2 valid=%3 elapsed_ms=%4")
+                .arg(i + 1).arg(n).arg(recs.size()).arg(elapsedMilliseconds(stageStartedAt)));
+        }
     }
-    if ((int)recs.size() < 5) return;
+    if (recs.size() < kMinCalibrationFrames) {
+        APP_LOG_WARNING("camera.calibration", QString("refine_skipped reason=insufficient_pnp_frames valid=%1 total=%2")
+            .arg(recs.size()).arg(n));
+        return false;
+    }
 
     std::sort(recs.begin(), recs.end(),
               [](const Rec& a, const Rec& b) { return a.err < b.err; });
@@ -83,32 +291,132 @@ static void refineCameraIntrinsics(
     // solvePnP 可能会跳过退化帧，因此中位数索引必须基于 recs，
     // 不能继续使用输入帧数量，否则会发生越界访问。
     double median = recs[recs.size() / 2].err;
-    double thresh = median * 1.2;
+    std::vector<double> deviations;
+    deviations.reserve(recs.size());
+    for (const auto& record : recs)
+        deviations.push_back(std::abs(record.err - median));
+    std::sort(deviations.begin(), deviations.end());
+    const double mad = deviations[deviations.size() / 2];
+    const double robustSigma = 1.4826 * mad;
+    const double thresh = std::max(median * 1.35, median + 3.0 * robustSigma);
 
+    std::vector<size_t> eligibleIndices;
+    eligibleIndices.reserve(recs.size());
+    for (auto& r : recs) {
+        if (r.err <= thresh)
+            eligibleIndices.push_back(static_cast<size_t>(r.idx));
+    }
+    if (eligibleIndices.size() < kMinCalibrationFrames) {
+        APP_LOG_WARNING("camera.calibration", QString("refine_skipped reason=insufficient_inliers inliers=%1 median_px=%2 threshold_px=%3")
+            .arg(eligibleIndices.size()).arg(median, 0, 'f', 6).arg(thresh, 0, 'f', 6));
+        return false;
+    }
+
+    const std::vector<size_t> selectedIndices = selectRepresentativeViews(
+        all_img, image_size, eligibleIndices, kMaxRefineOptimizationFrames);
     std::vector<std::vector<cv::Point3f>> good_obj;
     std::vector<std::vector<cv::Point2f>> good_img;
-    for (auto& r : recs) {
-        if (r.err <= thresh) {
-            good_obj.push_back(all_obj[r.idx]);
-            good_img.push_back(all_img[r.idx]);
-        }
+    good_obj.reserve(selectedIndices.size());
+    good_img.reserve(selectedIndices.size());
+    for (const size_t index : selectedIndices) {
+        good_obj.push_back(all_obj[index]);
+        good_img.push_back(all_img[index]);
     }
-    std::cout << "[refineCam] 重投影过滤: " << good_obj.size() << "/" << n
-              << " 帧保留 (median=" << median << " px, thresh=" << thresh << " px)" << std::endl;
-    if ((int)good_obj.size() < 5) return;
+
+    const long long evaluationMs = elapsedMilliseconds(stageStartedAt);
+    std::cout << "[cameraCalib] 全量快速评估: " << recs.size() << "/" << n
+              << " 帧有效, " << eligibleIndices.size() << " 帧通过离群过滤; "
+              << "精化优化选取 " << selectedIndices.size() << " 帧, 评估耗时 "
+              << evaluationMs << " ms" << std::endl;
+    APP_LOG_INFO("camera.calibration", QString("refine_selection_complete evaluated=%1 eligible=%2 selected=%3 cap=%4 median_px=%5 mad_px=%6 threshold_px=%7 evaluation_ms=%8")
+        .arg(recs.size()).arg(eligibleIndices.size()).arg(selectedIndices.size())
+        .arg(kMaxRefineOptimizationFrames).arg(median, 0, 'f', 6)
+        .arg(mad, 0, 'f', 6).arg(thresh, 0, 'f', 6)
+        .arg(evaluationMs));
 
     std::vector<cv::Mat> rvecs, tvecs;
-    double final_err;
+    cv::Mat refinedMatrix = K.clone();
+    cv::Mat refinedDistortion = D.clone();
+    double final_err = std::numeric_limits<double>::quiet_NaN();
+    const auto optimizationStartedAt = Clock::now();
+    APP_LOG_INFO("camera.calibration", QString("refine_optimization_begin selected_frames=%1 solver=LU")
+        .arg(selectedIndices.size()));
     try {
         final_err = cv::calibrateCamera(good_obj, good_img, image_size,
-                                        K, D, rvecs, tvecs,
-                                        cv::CALIB_USE_INTRINSIC_GUESS);
+                                        refinedMatrix, refinedDistortion, rvecs, tvecs,
+                                        cv::CALIB_USE_INTRINSIC_GUESS |
+                                            kFastCalibrationSolverFlag);
     } catch (const cv::Exception& e) {
+        APP_LOG_ERROR("camera.calibration", QString("refine_optimization_exception selected_frames=%1 elapsed_ms=%2 message=%3")
+            .arg(selectedIndices.size()).arg(elapsedMilliseconds(optimizationStartedAt))
+            .arg(QString::fromUtf8(e.what())));
         std::cerr << "[refineCam] 相机内参精化异常: " << e.what() << std::endl;
-        return;
+        return false;
     }
-    std::cout << "[refineCam] 精化完成: " << good_obj.size() << " 帧, err=" << final_err << " px" << std::endl;
+
+    if (!calibrationResultIsValid(final_err, refinedMatrix, refinedDistortion)) {
+        APP_LOG_ERROR("camera.calibration", QString("refine_optimization_invalid_result error=%1 selected_frames=%2")
+            .arg(final_err).arg(selectedIndices.size()));
+        return false;
+    }
+    const long long optimizationMs = elapsedMilliseconds(optimizationStartedAt);
+
+    // 用全部有效帧快速复核精化结果，避免代表帧上的误差下降却损害整体。
+    std::vector<double> validationErrors;
+    validationErrors.reserve(all_obj.size());
+    for (size_t i = 0; i < all_obj.size(); ++i) {
+        cv::Mat rvec, tvec;
+        if (!cv::solvePnP(all_obj[i], all_img[i], refinedMatrix,
+                          refinedDistortion, rvec, tvec)) {
+            continue;
+        }
+        std::vector<cv::Point2f> projected;
+        cv::projectPoints(all_obj[i], rvec, tvec, refinedMatrix,
+                          refinedDistortion, projected);
+        if (projected.empty() || projected.size() != all_img[i].size())
+            continue;
+        double errorSum = 0.0;
+        for (size_t point = 0; point < projected.size(); ++point)
+            errorSum += cv::norm(projected[point] - all_img[i][point]);
+        validationErrors.push_back(errorSum / static_cast<double>(projected.size()));
+    }
+    if (validationErrors.size() < kMinCalibrationFrames) {
+        APP_LOG_WARNING("camera.calibration", QString("refine_rejected reason=insufficient_validation_frames valid=%1")
+            .arg(validationErrors.size()));
+        return false;
+    }
+    std::sort(validationErrors.begin(), validationErrors.end());
+    const double validationMedian = validationErrors[validationErrors.size() / 2];
+    const size_t p95Index = static_cast<size_t>(
+        0.95 * static_cast<double>(validationErrors.size() - 1));
+    const double validationP95 = validationErrors[p95Index];
+    const double validationMean = std::accumulate(
+        validationErrors.begin(), validationErrors.end(), 0.0) /
+        static_cast<double>(validationErrors.size());
+    if (!std::isfinite(validationMedian) || validationMedian > median * 1.05) {
+        APP_LOG_WARNING("camera.calibration", QString("refine_rejected reason=global_error_regression before_median_px=%1 after_median_px=%2 p95_px=%3")
+            .arg(median, 0, 'f', 6).arg(validationMedian, 0, 'f', 6)
+            .arg(validationP95, 0, 'f', 6));
+        return false;
+    }
+
+    K = refinedMatrix;
+    D = refinedDistortion;
+    std::cout << "[refineCam] 精化完成: " << good_obj.size() << " 帧, "
+              << optimizationMs << " ms, err=" << final_err << " px" << std::endl;
     std::cout << "[autoCalib] 相机矩阵:\n" << K << std::endl;
+    APP_LOG_INFO("camera.calibration", QString("refine_optimization_complete selected_frames=%1 optimization_ms=%2 total_refine_ms=%3 rms_px=%4")
+        .arg(selectedIndices.size()).arg(optimizationMs)
+        .arg(elapsedMilliseconds(stageStartedAt)).arg(final_err, 0, 'f', 6));
+    APP_LOG_INFO("camera.calibration", QString("global_validation_complete frames=%1 before_median_px=%2 after_mean_px=%3 after_median_px=%4 after_p95_px=%5")
+        .arg(validationErrors.size()).arg(median, 0, 'f', 6)
+        .arg(validationMean, 0, 'f', 6).arg(validationMedian, 0, 'f', 6)
+        .arg(validationP95, 0, 'f', 6));
+    std::cout << "[cameraCalib] 全量复核: " << validationErrors.size()
+              << " 帧, mean=" << validationMean
+              << " px, median=" << validationMedian
+              << " px, p95=" << validationP95 << " px" << std::endl;
+    return true;
 }
 
 } // anonymous namespace
@@ -121,15 +429,30 @@ bool loadImagesFromDisk(const std::string& save_dir,
                          std::vector<std::string>& img_files,
                          cv::Size& image_size) {
     namespace fs = std::filesystem;
-    for (auto& entry : fs::directory_iterator(save_dir)) {
-        std::string name = entry.path().filename().string();
-        if (name.size() >= 4 && name.substr(name.size() - 4) == ".jpg")
-            img_files.push_back(entry.path().string());
+    try {
+        for (auto& entry : fs::directory_iterator(save_dir)) {
+            std::string name = entry.path().filename().string();
+            if (name.size() >= 4 && name.substr(name.size() - 4) == ".jpg")
+                img_files.push_back(entry.path().string());
+        }
+    } catch (const fs::filesystem_error& e) {
+        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed directory=%1 message=%2")
+            .arg(QString::fromStdString(save_dir), QString::fromUtf8(e.what())));
+        std::cerr << "[cameraCalib] 读取图像目录失败: " << e.what() << std::endl;
+        return false;
     }
     std::sort(img_files.begin(), img_files.end());
-    if (img_files.empty()) return false;
+    if (img_files.empty()) {
+        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed directory=%1 reason=no_jpg_files")
+            .arg(QString::fromStdString(save_dir)));
+        return false;
+    }
     cv::Mat first = cv::imread(img_files[0]);
-    if (first.empty()) return false;
+    if (first.empty()) {
+        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed reason=first_image_unreadable path=%1")
+            .arg(QString::fromStdString(img_files[0])));
+        return false;
+    }
     image_size = first.size();
     return true;
 }
@@ -272,26 +595,45 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
                               cv::Mat& camera_matrix,
                               cv::Mat& dist_coeffs) {
 
+    const auto totalStartedAt = Clock::now();
     const auto& board_points = detector.getChessboardCorners3D();
 
     std::vector<std::string> img_files;
     cv::Size image_size;
-    if (!loadImagesFromDisk(save_dir, img_files, image_size))
+    if (!loadImagesFromDisk(save_dir, img_files, image_size)) {
+        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=image_discovery directory=%1 elapsed_ms=%2")
+            .arg(QString::fromStdString(save_dir)).arg(elapsedMilliseconds(totalStartedAt)));
         return false;
+    }
+
+    APP_LOG_INFO("camera.calibration", QString("calibration_begin directory=%1 discovered_images=%2 image=%3x%4 initial_cap=%5 refine_cap=%6")
+        .arg(QString::fromStdString(save_dir)).arg(img_files.size())
+        .arg(image_size.width).arg(image_size.height)
+        .arg(kMaxInitialOptimizationFrames).arg(kMaxRefineOptimizationFrames));
+    std::cout << "[cameraCalib] 发现 " << img_files.size()
+              << " 张图像，开始检测 ChArUco 角点" << std::endl;
 
     std::vector<std::vector<cv::Point3f>> object_points;
     std::vector<std::vector<cv::Point2f>> image_points;
-    std::random_device rd;
-    std::shuffle(img_files.begin(), img_files.end(), std::default_random_engine(rd()));
+    size_t unreadableImages = 0;
+    size_t detectionFailures = 0;
+    size_t insufficientCorners = 0;
+    const auto detectionStartedAt = Clock::now();
 
-    for (const auto& path : img_files) {
+    for (size_t fileIndex = 0; fileIndex < img_files.size(); ++fileIndex) {
+        const auto& path = img_files[fileIndex];
         cv::Mat img = cv::imread(path);
-        if (img.empty()) continue;
+        if (img.empty()) {
+            ++unreadableImages;
+            continue;
+        }
 
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
-        if (!detector.detectCorners(img, corners, ids))
+        if (!detector.detectCorners(img, corners, ids)) {
+            ++detectionFailures;
             continue;
+        }
 
         std::vector<cv::Point3f> pts3;
         std::vector<cv::Point2f> pts2;
@@ -305,16 +647,35 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
         if (pts3.size() >= 16) {
             object_points.push_back(pts3);
             image_points.push_back(pts2);
+        } else {
+            ++insufficientCorners;
+        }
+
+        const size_t processed = fileIndex + 1;
+        if (processed % 25 == 0 || processed == img_files.size()) {
+            APP_LOG_INFO("camera.calibration", QString("detection_progress processed=%1 total=%2 valid=%3 unreadable=%4 detection_failed=%5 insufficient_corners=%6 elapsed_ms=%7")
+                .arg(processed).arg(img_files.size()).arg(object_points.size())
+                .arg(unreadableImages).arg(detectionFailures).arg(insufficientCorners)
+                .arg(elapsedMilliseconds(detectionStartedAt)));
         }
     }
 
+    const long long detectionMs = elapsedMilliseconds(detectionStartedAt);
+    std::cout << "[cameraCalib] 角点检测完成: 有效 " << object_points.size()
+              << "/" << img_files.size() << " 帧, " << detectionMs << " ms" << std::endl;
+    APP_LOG_INFO("camera.calibration", QString("detection_complete total=%1 valid=%2 unreadable=%3 detection_failed=%4 insufficient_corners=%5 elapsed_ms=%6")
+        .arg(img_files.size()).arg(object_points.size()).arg(unreadableImages)
+        .arg(detectionFailures).arg(insufficientCorners).arg(detectionMs));
+
     if (object_points.size() < 5) {
+        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=detection reason=insufficient_frames valid=%1 minimum=5")
+            .arg(object_points.size()));
         std::cerr << "[autoCalib] 帧数不足，无法标定相机内参 (need >=5, got "
                   << object_points.size() << ")" << std::endl;
         return false;
     }
 
-    // 保存全部有效帧，过滤 + 精化用
+    // 保存全部有效帧，仅供快速 solvePnP 误差评估；非线性优化会先限帧。
     auto all_obj = object_points;
     auto all_img = image_points;
 
@@ -322,11 +683,24 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
     dist_coeffs = cv::Mat::zeros(5, 1, CV_64F);
 
     if (!calibrateCameraFiltered(object_points, image_points,
-                                 image_size, camera_matrix, dist_coeffs))
+                                 image_size, camera_matrix, dist_coeffs)) {
+        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=initial_optimization elapsed_ms=%1")
+            .arg(elapsedMilliseconds(totalStartedAt)));
         return false;
+    }
 
-    // 以过滤后的 K,D 为初值，用全部有效帧做离群过滤 + 重标定
-    refineCameraIntrinsics(camera_matrix, dist_coeffs,
-                           all_obj, all_img, image_size);
+    // 全部帧只做快速误差评估，第二次非线性优化限制为代表性内点子集。
+    const bool refined = refineCameraIntrinsics(camera_matrix, dist_coeffs,
+                                                all_obj, all_img, image_size);
+    if (!refined) {
+        APP_LOG_WARNING("camera.calibration", "refine_not_applied using_initial_intrinsics=1");
+        std::cout << "[cameraCalib] 精化未应用，保留初始内参" << std::endl;
+    }
+
+    const long long totalMs = elapsedMilliseconds(totalStartedAt);
+    APP_LOG_INFO("camera.calibration", QString("calibration_complete discovered=%1 valid=%2 refined=%3 total_ms=%4")
+        .arg(img_files.size()).arg(all_obj.size()).arg(refined).arg(totalMs));
+    std::cout << "[cameraCalib] 相机内参标定完成，总耗时 " << totalMs
+              << " ms" << std::endl;
     return true;
 }

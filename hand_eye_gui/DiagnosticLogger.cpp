@@ -361,8 +361,7 @@ bool DiagnosticLogger::openLogFileLocked(const QString& directory)
         if (previousLog.seek(previousLog.size() - tailSize)) {
             const QByteArray tail = previousLog.readAll();
             m_previousSessionUnclean =
-                !tail.contains("application_about_to_quit") &&
-                !tail.contains("event_loop_exited");
+                !tail.contains("application_shutdown_complete");
         }
     }
     rotateLogLocked();
