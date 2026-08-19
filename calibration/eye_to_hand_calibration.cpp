@@ -17,6 +17,7 @@
 
 #include "utils/robot_util.hpp"
 #include "utils/calib_transform.hpp"
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 
 using namespace calib_transform;
 
@@ -233,6 +234,16 @@ static int executeEyeToHandCollection(
 
         CRresult ret = moveToJointPos(robot_handle, candidates[i].data());
         if (ret != sucess) {
+            if (ret == robot_motion_cancelled ||
+                robotMotionCancellationRequested()) {
+                APP_LOG_EVENT_WARNING("calibration.collection",
+                                      "eye_to_hand_collection",
+                                      "cancelled",
+                                      {{"index", QString::number(i)},
+                                       {"captured", QString::number(captured)},
+                                       {"total", QString::number(total)}});
+                return -1;
+            }
             continue;
         }
 
@@ -276,7 +287,7 @@ static int executeEyeToHandCollection(
                                         (int)img_name.length(), progress);
                 if (-1 == call_ret) {
                     std::cerr << "\r[eyeToHand] 用户取消了  采集进度" << std::endl;
-                    return captured;
+                    return -1;
                 }
             }
         }
@@ -623,6 +634,12 @@ bool autoEyeToHandCharucoCalibration(
     int captured = executeEyeToHandCollection(
         robot_handle, pchRobotIP, camera, detector, candidates,
         save_dir, robot_poses, pose_config.min_corners, callback);
+
+    if (captured < 0 || robotMotionCancellationRequested()) {
+        result.message = "标定已取消";
+        std::cerr << "[eyeToHand] " << result.message << std::endl;
+        return false;
+    }
 
     if (captured < pose_config.min_valid_frames) {
         result.message = "有效帧数不足: " + std::to_string(captured) +

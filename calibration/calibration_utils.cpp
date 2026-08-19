@@ -241,6 +241,16 @@ bool executeCollection(int robot_handle,
         }        
         CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
         if(sucess != ret_move){
+            if (ret_move == robot_motion_cancelled ||
+                robotMotionCancellationRequested()) {
+                APP_LOG_EVENT_WARNING("calibration.collection",
+                                      "collection",
+                                      "cancelled",
+                                      {{"phase", "robot_move"},
+                                       {"index", QString::number(i)},
+                                       {"captured", QString::number(captured)}});
+                return false;
+            }
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
                                   "skip",

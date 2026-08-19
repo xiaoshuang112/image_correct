@@ -29,8 +29,8 @@ struct CalibrationResult {
 /**
  * @brief 自动眼在手 ChArUco 标定（CGXi SDK）
  *
- * 从起始轴角位姿出发，在欧拉空间生成 729（3⁶）个候选位姿组合，
- * IK 预过滤后逐点运动采集，自动完成手眼标定。
+ * 从起始轴角位姿出发，生成约 90 个兼顾高度、平移和旋转覆盖的候选位姿，
+ * IK 预过滤并按最近关节路径排序后逐点运动采集，自动完成手眼标定。
  * 如 camera_matrix 为空，从采集帧自动标定相机内参。
  *
  * @param robot_handle    CGXi RobotHandle（来自 cr_create_robot）

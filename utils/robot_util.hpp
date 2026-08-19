@@ -5,6 +5,15 @@
 #include "basestruct.h"
 #include <vector>
 
+using RobotMotionCancelCheck = bool (*)();
+
+// SDK 没有“用户取消”返回码，使用不会与 CRresult 正值枚举冲突的本地值。
+constexpr CRresult robot_motion_cancelled = static_cast<CRresult>(-1000);
+
+// 标定线程注册取消检查；传 nullptr 可恢复为不检查取消。
+void setRobotMotionCancelCheck(RobotMotionCancelCheck check);
+bool robotMotionCancellationRequested();
+
 // 运动到目标关节角（等效 goto_jointpos）
 CRresult moveToJointPos(int robot_handle, const double joint[6]);
 

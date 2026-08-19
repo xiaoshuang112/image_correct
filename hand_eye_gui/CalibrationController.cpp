@@ -1051,6 +1051,7 @@ void CalibrationController::startCalibration()
 
     m_running = true;
     m_cancelRequested = false;
+    setRobotMotionCancelCheck(&CalibrationController::robotMotionCancellationRequested);
     m_lastLoggedProgress = -1;
     m_progress = 0;
     setResult("");
@@ -1076,6 +1077,7 @@ void CalibrationController::startCalibration()
                             {"camera", QString::number(reinterpret_cast<quintptr>(m_camera.get()), 16)}});
     } catch (const std::exception& e) {
         m_running = false;
+        setRobotMotionCancelCheck(nullptr);
         const QString message = QString("无法启动标定线程: %1").arg(
             QString::fromLocal8Bit(e.what()));
         APP_LOG_EVENT_ERROR("calibration",
@@ -1451,6 +1453,7 @@ void CalibrationController::calibrationThreadFunc(
     }
 
 done:
+    setRobotMotionCancelCheck(nullptr);
     const bool robotHandleLost = (m_robotHandle == 0);
     APP_LOG_EVENT_INFO("calibration",
                        "calibration_pipeline",
@@ -1535,6 +1538,11 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
     }
 
     return 0;
+}
+
+bool CalibrationController::robotMotionCancellationRequested()
+{
+    return s_instance && s_instance->m_cancelRequested.load();
 }
 
 void CalibrationController::appendLog(const QString& line)

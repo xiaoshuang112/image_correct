@@ -34,11 +34,11 @@ ApplicationWindow {
     // =================================================================
     //  与 C++ 控制器的连接
     // =================================================================
-    // QML 侧定时刷新图像（独立于 C++ 抓帧，避免事件循环阻塞导致不刷新）
+    // 预览最多 10 fps。标定期间不再定时重绘同一张图，而只响应新采集图像。
     Timer {
         id: refreshTimer
-        interval: 50
-        running: calibrationController.previewActive || calibrationController.running
+        interval: 100
+        running: calibrationController.previewActive && !calibrationController.running
         repeat: true
         onTriggered: {
             cameraImage.source = "image://camera/current#" + Date.now()
@@ -47,6 +47,10 @@ ApplicationWindow {
 
     Connections {
         target: calibrationController
+        function onFrameUpdated() {
+            if (calibrationController.running)
+                cameraImage.source = "image://camera/current#" + Date.now()
+        }
         function onCalibrationFinished(success, message) {
             console.log("Calibration finished:", success, message)
         }
@@ -366,12 +370,12 @@ ApplicationWindow {
                 anchors.margins: 4
                 spacing: 8
 
-                BusyIndicator {
-                    id: busyInd
+                Rectangle {
                     Layout.preferredWidth: 24
                     Layout.preferredHeight: 24
-                    running: calibrationController.running
-                    visible: running
+                    radius: 12
+                    color: calibrationController.running ? accent : borderColor
+                    visible: calibrationController.running
                 }
 
                 Label {

@@ -154,6 +154,7 @@ private:
 
     // ---- 静态回调（供 C 风格 AI_det_callback） ----
     static int calibrationCallback(char* msg, int msg_len, int flag);
+    static bool robotMotionCancellationRequested();
     static CalibrationController* s_instance;
 
     // ==================== 数据成员 ====================

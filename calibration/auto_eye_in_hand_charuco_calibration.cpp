@@ -174,8 +174,16 @@ static double tryCandidatePoses(int robot_handle,
     }
     for (const auto& euler : candidates) {
              
-        if(moveToFlangeEulePos(robot_handle, (double*)euler.data())!= true)
+        if(moveToFlangeEulePos(robot_handle, (double*)euler.data())!= true) {
+            if (robotMotionCancellationRequested()) {
+                APP_LOG_EVENT_WARNING("calibration.pose_search",
+                                      "candidate_search",
+                                      "cancelled",
+                                      {{"stage", "robot_move"}});
+                return -1.0;
+            }
             continue;        
+        }
 
         double s; int n; cv::Point2f bc;
         std::tie(s, n, bc) = evaluatePose(camera, detector, use_center);
@@ -372,8 +380,7 @@ bool autoFindBestPose(int robot_handle,
     cv::Point2f cur_bc;
     std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
-    //if (cur_codes > 0 && cur_codes < total_corners) 
-    {
+    if (cur_codes > 0 && cur_codes < total_corners) {
         std::cout << "[autoFindBestPose] Phase1: Z 搜索 (当前码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
 
@@ -414,6 +421,15 @@ bool autoFindBestPose(int robot_handle,
                                  {"reason", "final_move"}});
             return false;
         }
+    } else {
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "phase_skip",
+                           "skip",
+                           {{"phase", "coarse_z"},
+                            {"reason", cur_codes == total_corners
+                                 ? "all_corners_visible" : "board_not_detected"},
+                            {"corners", QString::number(cur_codes)},
+                            {"total_corners", QString::number(total_corners)}});
     }
     frame = camera->captureOneFrame(1500);
     // ================================================================
@@ -422,8 +438,7 @@ bool autoFindBestPose(int robot_handle,
     
     std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
-    //if (cur_codes > 0 && cur_codes < total_corners)
-     {
+    if (cur_codes > 0 && cur_codes < total_corners) {
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
         const double steps[] = {240, 120, 60};
@@ -436,6 +451,15 @@ bool autoFindBestPose(int robot_handle,
                                  {"reason", "xy_search_failed"}});
             return false;
         }
+    } else {
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "phase_skip",
+                           "skip",
+                           {{"phase", "coarse_xy"},
+                            {"reason", cur_codes == total_corners
+                                 ? "all_corners_visible" : "board_not_detected"},
+                            {"corners", QString::number(cur_codes)},
+                            {"total_corners", QString::number(total_corners)}});
     }
     frame = camera->captureOneFrame(1500);
 
@@ -509,8 +533,9 @@ bool autoFindBestPose(int robot_handle,
         std::vector<std::array<double, 6>> zrz_candidates;
         for (int fracStep = 1; fracStep <= 2; ++fracStep) {
             const double frac = fracStep * 0.5;
+            // 保持 Rz 与当前位姿连续；强行限制到 [-90, 90] 会制造 180° 的 J6 跳变。
             zrz_candidates.push_back({flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + dZ * frac,
-                                      flangeEulePos[3], flangeEulePos[4], bound_camera_angle(flangeEulePos[5] + dRz_deg * frac)});
+                                      flangeEulePos[3], flangeEulePos[4], flangeEulePos[5] + dRz_deg * frac});
         }
 
         double bestFlangeEulePos[ROB_AXIS_NUM];
@@ -537,7 +562,6 @@ bool autoFindBestPose(int robot_handle,
                                      {"tcp_error", QString::number(tcpRet)}});
                 return false;
             }
-            flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
         } else {
             std::cout << "[autoFindBestPose] Z+rz 无改善, iter=" << iter << std::endl;
             break;
@@ -792,8 +816,68 @@ static bool computeZValues_old(int robot_handle,
 }
 
 // ============================================================
-// Phase 3: 生成 729 候选 + IK 过滤
+// Phase 3: 生成约 90 个高覆盖候选 + IK 过滤
 // ============================================================
+
+static double jointPathDistance(const double lhs[ROB_AXIS_NUM],
+                                const double rhs[ROB_AXIS_NUM]) {
+    double sum = 0.0;
+    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
+        double delta = rhs[axis] - lhs[axis];
+        if (axis == 5)
+            delta = std::remainder(delta, 360.0);
+        sum += delta * delta;
+    }
+    return std::sqrt(sum);
+}
+
+static void orderCandidatesByNearestJoint(std::vector<PoseCandidate>& candidates,
+                                          const double initialJoint[ROB_AXIS_NUM]) {
+    std::vector<PoseCandidate> ordered;
+    ordered.reserve(candidates.size());
+    std::vector<bool> used(candidates.size(), false);
+    double current[ROB_AXIS_NUM];
+    std::copy(initialJoint, initialJoint + ROB_AXIS_NUM, current);
+    double pathDegrees = 0.0;
+    double maximumStepDegrees = 0.0;
+    double maximumJ6StepDegrees = 0.0;
+
+    for (size_t count = 0; count < candidates.size(); ++count) {
+        size_t bestIndex = candidates.size();
+        double bestDistance = std::numeric_limits<double>::infinity();
+        for (size_t index = 0; index < candidates.size(); ++index) {
+            if (used[index])
+                continue;
+            const double distance = jointPathDistance(current, candidates[index].joint);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                bestIndex = index;
+            }
+        }
+        if (bestIndex == candidates.size())
+            break;
+
+        PoseCandidate candidate = candidates[bestIndex];
+        candidate.joint[5] += std::round((current[5] - candidate.joint[5]) / 360.0) * 360.0;
+        const double j6Step = std::abs(candidate.joint[5] - current[5]);
+        pathDegrees += bestDistance;
+        maximumStepDegrees = std::max(maximumStepDegrees, bestDistance);
+        maximumJ6StepDegrees = std::max(maximumJ6StepDegrees, j6Step);
+        std::copy(candidate.joint, candidate.joint + ROB_AXIS_NUM, current);
+        ordered.push_back(candidate);
+        used[bestIndex] = true;
+    }
+
+    candidates.swap(ordered);
+    APP_LOG_EVENT_INFO("calibration.candidates",
+                       "candidate_ordering",
+                       "success",
+                       {{"strategy", "nearest_joint_greedy"},
+                        {"candidates", QString::number(candidates.size())},
+                        {"estimated_path_deg", QString::number(pathDegrees, 'f', 3)},
+                        {"max_step_deg", QString::number(maximumStepDegrees, 'f', 3)},
+                        {"max_j6_step_deg", QString::number(maximumJ6StepDegrees, 'f', 3)}});
+}
 
 bool generateCandidates(int robot_handle,
                         std::shared_ptr<AICamera>& camera,
@@ -819,44 +903,71 @@ bool generateCandidates(int robot_handle,
                             {{"reason", "tcp_to_flange_conversion"}});
         return false;
     }
-    cv::Mat frame = camera->captureOneFrame(1500);
-    //cr_AxisAngle2Eule(flangeAxisPos, flangeEulePos);
+    (void)camera;
+    double initialJoint[ROB_AXIS_NUM] = {};
+    const CRresult jointRet = cr_get_jointActualPos((RobotHandle)robot_handle, initialJoint);
+    if (jointRet != sucess) {
+        APP_LOG_EVENT_ERROR("calibration.candidates",
+                            "candidate_generation",
+                            "fail",
+                            {{"reason", "joint_read"},
+                             {"error", QString::number(jointRet)}});
+        return false;
+    }
     int total = 0, ik_ok = 0;
-    
-    for (int zi = 0; zi < 3; zi++) { 
-        double z = z_values[zi], dlt = 360 * (3-zi)/3, ddeg[]={5, 10, 10};
-        const double ang_offsets[] = {-ddeg[zi], 0.0, ddeg[zi]};
-        const double ang_offsetsZ[] = {-10, 0.0, 10};
-        const double xy_offsets[] = {-dlt, 0.0, dlt};
-    for (double dx : xy_offsets) {
-    for (double dy : xy_offsets) {
-    
-    for (double drx : ang_offsets) {
-    for (double dry : ang_offsets) {
-    for (double drz : ang_offsetsZ) {
-        total++;
-        euler[0] = flangeEulePos[0] + dx;
-        euler[1] = flangeEulePos[1] + dy;
-        euler[2] = z;  // 绝对 Z 值（非偏移量）
-        euler[3] = flangeEulePos[3] + drx;
-        euler[4] = flangeEulePos[4] + dry;
-        euler[5] = flangeEulePos[5] + drz;
 
-        if(convertFlangeOulePos2Joint(robot_handle, euler, joint)){                  
-            PoseCandidate cand;
-            std::copy(joint, joint + 6, cand.joint);
-            candidates.push_back(cand);
-            ik_ok++;
+    // 每层 5 个 XY 覆盖点 × 6 个姿态，共 3 × 5 × 6 = 90 个候选。
+    // Rz 正负方向按位置交替，兼顾旋转多样性而不扩张为笛卡尔积。
+    for (int zi = 0; zi < 3; ++zi) {
+        const double z = z_values[zi];
+        const double dlt = 360.0 * (3 - zi) / 3.0;
+        const double tilt = zi == 0 ? 5.0 : 10.0;
+        const std::array<std::array<double, 2>, 5> xyOffsets{{
+            {{0.0, 0.0}}, {{-dlt, -dlt}}, {{-dlt, dlt}},
+            {{dlt, -dlt}}, {{dlt, dlt}}
+        }};
+
+        for (size_t xyIndex = 0; xyIndex < xyOffsets.size(); ++xyIndex) {
+            const double rz = ((zi + static_cast<int>(xyIndex)) % 2 == 0) ? 10.0 : -10.0;
+            const std::array<std::array<double, 3>, 6> attitudeOffsets{{
+                {{0.0, 0.0, 0.0}},
+                {{tilt, 0.0, rz}},
+                {{-tilt, 0.0, -rz}},
+                {{0.0, tilt, -rz}},
+                {{0.0, -tilt, rz}},
+                {{tilt * 0.7, -tilt * 0.7, rz}}
+            }};
+
+            for (const auto& attitude : attitudeOffsets) {
+                ++total;
+                euler[0] = flangeEulePos[0] + xyOffsets[xyIndex][0];
+                euler[1] = flangeEulePos[1] + xyOffsets[xyIndex][1];
+                euler[2] = z;
+                euler[3] = flangeEulePos[3] + attitude[0];
+                euler[4] = flangeEulePos[4] + attitude[1];
+                euler[5] = flangeEulePos[5] + attitude[2];
+
+                if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
+                    PoseCandidate candidate{};
+                    std::copy(joint, joint + ROB_AXIS_NUM, candidate.joint);
+                    candidates.push_back(candidate);
+                    ++ik_ok;
+                }
+            }
         }
-    }}}}}}
+    }
 
-    std::cout << "[autoCalib] 729 candidates generated, IK reachable: "
+    orderCandidatesByNearestJoint(candidates, initialJoint);
+    std::cout << "[autoCalib] 90 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
     APP_LOG_EVENT_INFO("calibration.candidates",
                        "candidate_generation",
                        "success",
-                       {{"total", QString::number(total)},
-                        {"reachable", QString::number(ik_ok)}});
+                       {{"strategy", "coverage_3x5x6"},
+                        {"target", "90"},
+                        {"total", QString::number(total)},
+                        {"reachable", QString::number(ik_ok)},
+                        {"ordered", QString::number(candidates.size())}});
     return !candidates.empty();
 }
 } // anonymous namespace

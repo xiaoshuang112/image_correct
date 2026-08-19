@@ -5,8 +5,35 @@
 #include <chrono>
 #include <cmath>
 #include <vector>
+#include <algorithm>
+#include <atomic>
 
 namespace {
+
+constexpr int kMotionPollMs = 50;
+constexpr int kMotionProgressLogMs = 2000;
+constexpr int kMotionMinTimeoutMs = 20000;
+constexpr int kMotionMaxTimeoutMs = 120000;
+constexpr double kMotionTimeoutPerDegreeMs = 1500.0;
+
+std::atomic<RobotMotionCancelCheck> g_motionCancelCheck{nullptr};
+
+double nearestEquivalentAngle(double angle, double reference)
+{
+    return angle + std::round((reference - angle) / 360.0) * 360.0;
+}
+
+double maximumJointError(const double actual[6], const double target[6])
+{
+    double maximum = 0.0;
+    for (int i = 0; i < ROB_AXIS_NUM; ++i) {
+        double delta = actual[i] - target[i];
+        if (i == 5)
+            delta = std::remainder(delta, 360.0);
+        maximum = std::max(maximum, std::abs(delta));
+    }
+    return maximum;
+}
 
 #ifdef QT_GUI
 QString formatSixValues(const double values[6])
@@ -20,13 +47,28 @@ QString formatSixValues(const double values[6])
 
 } // namespace
 
+void setRobotMotionCancelCheck(RobotMotionCancelCheck check)
+{
+    g_motionCancelCheck.store(check, std::memory_order_release);
+}
+
+bool robotMotionCancellationRequested()
+{
+    const RobotMotionCancelCheck check =
+        g_motionCancelCheck.load(std::memory_order_acquire);
+    return check && check();
+}
+
 // ============================================================
 // 运动到目标关节角（等效 goto_jointpos）
 // ============================================================
 static bool jointsWithinTolerance(const double actual[6], const double target[6],
                                    double tol_deg) {
     for (int i = 0; i < ROB_AXIS_NUM; i++) {
-        if (std::abs(actual[i] - target[i]) > tol_deg)
+        double delta = actual[i] - target[i];
+        if (i == 5)
+            delta = std::remainder(delta, 360.0);
+        if (std::abs(delta) > tol_deg)
             return false;
     }
     return true;
@@ -100,11 +142,6 @@ CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS
 
 CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     const auto startedAt = std::chrono::steady_clock::now();
-    APP_LOG_EVENT_INFO("robot.motion",
-                       "joint_move",
-                       "start",
-                       {{"handle", QString::number(robot_handle)},
-                        {"target", formatSixValues(joint)}});
     double pose[6] = {0, 0, 0, 0, 0, 0};
     CRresult ret = cr_get_jointActualPos(robot_handle, pose);
     if (ret != sucess) {
@@ -119,10 +156,45 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                   << ret << std::endl;
         return ret;
     }
+
+    // SDK 逆解可能把 J6 归一化到另一圈。保持与当前角度连续，避免例如
+    // 318° -> -42° 这种物理上无意义的整圈运动。
+    double target[ROB_AXIS_NUM];
+    std::copy(joint, joint + ROB_AXIS_NUM, target);
+    target[5] = nearestEquivalentAngle(target[5], pose[5]);
+
+    const double initialError = maximumJointError(pose, target);
+    const int timeoutMs = std::clamp(
+        static_cast<int>(std::lround(15000.0 +
+                                     initialError * kMotionTimeoutPerDegreeMs)),
+        kMotionMinTimeoutMs,
+        kMotionMaxTimeoutMs);
+
+    APP_LOG_EVENT_INFO("robot.motion",
+                       "joint_move",
+                       "start",
+                       {{"handle", QString::number(robot_handle)},
+                        {"requested", formatSixValues(joint)},
+                        {"target", formatSixValues(target)},
+                        {"initial", formatSixValues(pose)},
+                        {"initial_error_deg", QString::number(initialError, 'f', 3)},
+                        {"timeout_ms", QString::number(timeoutMs)},
+                        {"mode", "non_blocking"}});
+
+    if (robotMotionCancellationRequested()) {
+        APP_LOG_EVENT_WARNING("robot.motion",
+                              "joint_move",
+                              "cancelled",
+                              {{"phase", "before_command"},
+                               {"elapsed_ms", "0"},
+                               {"target", formatSixValues(target)}});
+        return robot_motion_cancelled;
+    }
+
     PointControlParaSimple simple{};
     for (int i = 0; i < ROB_AXIS_NUM; i++) {
         simple.pose[i] = pose[i];
-        simple.jointpos[i] = joint[i];
+        simple.jointpos[i] = target[i];
         simple.tcpOffset[i] = 0;
         simple.coordinatePose[i] = 0;
         simple.speed[i] = 30;
@@ -147,7 +219,7 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                   << ret << std::endl;
         return ret;
     }
-    ret = cr_move_joint((RobotHandle)robot_handle, para, TRUE);
+    ret = cr_move_joint((RobotHandle)robot_handle, para, FALSE);
     if (ret != sucess) {
         APP_LOG_EVENT_ERROR("robot.motion",
                             "joint_move",
@@ -155,38 +227,89 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                             {{"phase", "command_send"},
                              {"reason", "move_command"},
                              {"error", QString::number(ret)},
-                             {"target", formatSixValues(joint)}});
+                             {"target", formatSixValues(target)}});
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
     }
 
-    // 等待机器人实际到位（轮询实际关节角，到位后再加稳定延时）
+    // 非阻塞下发后由应用轮询实际关节角，因此超时和取消可以真正生效。
     double actual[6] = {0, 0, 0, 0, 0, 0};
     const double tol_deg = 0.5;
-    const int max_polls = 200;       // 最多等 10 秒
-    const int poll_ms = 50;
     bool reached = false;
     int readFailures = 0;
     int polls = 0;
-    for (int wait = 0; wait < max_polls; wait++) {
-        polls = wait + 1;
-        std::this_thread::sleep_for(std::chrono::milliseconds(poll_ms));
+    long long nextProgressLogMs = 0;
+    while (true) {
+        const auto now = std::chrono::steady_clock::now();
+        const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+            now - startedAt).count();
+
+        if (robotMotionCancellationRequested()) {
+            const CRresult stopRet = cr_stop((RobotHandle)robot_handle);
+            APP_LOG_EVENT_WARNING("robot.motion",
+                                  "joint_move",
+                                  "cancelled",
+                                  {{"phase", "poll"},
+                                   {"elapsed_ms", QString::number(elapsedMs)},
+                                   {"polls", QString::number(polls)},
+                                   {"stop_result", QString::number(stopRet)},
+                                   {"target", formatSixValues(target)},
+                                   {"actual", formatSixValues(actual)}});
+            return robot_motion_cancelled;
+        }
+
+        if (elapsedMs >= timeoutMs) {
+            const CRresult stopRet = cr_stop((RobotHandle)robot_handle);
+            APP_LOG_EVENT_ERROR("robot.motion",
+                                "joint_move",
+                                "fail",
+                                {{"phase", "reach"},
+                                 {"reason", "timeout"},
+                                 {"elapsed_ms", QString::number(elapsedMs)},
+                                 {"timeout_ms", QString::number(timeoutMs)},
+                                 {"polls", QString::number(polls)},
+                                 {"read_failures", QString::number(readFailures)},
+                                 {"stop_result", QString::number(stopRet)},
+                                 {"target", formatSixValues(target)},
+                                 {"actual", formatSixValues(actual)}});
+            return operate_timeout;
+        }
+
+        ++polls;
         if (cr_get_jointActualPos((RobotHandle)robot_handle, actual) != sucess) {
             ++readFailures;
-            continue;
-        }
-        if (jointsWithinTolerance(actual, joint, tol_deg)) {
+        } else if (jointsWithinTolerance(actual, target, tol_deg)) {
             // 到位后再稳定 200ms，消除残余抖动
             std::this_thread::sleep_for(std::chrono::milliseconds(200));
             reached = true;
             break;
         }
+
+        if (elapsedMs >= nextProgressLogMs) {
+            const double remainingError = maximumJointError(actual, target);
+            const int percent = initialError <= tol_deg
+                ? 100
+                : std::clamp(static_cast<int>(std::lround(
+                      (1.0 - remainingError / initialError) * 100.0)), 0, 99);
+            APP_LOG_EVENT_INFO("robot.motion",
+                               "joint_move",
+                               "progress",
+                               {{"elapsed_ms", QString::number(elapsedMs)},
+                                {"timeout_ms", QString::number(timeoutMs)},
+                                {"percent", QString::number(percent)},
+                                {"remaining_error_deg", QString::number(remainingError, 'f', 3)},
+                                {"polls", QString::number(polls)},
+                                {"read_failures", QString::number(readFailures)},
+                                {"actual", formatSixValues(actual)},
+                                {"target", formatSixValues(target)}});
+            nextProgressLogMs = elapsedMs + kMotionProgressLogMs;
+        }
+
+        std::this_thread::sleep_for(std::chrono::milliseconds(kMotionPollMs));
     }
 
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
         std::chrono::steady_clock::now() - startedAt).count();
-    (void)polls;
-    (void)elapsedMs;
     if (reached) {
         APP_LOG_EVENT_INFO("robot.motion",
                            "joint_move",
@@ -194,19 +317,8 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                            {{"elapsed_ms", QString::number(elapsedMs)},
                             {"polls", QString::number(polls)},
                             {"read_failures", QString::number(readFailures)},
-                            {"actual", formatSixValues(actual)}});
-    } else {
-        APP_LOG_EVENT_ERROR("robot.motion",
-                            "joint_move",
-                            "fail",
-                            {{"phase", "reach"},
-                             {"reason", "timeout"},
-                             {"elapsed_ms", QString::number(elapsedMs)},
-                             {"polls", QString::number(polls)},
-                             {"read_failures", QString::number(readFailures)},
-                             {"target", formatSixValues(joint)},
-                             {"actual", formatSixValues(actual)}});
-        return operate_timeout;
+                            {"actual", formatSixValues(actual)},
+                            {"target", formatSixValues(target)}});
     }
 
     return ret;
@@ -222,6 +334,8 @@ bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double
         return false;
     if (cr_kineInverse((RobotHandle)robot_handle, flangeAnglePos, ref_j, joint) != sucess)
         return false;
+    // 选择与当前 J6 最近的等价圈数，保持逆解连续。
+    joint[5] = nearestEquivalentAngle(joint[5], ref_j[5]);
     return true;
 }
 
