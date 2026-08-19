@@ -21,6 +21,12 @@ constexpr size_t kMaxInitialOptimizationFrames = 60;
 constexpr size_t kMaxRefineOptimizationFrames = 48;
 constexpr size_t kMinCalibrationFrames = 5;
 constexpr int kFastCalibrationSolverFlag = cv::CALIB_USE_LU;
+constexpr double kMaxMedianRegressionRatio = 1.05;
+constexpr double kMaxMeanRegressionRatio = 1.08;
+constexpr double kMaxP95RegressionRatio = 1.10;
+constexpr double kMedianRegressionTolerancePx = 0.02;
+constexpr double kMeanRegressionTolerancePx = 0.03;
+constexpr double kP95RegressionTolerancePx = 0.05;
 
 using Clock = std::chrono::steady_clock;
 
@@ -29,6 +35,13 @@ static long long elapsedMilliseconds(const Clock::time_point& startedAt)
     return std::chrono::duration_cast<std::chrono::milliseconds>(
                Clock::now() - startedAt)
         .count();
+}
+
+static double maximumAcceptedError(double baseline,
+                                   double ratio,
+                                   double absoluteTolerance)
+{
+    return std::max(baseline * ratio, baseline + absoluteTolerance);
 }
 
 struct ViewDescriptor {
@@ -303,7 +316,10 @@ static bool refineCameraIntrinsics(
             sum += cv::norm(proj[j] - all_img[i][j]);
         if (proj.empty())
             continue;
-        recs.push_back({i, sum / proj.size()});
+        const double frameError = sum / static_cast<double>(proj.size());
+        if (!std::isfinite(frameError))
+            continue;
+        recs.push_back({i, frameError});
         if ((i + 1) % 50 == 0 || i + 1 == n) {
             APP_LOG_EVENT_DEBUG("camera.calibration",
                                "camera_intrinsics_refine",
@@ -331,7 +347,14 @@ static bool refineCameraIntrinsics(
 
     // solvePnP 可能会跳过退化帧，因此中位数索引必须基于 recs，
     // 不能继续使用输入帧数量，否则会发生越界访问。
-    double median = recs[recs.size() / 2].err;
+    const double median = recs[recs.size() / 2].err;
+    const size_t initialP95Index = static_cast<size_t>(
+        0.95 * static_cast<double>(recs.size() - 1));
+    const double initialP95 = recs[initialP95Index].err;
+    const double initialMean = std::accumulate(
+        recs.begin(), recs.end(), 0.0,
+        [](double total, const Rec& record) { return total + record.err; }) /
+        static_cast<double>(recs.size());
     std::vector<double> deviations;
     deviations.reserve(recs.size());
     for (const auto& record : recs)
@@ -384,6 +407,8 @@ static bool refineCameraIntrinsics(
                         {"selected_frames", QString::number(selectedIndices.size())},
                         {"cap", QString::number(kMaxRefineOptimizationFrames)},
                         {"median_px", QString::number(median, 'f', 6)},
+                        {"mean_px", QString::number(initialMean, 'f', 6)},
+                        {"p95_px", QString::number(initialP95, 'f', 6)},
                         {"mad_px", QString::number(mad, 'f', 6)},
                         {"threshold_px", QString::number(thresh, 'f', 6)},
                         {"evaluation_ms", QString::number(evaluationMs)}});
@@ -429,30 +454,45 @@ static bool refineCameraIntrinsics(
 
     // 用全部有效帧快速复核精化结果，避免代表帧上的误差下降却损害整体。
     std::vector<double> validationErrors;
-    validationErrors.reserve(all_obj.size());
-    for (size_t i = 0; i < all_obj.size(); ++i) {
+    validationErrors.reserve(recs.size());
+    size_t validationFailures = 0;
+    // 前后必须使用同一组初始 solvePnP 成功帧。若精化后把难解帧直接
+    // 跳过，均值和 P95 会产生虚假的改善。
+    for (const Rec& record : recs) {
+        const size_t i = static_cast<size_t>(record.idx);
         cv::Mat rvec, tvec;
         if (!cv::solvePnP(all_obj[i], all_img[i], refinedMatrix,
                           refinedDistortion, rvec, tvec)) {
+            ++validationFailures;
             continue;
         }
         std::vector<cv::Point2f> projected;
         cv::projectPoints(all_obj[i], rvec, tvec, refinedMatrix,
                           refinedDistortion, projected);
-        if (projected.empty() || projected.size() != all_img[i].size())
+        if (projected.empty() || projected.size() != all_img[i].size()) {
+            ++validationFailures;
             continue;
+        }
         double errorSum = 0.0;
         for (size_t point = 0; point < projected.size(); ++point)
             errorSum += cv::norm(projected[point] - all_img[i][point]);
-        validationErrors.push_back(errorSum / static_cast<double>(projected.size()));
+        const double validationFrameError =
+            errorSum / static_cast<double>(projected.size());
+        if (std::isfinite(validationFrameError)) {
+            validationErrors.push_back(validationFrameError);
+        } else {
+            ++validationFailures;
+        }
     }
-    if (validationErrors.size() < kMinCalibrationFrames) {
+    if (validationFailures != 0 || validationErrors.size() != recs.size()) {
         APP_LOG_EVENT_WARNING("camera.calibration",
                               "camera_intrinsics_refine",
                               "reject",
                               {{"phase", "validation"},
-                               {"reason", "insufficient_validation_frames"},
-                               {"valid_frames", QString::number(validationErrors.size())}});
+                               {"reason", "validation_frame_set_changed"},
+                               {"expected_frames", QString::number(recs.size())},
+                               {"valid_frames", QString::number(validationErrors.size())},
+                               {"failed_frames", QString::number(validationFailures)}});
         return false;
     }
     std::sort(validationErrors.begin(), validationErrors.end());
@@ -463,15 +503,36 @@ static bool refineCameraIntrinsics(
     const double validationMean = std::accumulate(
         validationErrors.begin(), validationErrors.end(), 0.0) /
         static_cast<double>(validationErrors.size());
-    if (!std::isfinite(validationMedian) || validationMedian > median * 1.05) {
+    const double maximumMedian = maximumAcceptedError(
+        median, kMaxMedianRegressionRatio, kMedianRegressionTolerancePx);
+    const double maximumMean = maximumAcceptedError(
+        initialMean, kMaxMeanRegressionRatio, kMeanRegressionTolerancePx);
+    const double maximumP95 = maximumAcceptedError(
+        initialP95, kMaxP95RegressionRatio, kP95RegressionTolerancePx);
+    const bool validationIsFinite = std::isfinite(validationMedian) &&
+                                    std::isfinite(validationMean) &&
+                                    std::isfinite(validationP95);
+    const bool distributionRegressed =
+        validationMedian > maximumMedian ||
+        validationMean > maximumMean ||
+        validationP95 > maximumP95;
+    if (!validationIsFinite || distributionRegressed) {
         APP_LOG_EVENT_WARNING("camera.calibration",
                               "camera_intrinsics_refine",
                               "reject",
                               {{"phase", "validation"},
-                               {"reason", "global_error_regression"},
+                               {"reason", validationIsFinite
+                                              ? "error_distribution_regression"
+                                              : "non_finite_validation_error"},
                                {"before_median_px", QString::number(median, 'f', 6)},
                                {"after_median_px", QString::number(validationMedian, 'f', 6)},
-                               {"p95_px", QString::number(validationP95, 'f', 6)}});
+                               {"max_median_px", QString::number(maximumMedian, 'f', 6)},
+                               {"before_mean_px", QString::number(initialMean, 'f', 6)},
+                               {"after_mean_px", QString::number(validationMean, 'f', 6)},
+                               {"max_mean_px", QString::number(maximumMean, 'f', 6)},
+                               {"before_p95_px", QString::number(initialP95, 'f', 6)},
+                               {"after_p95_px", QString::number(validationP95, 'f', 6)},
+                               {"max_p95_px", QString::number(maximumP95, 'f', 6)}});
         return false;
     }
 
@@ -494,9 +555,14 @@ static bool refineCameraIntrinsics(
                        {{"phase", "global_validation"},
                         {"frames", QString::number(validationErrors.size())},
                         {"before_median_px", QString::number(median, 'f', 6)},
+                        {"before_mean_px", QString::number(initialMean, 'f', 6)},
+                        {"before_p95_px", QString::number(initialP95, 'f', 6)},
                         {"after_mean_px", QString::number(validationMean, 'f', 6)},
                         {"after_median_px", QString::number(validationMedian, 'f', 6)},
-                        {"after_p95_px", QString::number(validationP95, 'f', 6)}});
+                        {"after_p95_px", QString::number(validationP95, 'f', 6)},
+                        {"max_mean_px", QString::number(maximumMean, 'f', 6)},
+                        {"max_median_px", QString::number(maximumMedian, 'f', 6)},
+                        {"max_p95_px", QString::number(maximumP95, 'f', 6)}});
     std::cout << "[cameraCalib] 全量复核: " << validationErrors.size()
               << " 帧, mean=" << validationMean
               << " px, median=" << validationMedian

@@ -350,9 +350,11 @@ DiagnosticLogger::DiagnosticLogger()
             .arg(kMaxLogBytes / (1024 * 1024))
             .arg(kArchiveCount));
     if (m_previousSessionUnclean) {
+        // openLogFileLocked() 已将上一会话的 hand-eye.log 轮转为 .1。
+        const QString previousLogPath = logFilePath() + QStringLiteral(".1");
         log(Level::Warning, "lifecycle",
             QString("previous_session_did_not_exit_cleanly previous_log=%1")
-                .arg(logFilePath()));
+                .arg(previousLogPath));
     }
     return !selectedDirectory.isEmpty();
 }

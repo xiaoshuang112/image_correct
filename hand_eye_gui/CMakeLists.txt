@@ -57,7 +57,7 @@ endif()
 #  相机 SDK 检测（ORB 和 MVS 互斥）
 # ============================================================
 
-option(USE_ORB "Build with Orbbec camera (disable MVS)" OFF)
+option(USE_ORB "Build with Orbbec camera (disable MVS)" ON)
 
 if(USE_ORB)
     # ---- ORB 模式 ----
@@ -72,7 +72,7 @@ if(USE_ORB)
         message(FATAL_ERROR "-- [${PROJECT_NAME}] USE_ORB=ON 但未找到 Orbbec SDK (/usr/local/include/libobsensor)")
     endif()
 else()
-    # ---- MVS 模式（默认） ----
+    # ---- MVS 模式（显式 USE_ORB=OFF） ----
     set(useORB_QT FALSE)
     if(EXISTS /opt/MVS/include)
         set(useMVS_QT TRUE)
@@ -180,6 +180,8 @@ target_link_libraries(${PROJECT_NAME}
 if(useMVS_QT)
     if(ARCH_TYPE STREQUAL "x86_64")
         target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/64)
+    elseif(ARCH_TYPE STREQUAL "ARM64")
+        target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/aarch64)
     else()
         target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/32)
     endif()
@@ -202,36 +204,23 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "hand-eye-${CAM_SUFFIX}"
 )
 
-string(TIMESTAMP APP_BUILD_TIMESTAMP "%Y-%m-%dT%H:%M:%SZ" UTC)
-execute_process(
-    COMMAND git rev-parse --short=12 HEAD
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE APP_GIT_COMMIT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
+# 构建身份必须在每次 build 时重新获取。若只在 configure 阶段执行，提交或
+# 修改工作区后直接 cmake --build 会把旧 commit/dirty 状态编进新程序。
+set(APP_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(APP_BUILD_INFO_HEADER "${APP_BUILD_INFO_DIR}/AppBuildInfo.hpp")
+add_custom_target(hand_eye_app_build_info ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_FILE=${APP_BUILD_INFO_HEADER}
+        -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/GenerateBuildInfo.cmake
+    BYPRODUCTS ${APP_BUILD_INFO_HEADER}
+    COMMENT "Refreshing hand-eye build metadata"
+    VERBATIM
 )
-if(NOT APP_GIT_COMMIT)
-    set(APP_GIT_COMMIT "unknown")
-endif()
-execute_process(
-    COMMAND git status --porcelain --untracked-files=no
-    WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-    OUTPUT_VARIABLE APP_GIT_STATUS_OUTPUT
-    OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET
-)
-if(APP_GIT_STATUS_OUTPUT)
-    set(APP_GIT_WORKTREE_STATE "dirty")
-else()
-    set(APP_GIT_WORKTREE_STATE "clean")
-endif()
-target_compile_definitions(${PROJECT_NAME} PRIVATE
-    QT_MESSAGELOGCONTEXT
-    APP_BUILD_TYPE="${CMAKE_BUILD_TYPE}"
-    APP_BUILD_TIMESTAMP="${APP_BUILD_TIMESTAMP}"
-    APP_GIT_COMMIT="${APP_GIT_COMMIT}"
-    APP_GIT_WORKTREE_STATE="${APP_GIT_WORKTREE_STATE}"
-)
+add_dependencies(${PROJECT_NAME} hand_eye_app_build_info)
+target_include_directories(${PROJECT_NAME} PRIVATE ${APP_BUILD_INFO_DIR})
+target_compile_definitions(${PROJECT_NAME} PRIVATE QT_MESSAGELOGCONTEXT)
 
 # 继承父目录的宏定义（useMVS 等）
 add_definitions(-DQT_GUI)

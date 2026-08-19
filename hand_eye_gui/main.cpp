@@ -15,6 +15,7 @@
 #include "CalibrationController.hpp"
 #include "CameraImageProvider.hpp"
 #include "DiagnosticLogger.hpp"
+#include "AppBuildInfo.hpp"
 
 int main(int argc, char* argv[])
 {

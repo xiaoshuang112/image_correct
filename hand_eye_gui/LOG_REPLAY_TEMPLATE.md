@@ -15,7 +15,7 @@
 - `category`：一级域（如 `camera.calibration`、`calibration.pose_search`）。
 - `event`：动作名（如 `camera_pipeline`、`candidate_search`、`collection`）。
 - `result`：状态，建议统一使用：
-  - `start` / `success` / `fail` / `skip` / `warn` / `cancel` / `progress`
+  - `start` / `success` / `fail` / `skip` / `reject` / `warn` / `cancel` / `progress`
 - 键值对字段：`key=value`，由事件上下文补充。
 - 约定字段值需避免空格和引号（日志器会做清洗）。
 
@@ -28,6 +28,10 @@
 | `stage` | 业务子阶段（例如 `z_values`、`image_discovery`） |
 | `elapsed_ms` | 耗时，单位毫秒 |
 | `selected_frames` / `input_frames` / `valid_frames` | 帧数统计 |
+| `expected_frames` / `failed_frames` | 同一验证帧集的预期数量和失败数量 |
+| `before_mean_px` / `before_median_px` / `before_p95_px` | 精化前全量误差分布 |
+| `after_mean_px` / `after_median_px` / `after_p95_px` | 精化后全量误差分布 |
+| `max_mean_px` / `max_median_px` / `max_p95_px` | 允许接受的误差上限；任一超限即拒绝精化结果 |
 | `path` / `file` / `directory` | 文件路径 |
 | `error` | 错误码或错误码字符串 |
 | `index` | 当前序号（0-based 或 1-based，按调用方约定写明） |
