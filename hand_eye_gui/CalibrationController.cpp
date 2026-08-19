@@ -72,15 +72,24 @@ CalibrationController::CalibrationController(QObject* parent)
     m_previewTimer->setInterval(66);  // ~15 fps
     connect(m_previewTimer, &QTimer::timeout,
             this, &CalibrationController::onPreviewTick);
-    APP_LOG_INFO("controller", QString("constructed object=%1 preview_interval_ms=%2")
-        .arg(reinterpret_cast<quintptr>(this), 0, 16)
-        .arg(m_previewTimer->interval()));
+    APP_LOG_EVENT_INFO("controller",
+                       "ui_controller",
+                       "lifecycle",
+                       {{"action", "constructed"},
+                        {"object", QString::number(reinterpret_cast<quintptr>(this), 16)},
+                        {"preview_interval_ms", QString::number(m_previewTimer->interval())}});
 }
 
 CalibrationController::~CalibrationController()
 {
-    APP_LOG_INFO("controller", QString("destructor_begin running=%1 preview=%2 camera=%3 robot=%4")
-        .arg(m_running).arg(m_previewActive).arg(m_cameraOpened).arg(m_robotConnected));
+    APP_LOG_EVENT_INFO("controller",
+                       "lifecycle",
+                       "destructor",
+                       {{"state", "running"},
+                        {"running", QString::number(m_running)},
+                        {"preview", QString::number(m_previewActive)},
+                        {"camera_opened", QString::number(m_cameraOpened)},
+                        {"robot_connected", QString::number(m_robotConnected)}});
     stopCalibration();
     waitForCalibrationThread();
 
@@ -94,7 +103,11 @@ CalibrationController::~CalibrationController()
 
     s_instance = nullptr;
     DiagnosticLogger::instance().setUiSink({});
-    APP_LOG_INFO("controller", "destructor_complete");
+    APP_LOG_EVENT_INFO("controller",
+                       "ui_controller",
+                       "lifecycle",
+                       {{"action", "destructor_complete"},
+                        {"object", QString::number(reinterpret_cast<quintptr>(this), 16)}});
 }
 
 // ===================================================================
@@ -109,8 +122,11 @@ void CalibrationController::init(CameraImageProvider* provider)
         if (guard)
             guard->appendLog(line);
     });
-    APP_LOG_INFO("controller", QString("init image_provider=%1")
-        .arg(reinterpret_cast<quintptr>(provider), 0, 16));
+    APP_LOG_EVENT_INFO("controller",
+                       "ui_controller",
+                       "initialize",
+                       {{"action", "init"},
+                        {"image_provider", QString::number(reinterpret_cast<quintptr>(provider), 16)}});
     setupPaths();
     loadConfigYaml();
     setStatus("就绪 — 请连接机器人");
@@ -128,30 +144,43 @@ void CalibrationController::setupPaths()
     try {
         fs::create_directories(m_calibrationPath);
     } catch (const std::exception& e) {
-        APP_LOG_ERROR("filesystem", QString("create_directories_failed path=%1 error=%2")
-            .arg(QString::fromStdString(m_calibrationPath), QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("filesystem",
+                            "path_prepare",
+                            "fail",
+                            {{"path", QString::fromStdString(m_calibrationPath)},
+                             {"error", QString::fromUtf8(e.what())}});
         throw;
     }
 
-    APP_LOG_INFO("filesystem", QString("paths_ready app=%1 param=%2 calibration=%3 log=%4")
-        .arg(QString::fromStdString(m_appPath),
-             QString::fromStdString(m_paramPath),
-             QString::fromStdString(m_calibrationPath),
-             DiagnosticLogger::instance().logFilePath()));
+    APP_LOG_EVENT_INFO("filesystem",
+                       "path_prepare",
+                       "ready",
+                       {{"app", QString::fromStdString(m_appPath)},
+                        {"param", QString::fromStdString(m_paramPath)},
+                        {"calibration", QString::fromStdString(m_calibrationPath)},
+                        {"log", DiagnosticLogger::instance().logFilePath()}});
 }
 
 void CalibrationController::loadConfigYaml()
 {
     std::string cfg_file = m_appPath + "config.yaml";
     if (!QFileInfo::exists(QString::fromStdString(cfg_file))) {
-        APP_LOG_WARNING("config", QString("config_missing path=%1 using_defaults=true")
-            .arg(QString::fromStdString(cfg_file)));
+        APP_LOG_EVENT_WARNING("config",
+                              "config_load",
+                              "skip",
+                              {{"reason", "config_missing"},
+                               {"path", QString::fromStdString(cfg_file)},
+                               {"using_defaults", "true"}});
         return;
     }
     cv::FileStorage fs(cfg_file, cv::FileStorage::READ);
     if (!fs.isOpened()) {
-        APP_LOG_ERROR("config", QString("config_open_failed path=%1 using_defaults=true")
-            .arg(QString::fromStdString(cfg_file)));
+        APP_LOG_EVENT_ERROR("config",
+                            "config_load",
+                            "fail",
+                            {{"reason", "config_open_failed"},
+                             {"path", QString::fromStdString(cfg_file)},
+                             {"using_defaults", "true"}});
         return;
     }
     // 读取相机配置
@@ -168,9 +197,13 @@ void CalibrationController::loadConfigYaml()
     if (cam_w > 0)        m_previewWidth  = cam_w;
     if (cam_h > 0)        m_previewHeight = cam_h;
 
-    APP_LOG_INFO("config", QString("config_loaded path=%1 camera=%2:%3 resolution=%4x%5")
-        .arg(QString::fromStdString(cfg_file), m_cameraIp)
-        .arg(m_cameraPort).arg(m_previewWidth).arg(m_previewHeight));
+    APP_LOG_EVENT_INFO("config",
+                       "config_load",
+                       "success",
+                       {{"path", QString::fromStdString(cfg_file)},
+                        {"camera", m_cameraIp + ":" + QString::number(m_cameraPort)},
+                        {"resolution_w", QString::number(m_previewWidth)},
+                        {"resolution_h", QString::number(m_previewHeight)}});
 }
 
 // ===================================================================
@@ -179,95 +212,171 @@ void CalibrationController::loadConfigYaml()
 
 void CalibrationController::setRobotIp(const QString& v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "robot_ip_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "robot_ip"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_robotIp != v) {
-        APP_LOG_INFO("config", QString("robot_ip_changed from=%1 to=%2").arg(m_robotIp, v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "robot_ip"},
+                            {"from", m_robotIp},
+                            {"to", v}});
         m_robotIp = v; emit robotIpChanged();
     }
 }
 void CalibrationController::setRobotPort(int v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "robot_port_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "robot_port"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_robotPort != v) {
-        APP_LOG_INFO("config", QString("robot_port_changed from=%1 to=%2").arg(m_robotPort).arg(v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "robot_port"},
+                            {"from", QString::number(m_robotPort)},
+                            {"to", QString::number(v)}});
         m_robotPort = v; emit robotPortChanged();
     }
 }
 void CalibrationController::setRobotPasswd(const QString& v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "robot_password_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "robot_passwd"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_robotPasswd != v) {
-        APP_LOG_INFO("config", "robot_password_changed value_redacted=true");
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "robot_passwd"},
+                            {"value_redacted", "true"}});
         m_robotPasswd = v; emit robotPasswdChanged();
     }
 }
 void CalibrationController::setCameraToTcpEnd(int v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "camera_to_tcp_end_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "camera_to_tcp_end"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_cameraToTcpEnd != v) {
-        APP_LOG_INFO("config", QString("camera_to_tcp_end_changed from=%1 to=%2")
-            .arg(m_cameraToTcpEnd).arg(v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "camera_to_tcp_end"},
+                            {"from", QString::number(m_cameraToTcpEnd)},
+                            {"to", QString::number(v)}});
         m_cameraToTcpEnd = v; emit cameraToTcpEndChanged();
     }
 }
 void CalibrationController::setCalibrationType(const QString& v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "calibration_type_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "calibration_type"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_calibrationType != v) {
-        APP_LOG_INFO("config", QString("calibration_type_changed from=%1 to=%2")
-            .arg(m_calibrationType, v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "calibration_type"},
+                            {"from", m_calibrationType},
+                            {"to", v}});
         m_calibrationType = v; emit calibrationTypeChanged();
     }
 }
 void CalibrationController::setCameraIp(const QString& v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "camera_ip_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "camera_ip"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_cameraIp != v) {
-        APP_LOG_INFO("config", QString("camera_ip_changed from=%1 to=%2").arg(m_cameraIp, v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "camera_ip"},
+                            {"from", m_cameraIp},
+                            {"to", v}});
         m_cameraIp = v; emit cameraIpChanged();
     }
 }
 void CalibrationController::setCameraPort(int v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "camera_port_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "camera_port"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_cameraPort != v) {
-        APP_LOG_INFO("config", QString("camera_port_changed from=%1 to=%2").arg(m_cameraPort).arg(v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "camera_port"},
+                            {"from", QString::number(m_cameraPort)},
+                            {"to", QString::number(v)}});
         m_cameraPort = v; emit cameraPortChanged();
     }
 }
 void CalibrationController::setPreviewWidth(int v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "preview_width_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "preview_width"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_previewWidth != v) {
-        APP_LOG_INFO("config", QString("preview_width_changed from=%1 to=%2")
-            .arg(m_previewWidth).arg(v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "preview_width"},
+                            {"from", QString::number(m_previewWidth)},
+                            {"to", QString::number(v)}});
         m_previewWidth = v; emit previewWidthChanged();
     }
 }
 void CalibrationController::setPreviewHeight(int v) {
     if (m_running) {
-        APP_LOG_WARNING("config", "preview_height_change_ignored reason=calibration_running");
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "preview_height"},
+                               {"reason", "calibration_running"}});
         return;
     }
     if (m_previewHeight != v) {
-        APP_LOG_INFO("config", QString("preview_height_changed from=%1 to=%2")
-            .arg(m_previewHeight).arg(v));
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "preview_height"},
+                            {"from", QString::number(m_previewHeight)},
+                            {"to", QString::number(v)}});
         m_previewHeight = v; emit previewHeightChanged();
     }
 }
@@ -288,15 +397,20 @@ void CalibrationController::connectRobot()
         return;
     }
     if (m_robotConnected) {
-        APP_LOG_INFO("robot", "connect_skipped reason=already_connected");
+        APP_LOG_EVENT_INFO("robot",
+                           "robot_connect",
+                           "skip",
+                           {{"reason", "already_connected"}});
         setStatus("机器人已连接");
         return;
     }
 
     QElapsedTimer timer;
     timer.start();
-    APP_LOG_INFO("robot", QString("connect_begin endpoint=%1:%2")
-        .arg(m_robotIp).arg(m_robotPort));
+    APP_LOG_EVENT_INFO("robot",
+                       "robot_connect",
+                       "start",
+                       {{"endpoint", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)}});
     setStatus("正在连接机器人...");
 
     QByteArray ip   = m_robotIp.toLocal8Bit();
@@ -305,8 +419,12 @@ void CalibrationController::connectRobot()
     CRresult ret = cr_create_robot(&m_robotHandle, ip.data(),
                                     m_robotPort, pwd.data());
     if (ret != sucess) {
-        APP_LOG_ERROR("robot", QString("connect_failed endpoint=%1:%2 error=%3 elapsed_ms=%4")
-            .arg(m_robotIp).arg(m_robotPort).arg(ret).arg(timer.elapsed()));
+        APP_LOG_EVENT_ERROR("robot",
+                            "robot_connect",
+                            "fail",
+                            {{"endpoint", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
+                             {"error", QString::number(ret)},
+                             {"elapsed_ms", QString::number(timer.elapsed())}});
         setStatus(QString("连接机器人失败 (err=%1)").arg(ret));
         emit robotConnectedChanged();
         return;
@@ -317,17 +435,27 @@ void CalibrationController::connectRobot()
 
     // 上电使能
     const bool ready = checkAndRestoreRobotHand();
-    APP_LOG_INFO("robot", QString("connect_complete handle=%1 ready=%2 elapsed_ms=%3")
-        .arg(static_cast<qulonglong>(m_robotHandle)).arg(ready).arg(timer.elapsed()));
+    APP_LOG_EVENT_INFO("robot",
+                       "robot_connect",
+                       "success",
+                       {{"handle", QString::number(static_cast<qulonglong>(m_robotHandle))},
+                        {"ready", ready ? "true" : "false"},
+                        {"elapsed_ms", QString::number(timer.elapsed())}});
     setStatus("机器人已连接");
 }
 
 void CalibrationController::disconnectRobot()
 {
-    APP_LOG_INFO("robot", QString("disconnect_begin connected=%1 handle=%2")
-        .arg(m_robotConnected).arg(static_cast<qulonglong>(m_robotHandle)));
+    APP_LOG_EVENT_INFO("robot",
+                       "robot_disconnect",
+                       "start",
+                       {{"connected", QString::number(m_robotConnected)},
+                        {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
     if (m_running) {
-        APP_LOG_WARNING("robot", "disconnect_rejected reason=calibration_running");
+        APP_LOG_EVENT_WARNING("robot",
+                              "robot_disconnect",
+                              "skip",
+                              {{"reason", "calibration_running"}});
         setStatus("请先取消标定并等待结束，再断开机器人");
         return;
     }
@@ -337,34 +465,54 @@ void CalibrationController::disconnectRobot()
         if (m_robotHandle != 0) {
             const CRresult result = cr_destroy_robot(m_robotHandle);
             if (result != sucess)
-                APP_LOG_WARNING("robot", QString("destroy_failed error=%1").arg(result));
+                APP_LOG_EVENT_WARNING("robot",
+                                     "robot_destroy",
+                                     "fail",
+                                     {{"error", QString::number(result)}});
         }
         m_robotHandle = 0;
         m_robotConnected = false;
         emit robotConnectedChanged();
     }
     setStatus("机器人已断开");
-    APP_LOG_INFO("robot", "disconnect_complete");
+    APP_LOG_EVENT_INFO("robot",
+                       "robot_disconnect",
+                       "complete",
+                       {{"connected", QString::number(false)}});
 }
 
 bool CalibrationController::checkAndRestoreRobotHand()
 {
     if (!m_robotConnected || m_robotHandle == 0) {
-        APP_LOG_WARNING("robot", QString("ensure_ready_rejected connected=%1 handle=%2")
-            .arg(m_robotConnected).arg(static_cast<qulonglong>(m_robotHandle)));
+        APP_LOG_EVENT_WARNING("robot",
+                              "robot_prepare",
+                              "skip",
+                              {{"reason", "not_connected"},
+                               {"connected", QString::number(m_robotConnected)},
+                               {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
         return false;
     }
 
     enum RobotModes robotMode;
     CRresult res = cr_get_robotMode(m_robotHandle, &robotMode);
     if (res != sucess) {
-        APP_LOG_ERROR("robot", QString("get_mode_failed error=%1").arg(res));
+        APP_LOG_EVENT_ERROR("robot",
+                           "robot_mode",
+                           "fail",
+                           {{"error", QString::number(res)}});
         setStatus("获取机械臂模式失败");
         return false;
     }
-    APP_LOG_INFO("robot", QString("mode_received mode=%1").arg(static_cast<int>(robotMode)));
+    APP_LOG_EVENT_DEBUG("robot",
+                        "robot_mode",
+                        "ready",
+                        {{"mode", QString::number(static_cast<int>(robotMode))}});
     if (robotMode != JointPowerOff) {
-        APP_LOG_INFO("robot", "ensure_ready_complete action=none");
+        APP_LOG_EVENT_INFO("robot",
+                           "robot_prepare",
+                           "success",
+                           {{"action", "already_powered"},
+                            {"mode", QString::number(static_cast<int>(robotMode))}});
         return true;  // 已上电
     }
 
@@ -374,14 +522,22 @@ bool CalibrationController::checkAndRestoreRobotHand()
     if (res == sucess) {
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
     } else {
-        APP_LOG_ERROR("robot", QString("fault_reset_failed error=%1").arg(res));
+        APP_LOG_EVENT_ERROR("robot",
+                            "robot_prepare",
+                            "fail",
+                            {{"step", "fault_reset"},
+                             {"error", QString::number(res)}});
         setStatus("故障复位失败");
         return false;
     }
 
     res = cr_poweron(m_robotHandle);
     if (res != sucess) {
-        APP_LOG_ERROR("robot", QString("power_on_failed error=%1").arg(res));
+        APP_LOG_EVENT_ERROR("robot",
+                            "robot_prepare",
+                            "fail",
+                            {{"step", "power_on"},
+                             {"error", QString::number(res)}});
         setStatus("上电失败");
         return false;
     }
@@ -395,21 +551,35 @@ bool CalibrationController::checkAndRestoreRobotHand()
         for (int poll = 1; poll <= kMaxPolls; ++poll) {
             const CRresult modeRet = cr_get_robotMode(m_robotHandle, &robotMode);
             if (modeRet != sucess) {
-                APP_LOG_ERROR("robot", QString("mode_wait_failed phase=%1 error=%2 poll=%3 elapsed_ms=%4")
-                    .arg(QString::fromLatin1(phase)).arg(modeRet).arg(poll).arg(timer.elapsed()));
+                APP_LOG_EVENT_ERROR("robot",
+                                    "robot_prepare",
+                                    "retry_fail",
+                                    {{"phase", QString::fromLatin1(phase)},
+                                     {"error", QString::number(modeRet)},
+                                     {"poll", QString::number(poll)},
+                                     {"elapsed_ms", QString::number(timer.elapsed())}});
                 return false;
             }
             if (robotMode == target) {
-                APP_LOG_INFO("robot", QString("mode_wait_complete phase=%1 mode=%2 polls=%3 elapsed_ms=%4")
-                    .arg(QString::fromLatin1(phase)).arg(static_cast<int>(robotMode))
-                    .arg(poll).arg(timer.elapsed()));
+                APP_LOG_EVENT_INFO("robot",
+                                  "robot_prepare",
+                                  "success",
+                                  {{"phase", QString::fromLatin1(phase)},
+                                   {"mode", QString::number(static_cast<int>(robotMode))},
+                                   {"poll", QString::number(poll)},
+                                   {"elapsed_ms", QString::number(timer.elapsed())}});
                 return true;
             }
             std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
         }
-        APP_LOG_ERROR("robot", QString("mode_wait_timeout phase=%1 target=%2 last_mode=%3 elapsed_ms=%4")
-            .arg(QString::fromLatin1(phase)).arg(static_cast<int>(target))
-            .arg(static_cast<int>(robotMode)).arg(timer.elapsed()));
+        APP_LOG_EVENT_ERROR("robot",
+                            "robot_prepare",
+                            "timeout",
+                            {{"phase", QString::fromLatin1(phase)},
+                             {"target", QString::number(static_cast<int>(target))},
+                             {"last_mode", QString::number(static_cast<int>(robotMode))},
+                             {"elapsed_ms", QString::number(timer.elapsed())},
+                             {"poll_limit", QString::number(300)}});
         return false;
     };
 
@@ -420,7 +590,11 @@ bool CalibrationController::checkAndRestoreRobotHand()
 
     res = cr_enable(m_robotHandle);
     if (res != sucess) {
-        APP_LOG_ERROR("robot", QString("enable_failed error=%1").arg(res));
+        APP_LOG_EVENT_ERROR("robot",
+                            "robot_prepare",
+                            "fail",
+                            {{"step", "enable"},
+                             {"error", QString::number(res)}});
         setStatus("使能失败");
         return false;
     }
@@ -431,8 +605,11 @@ bool CalibrationController::checkAndRestoreRobotHand()
     }
 
     setStatus("机械臂已上电使能");
-    APP_LOG_INFO("robot", QString("ensure_ready_complete mode=%1")
-        .arg(static_cast<int>(robotMode)));
+    APP_LOG_EVENT_INFO("robot",
+                       "robot_prepare",
+                       "success",
+                       {{"mode", QString::number(static_cast<int>(robotMode))},
+                        {"result", "ready"}});
     return true;
 }
 
@@ -443,25 +620,35 @@ bool CalibrationController::checkAndRestoreRobotHand()
 void CalibrationController::openCamera()
 {
     if (m_running) {
-        APP_LOG_WARNING("camera", "open_rejected reason=calibration_running");
+        APP_LOG_EVENT_WARNING("camera",
+                              "camera_open",
+                              "skip",
+                              {{"reason", "calibration_running"}});
         setStatus("标定运行中，不能更改相机连接");
         return;
     }
     if (m_cameraOpened) {
-        APP_LOG_INFO("camera", "open_skipped reason=already_open");
+        APP_LOG_EVENT_INFO("camera",
+                           "camera_open",
+                           "skip",
+                           {{"reason", "already_open"}});
         return;
     }
 
     QElapsedTimer timer;
     timer.start();
-    APP_LOG_INFO("camera", QString("open_begin endpoint=%1:%2 requested=%3x%4 backend=%5")
-        .arg(m_cameraIp).arg(m_cameraPort).arg(m_previewWidth).arg(m_previewHeight)
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_open",
+                       "start",
+                       {{"endpoint", QString("%1:%2").arg(m_cameraIp).arg(m_cameraPort)},
+                        {"requested", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)},
 #ifdef useORB
-        .arg("orbbec")
+                        {"backend", "orbbec"}
 #else
-        .arg("mvs")
+                        {"backend", "mvs"}
 #endif
-    );
+                       ,
+                        {"status", "opening"}});
     try {
 
     // 关闭旧相机（如果存在且配置可能已变更）
@@ -477,9 +664,11 @@ void CalibrationController::openCamera()
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
 
-    APP_LOG_INFO("camera", QString("creating_instance endpoint=%1:%2 resolution=%3x%4")
-        .arg(QString::fromStdString(cfg.cam_ip)).arg(cfg.cam_port)
-        .arg(cfg.cam_width).arg(cfg.cam_height));
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_open",
+                       "instance_create",
+                       {{"endpoint", QString("%1:%2").arg(QString::fromStdString(cfg.cam_ip)).arg(cfg.cam_port)},
+                        {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)}});
 
 #ifdef useORB
     m_camera = std::make_shared<OrbbecCameraV2>(cfg);
@@ -489,7 +678,11 @@ void CalibrationController::openCamera()
 
     setStatus("正在打开相机...");
     if (!m_camera->open()) {
-        APP_LOG_ERROR("camera", QString("open_failed elapsed_ms=%1").arg(timer.elapsed()));
+        APP_LOG_EVENT_ERROR("camera",
+                            "camera_open",
+                            "fail",
+                            {{"reason", "open_failed"},
+                             {"elapsed_ms", QString::number(timer.elapsed())}});
         setStatus("打开相机失败");
         emit cameraOpenedChanged();
         return;
@@ -523,31 +716,47 @@ void CalibrationController::openCamera()
         out << "camera_matrix" << camera_matrix;
         out << "distortion_coefficients" << dist_coeffs;
         out.release();
-        APP_LOG_INFO("camera", QString("intrinsics_saved path=%1 fx=%2 fy=%3 cx=%4 cy=%5 distortion_count=%6")
-            .arg(QString::fromStdString(m_paramPath + "camera_params.yaml"))
-            .arg(camera_matrix.at<double>(0, 0), 0, 'f', 4)
-            .arg(camera_matrix.at<double>(1, 1), 0, 'f', 4)
-            .arg(camera_matrix.at<double>(0, 2), 0, 'f', 4)
-            .arg(camera_matrix.at<double>(1, 2), 0, 'f', 4)
-            .arg(distortionCount));
+        APP_LOG_EVENT_INFO("camera",
+                           "camera_intrinsics",
+                           "saved",
+                           {{"path", QString::fromStdString(m_paramPath + "camera_params.yaml")},
+                            {"fx", QString::number(camera_matrix.at<double>(0, 0), 'f', 4)},
+                            {"fy", QString::number(camera_matrix.at<double>(1, 1), 'f', 4)},
+                            {"cx", QString::number(camera_matrix.at<double>(0, 2), 'f', 4)},
+                            {"cy", QString::number(camera_matrix.at<double>(1, 2), 'f', 4)},
+                            {"distortion_count", QString::number(static_cast<int>(distortionCount))}});
     } else {
-        APP_LOG_WARNING("camera", QString("invalid_intrinsics outer_size=%1")
-            .arg(intrinsics.size()));
+        APP_LOG_EVENT_WARNING("camera",
+                              "camera_intrinsics",
+                              "skip",
+                              {{"reason", "invalid_intrinsics"},
+                               {"outer_size", QString::number(intrinsics.size())}});
     }
 
     setStatus("相机已打开");
-    APP_LOG_INFO("camera", QString("open_complete elapsed_ms=%1").arg(timer.elapsed()));
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_open",
+                       "success",
+                       {{"elapsed_ms", QString::number(timer.elapsed())},
+                        {"opened", "true"}});
     } catch (const std::exception& e) {
-        APP_LOG_ERROR("camera", QString("open_exception type=std message=%1 elapsed_ms=%2")
-            .arg(QString::fromUtf8(e.what())).arg(timer.elapsed()));
+        APP_LOG_EVENT_ERROR("camera",
+                            "camera_open",
+                            "fail",
+                            {{"type", "std"},
+                             {"message", QString::fromUtf8(e.what())},
+                             {"elapsed_ms", QString::number(timer.elapsed())}});
         if (m_camera)
             m_camera->close();
         m_cameraOpened = false;
         emit cameraOpenedChanged();
         setStatus(QString("打开相机异常: %1").arg(QString::fromUtf8(e.what())));
     } catch (...) {
-        APP_LOG_ERROR("camera", QString("open_exception type=unknown elapsed_ms=%1")
-            .arg(timer.elapsed()));
+        APP_LOG_EVENT_ERROR("camera",
+                            "camera_open",
+                            "fail",
+                            {{"type", "unknown"},
+                             {"elapsed_ms", QString::number(timer.elapsed())}});
         if (m_camera)
             m_camera->close();
         m_cameraOpened = false;
@@ -558,11 +767,16 @@ void CalibrationController::openCamera()
 
 void CalibrationController::closeCamera()
 {
-    APP_LOG_INFO("camera", QString("close_begin opened=%1 instance=%2")
-        .arg(m_cameraOpened)
-        .arg(reinterpret_cast<quintptr>(m_camera.get()), 0, 16));
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_close",
+                       "start",
+                       {{"opened", QString::number(m_cameraOpened)},
+                        {"instance", QString::number(reinterpret_cast<quintptr>(m_camera.get()), 16)}});
     if (m_running) {
-        APP_LOG_WARNING("camera", "close_rejected reason=calibration_running");
+        APP_LOG_EVENT_WARNING("camera",
+                              "camera_close",
+                              "skip",
+                              {{"reason", "calibration_running"}});
         setStatus("请先取消标定并等待结束，再关闭相机");
         return;
     }
@@ -574,7 +788,10 @@ void CalibrationController::closeCamera()
     m_cameraOpened = false;
     emit cameraOpenedChanged();
     setStatus("相机关闭");
-    APP_LOG_INFO("camera", "close_complete");
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_close",
+                       "complete",
+                       {{"opened", "false"}});
 }
 
 // ===================================================================
@@ -584,19 +801,29 @@ void CalibrationController::closeCamera()
 void CalibrationController::startPreview()
 {
     if (m_previewActive) {
-        APP_LOG_INFO("preview", "start_skipped reason=already_active");
+        APP_LOG_EVENT_INFO("preview",
+                           "preview_start",
+                           "skip",
+                           {{"reason", "already_active"}});
         return;
     }
     if (!m_camera || !m_cameraOpened) {
-        APP_LOG_WARNING("preview", QString("start_rejected camera_instance=%1 camera_opened=%2")
-            .arg(static_cast<bool>(m_camera)).arg(m_cameraOpened));
+        APP_LOG_EVENT_WARNING("preview",
+                              "preview_start",
+                              "skip",
+                              {{"reason", "camera_not_ready"},
+                               {"camera_instance", QString::number(static_cast<bool>(m_camera))},
+                               {"camera_opened", QString::number(m_cameraOpened)}});
         setStatus("请先打开相机");
         return;
     }
 
     try {
-        APP_LOG_INFO("preview", QString("start_begin calibration_type=%1 interval_ms=%2")
-            .arg(m_calibrationType).arg(m_previewTimer->interval()));
+        APP_LOG_EVENT_INFO("preview",
+                           "preview_start",
+                           "start",
+                           {{"calibration_type", m_calibrationType},
+                            {"interval_ms", QString::number(m_previewTimer->interval())}});
         // 创建预览用的 ChArUco 检测器
         CharucoBoardConfig board_cfg;  // 默认: 7x5, 40mm, 28mm
 
@@ -616,14 +843,23 @@ void CalibrationController::startPreview()
         m_previewActive = true;
         emit previewActiveChanged();
         setStatus("预览中 — 调整位姿后点击开始标定");
-        APP_LOG_INFO("preview", "start_complete");
+        APP_LOG_EVENT_INFO("preview",
+                           "preview_start",
+                           "success",
+                           {{"calibration_type", m_calibrationType}});
     } catch (const std::exception& e) {
-        APP_LOG_ERROR("preview", QString("start_exception type=std message=%1")
-            .arg(QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("preview",
+                            "preview_start",
+                            "fail",
+                            {{"type", "std"},
+                             {"message", QString::fromUtf8(e.what())}});
         m_previewDetector.reset();
         setStatus(QString("启动预览异常: %1").arg(QString::fromUtf8(e.what())));
     } catch (...) {
-        APP_LOG_ERROR("preview", "start_exception type=unknown");
+        APP_LOG_EVENT_ERROR("preview",
+                            "preview_start",
+                            "fail",
+                            {{"type", "unknown"}});
         m_previewDetector.reset();
         setStatus("启动预览发生未知异常");
     }
@@ -637,8 +873,11 @@ void CalibrationController::stopPreview()
     m_previewActive = false;
     emit previewActiveChanged();
     if (wasActive) {
-        APP_LOG_INFO("preview", QString("stop_complete frames=%1 empty_frames=%2")
-            .arg(m_previewFrameCount).arg(m_previewEmptyCount));
+        APP_LOG_EVENT_INFO("preview",
+                           "preview_stop",
+                           "success",
+                           {{"frames", QString::number(m_previewFrameCount)},
+                            {"empty_frames", QString::number(m_previewEmptyCount)}});
     }
 }
 
@@ -652,8 +891,11 @@ void CalibrationController::onPreviewTick()
     if (frame.empty()) {
         ++m_previewEmptyCount;
         if (m_previewEmptyCount == 1 || m_previewEmptyCount % 150 == 0) {
-            APP_LOG_WARNING("preview", QString("empty_frame count=%1 successful_frames=%2")
-                .arg(m_previewEmptyCount).arg(m_previewFrameCount));
+            APP_LOG_EVENT_WARNING("preview",
+                                  "preview_frame",
+                                  "empty",
+                                  {{"empty_count", QString::number(m_previewEmptyCount)},
+                                   {"successful_frames", QString::number(m_previewFrameCount)}});
         }
         return;
     }
@@ -680,27 +922,42 @@ void CalibrationController::onPreviewTick()
     }
 
     if (!m_haveBoardDetectionState || boardDetected != m_lastBoardDetected) {
-        APP_LOG_INFO("preview", QString("board_detection_changed detected=%1 frame=%2")
-            .arg(boardDetected).arg(m_previewFrameCount));
+        APP_LOG_EVENT_INFO("preview",
+                           "preview_board_detect",
+                           "changed",
+                           {{"detected", boardDetected ? "true" : "false"},
+                            {"frame", QString::number(m_previewFrameCount)}});
         m_haveBoardDetectionState = true;
         m_lastBoardDetected = boardDetected;
     }
     if (m_previewFrameCount == 1 || m_previewFrameCount % 150 == 0) {
-        APP_LOG_DEBUG("preview", QString("heartbeat frames=%1 empty_frames=%2 size=%3x%4 channels=%5 board=%6")
-            .arg(m_previewFrameCount).arg(m_previewEmptyCount)
-            .arg(frame.cols).arg(frame.rows).arg(frame.channels()).arg(boardDetected));
+        APP_LOG_EVENT_DEBUG("preview",
+                           "preview_frame",
+                           "heartbeat",
+                           {{"frame", QString::number(m_previewFrameCount)},
+                            {"empty_frames", QString::number(m_previewEmptyCount)},
+                            {"size", QString("%1x%2").arg(frame.cols).arg(frame.rows)},
+                            {"channels", QString::number(frame.channels())},
+                            {"board", boardDetected ? "true" : "false"}});
     }
 
     publishFrame(display);
     emit frameUpdated();
     } catch (const std::exception& e) {
-        APP_LOG_ERROR("preview", QString("tick_exception type=std message=%1 frame=%2")
-            .arg(QString::fromUtf8(e.what())).arg(m_previewFrameCount));
+        APP_LOG_EVENT_ERROR("preview",
+                            "preview_tick",
+                            "exception",
+                            {{"type", "std"},
+                             {"message", QString::fromUtf8(e.what())},
+                             {"frame", QString::number(m_previewFrameCount)}});
         stopPreview();
         setStatus(QString("预览异常: %1").arg(QString::fromUtf8(e.what())));
     } catch (...) {
-        APP_LOG_ERROR("preview", QString("tick_exception type=unknown frame=%1")
-            .arg(m_previewFrameCount));
+        APP_LOG_EVENT_ERROR("preview",
+                            "preview_tick",
+                            "exception",
+                            {{"type", "unknown"},
+                             {"frame", QString::number(m_previewFrameCount)}});
         stopPreview();
         setStatus("预览发生未知异常");
     }
@@ -713,9 +970,11 @@ void CalibrationController::onPreviewTick()
 void CalibrationController::publishFrame(const cv::Mat& bgr)
 {
     if (bgr.empty() || !m_imageProvider) {
-        APP_LOG_WARNING("image", QString("publish_skipped empty=%1 provider=%2")
-            .arg(bgr.empty())
-            .arg(reinterpret_cast<quintptr>(m_imageProvider), 0, 16));
+        APP_LOG_EVENT_WARNING("image",
+                              "publish_frame",
+                              "skip",
+                              {{"empty", bgr.empty() ? "true" : "false"},
+                               {"provider", QString::number(reinterpret_cast<quintptr>(m_imageProvider), 16)}});
         return;
     }
 
@@ -736,8 +995,11 @@ void CalibrationController::publishFrame(const cv::Mat& bgr)
                       static_cast<int>(converted.step),
                       QImage::Format_RGBA8888);
     } else {
-        APP_LOG_WARNING("image", QString("publish_unsupported_channels channels=%1 size=%2x%3")
-            .arg(bgr.channels()).arg(bgr.cols).arg(bgr.rows));
+        APP_LOG_EVENT_WARNING("image",
+                              "publish_frame",
+                              "fail",
+                              {{"channels", QString::number(bgr.channels())},
+                               {"size", QString("%1x%2").arg(bgr.cols).arg(bgr.rows)}});
         return;
     }
 
@@ -751,26 +1013,38 @@ void CalibrationController::publishFrame(const cv::Mat& bgr)
 void CalibrationController::startCalibration()
 {
     if (m_running) {
-        APP_LOG_WARNING("calibration", "start_rejected reason=already_running");
+        APP_LOG_EVENT_WARNING("calibration",
+                              "calibration_start",
+                              "skip",
+                              {{"reason", "already_running"}});
         setStatus("标定已在运行中");
         return;
     }
     if (!m_robotConnected) {
-        APP_LOG_WARNING("calibration", "start_rejected reason=robot_disconnected");
+        APP_LOG_EVENT_WARNING("calibration",
+                              "calibration_start",
+                              "skip",
+                              {{"reason", "robot_disconnected"}});
         setStatus("请先连接机器人");
         return;
     }
     if (!m_cameraOpened) {
-        APP_LOG_WARNING("calibration", "start_rejected reason=camera_closed");
+        APP_LOG_EVENT_WARNING("calibration",
+                              "calibration_start",
+                              "skip",
+                              {{"reason", "camera_closed"}});
         setStatus("请先打开相机");
         return;
     }
 
-    APP_LOG_INFO("calibration", QString("start_requested type=%1 robot=%2:%3 camera=%4:%5 "
-                                         "resolution=%6x%7 camera_to_tcp_end=%8")
-        .arg(m_calibrationType, m_robotIp).arg(m_robotPort)
-        .arg(m_cameraIp).arg(m_cameraPort)
-        .arg(m_previewWidth).arg(m_previewHeight).arg(m_cameraToTcpEnd));
+    APP_LOG_EVENT_INFO("calibration",
+                       "calibration_start",
+                       "start",
+                       {{"type", m_calibrationType},
+                        {"robot", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
+                        {"camera", QString("%1:%2").arg(m_cameraIp).arg(m_cameraPort)},
+                        {"resolution", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)},
+                        {"camera_to_tcp_end", QString::number(m_cameraToTcpEnd)}});
 
     // 标定期间暂停预览（标定线程会独占相机）
     stopPreview();
@@ -794,13 +1068,21 @@ void CalibrationController::startCalibration()
             m_robotPort,
             m_cameraToTcpEnd,
             m_camera);
-        APP_LOG_INFO("calibration", "worker_thread_created");
+        APP_LOG_EVENT_INFO("calibration",
+                           "calibration_thread",
+                           "start",
+                           {{"type", m_calibrationType},
+                            {"robot", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
+                            {"camera", QString::number(reinterpret_cast<quintptr>(m_camera.get()), 16)}});
     } catch (const std::exception& e) {
         m_running = false;
         const QString message = QString("无法启动标定线程: %1").arg(
             QString::fromLocal8Bit(e.what()));
-        APP_LOG_ERROR("calibration", QString("worker_thread_create_failed message=%1")
-            .arg(QString::fromLocal8Bit(e.what())));
+        APP_LOG_EVENT_ERROR("calibration",
+                            "calibration_thread",
+                            "fail",
+                            {{"type", "std"},
+                             {"message", QString::fromLocal8Bit(e.what())}});
         setStatus(message);
         emit runningChanged();
         emit calibrationFinished(false, message);
@@ -810,10 +1092,16 @@ void CalibrationController::startCalibration()
 void CalibrationController::stopCalibration()
 {
     if (!m_running) {
-        APP_LOG_DEBUG("calibration", "cancel_ignored reason=not_running");
+        APP_LOG_EVENT_DEBUG("calibration",
+                           "calibration_cancel",
+                           "skip",
+                           {{"reason", "not_running"}});
         return;
     }
-    APP_LOG_WARNING("calibration", "cancel_requested");
+    APP_LOG_EVENT_WARNING("calibration",
+                          "calibration_cancel",
+                          "requested",
+                          {{"requested", "true"}});
     m_cancelRequested = true;
     setStatus("正在取消标定...");
 }
@@ -822,9 +1110,15 @@ void CalibrationController::waitForCalibrationThread()
 {
     if (m_calibThread.joinable() &&
         m_calibThread.get_id() != std::this_thread::get_id()) {
-        APP_LOG_DEBUG("calibration", "waiting_for_worker_thread");
+        APP_LOG_EVENT_DEBUG("calibration",
+                           "calibration_thread",
+                           "waiting",
+                           {{"action", "join"}});
         m_calibThread.join();
-        APP_LOG_DEBUG("calibration", "worker_thread_joined");
+        APP_LOG_EVENT_DEBUG("calibration",
+                           "calibration_thread",
+                           "joined",
+                           {{"action", "join_completed"}});
     }
 }
 
@@ -837,12 +1131,14 @@ void CalibrationController::calibrationThreadFunc(
 {
     QElapsedTimer timer;
     timer.start();
-    APP_LOG_INFO("calibration", QString("worker_started type=%1 robot=%2:%3 camera_instance=%4 "
-                                         "camera_to_tcp_end=%5 output=%6")
-        .arg(calibrationType, robotIp).arg(robotPort)
-        .arg(reinterpret_cast<quintptr>(camera.get()), 0, 16)
-        .arg(cameraToTcpEnd)
-        .arg(QString::fromStdString(m_calibrationPath)));
+    APP_LOG_EVENT_INFO("calibration",
+                       "calibration_pipeline",
+                       "worker_started",
+                       {{"type", calibrationType},
+                        {"robot", QString("%1:%2").arg(robotIp).arg(robotPort)},
+                        {"camera_instance", QString::number(reinterpret_cast<quintptr>(camera.get()), 16)},
+                        {"camera_to_tcp_end", QString::number(cameraToTcpEnd)},
+                        {"output", QString::fromStdString(m_calibrationPath)}});
     try {
     // ================================================================
     //  眼在手内 (eye_in_hand)
@@ -860,15 +1156,23 @@ void CalibrationController::calibrationThreadFunc(
             fs["distortion_coefficients"] >> dist_coeffs;
             fs.release();
         }
-        APP_LOG_INFO("calibration", QString("eye_in_hand_intrinsics path=%1 loaded=%2 matrix=%3x%4 dist=%5")
-            .arg(QString::fromStdString(cam_file))
-            .arg(!camera_matrix.empty())
-            .arg(camera_matrix.cols).arg(camera_matrix.rows)
-            .arg(dist_coeffs.total()));
+        APP_LOG_EVENT_INFO("calibration",
+                           "calibration_input",
+                           "matrix_load",
+                           {{"type", "eye_in_hand"},
+                            {"path", QString::fromStdString(cam_file)},
+                            {"loaded", !camera_matrix.empty() ? "true" : "false"},
+                            {"matrix_rows", QString::number(camera_matrix.rows)},
+                            {"matrix_cols", QString::number(camera_matrix.cols)},
+                            {"dist_count", QString::number(static_cast<int>(dist_coeffs.total()))}});
 
         // 2. 确保机器人上电
         if (!checkAndRestoreRobotHand()) {
-            APP_LOG_ERROR("calibration", "robot_prepare_failed");
+            APP_LOG_EVENT_ERROR("calibration",
+                                "calibration_pipeline",
+                                "fail",
+                                {{"type", "eye_in_hand"},
+                                 {"reason", "robot_prepare_failed"}});
             setStatus("机器人上电使能失败");
             goto done;
         }
@@ -895,14 +1199,20 @@ void CalibrationController::calibrationThreadFunc(
                 m_paramPath + "hand_eye_result.yaml",
                 calibrationCallback);
 
-            APP_LOG_INFO("calibration", QString("eye_in_hand_core_returned success=%1 cancelled=%2 "
-                                                 "valid_frames=%3 error_mm=%4 message=%5")
-                .arg(ok).arg(m_cancelRequested.load()).arg(result.valid_frames)
-                .arg(result.reproj_error * 1000.0, 0, 'f', 6)
-                .arg(QString::fromStdString(result.message)));
+            APP_LOG_EVENT_INFO("calibration",
+                               "calibration_pipeline",
+                               "eye_in_hand_result",
+                               {{"success", ok ? "true" : "false"},
+                                {"cancelled", m_cancelRequested.load() ? "true" : "false"},
+                                {"valid_frames", QString::number(result.valid_frames)},
+                                {"error_mm", QString::number(result.reproj_error * 1000.0, 'f', 6)},
+                                {"message", QString::fromStdString(result.message)}});
 
             if (m_cancelRequested) {
-                APP_LOG_WARNING("calibration", "eye_in_hand_cancelled");
+                APP_LOG_EVENT_WARNING("calibration",
+                                      "calibration_pipeline",
+                                      "cancelled",
+                                      {{"type", "eye_in_hand"}});
                 setStatus("标定已取消");
                 goto done;
             }
@@ -916,8 +1226,11 @@ void CalibrationController::calibrationThreadFunc(
                     outCam << "camera_matrix" << result.camera_matrix;
                     outCam << "distortion_coefficients" << result.dist_coeffs;
                     outCam.release();
-                    APP_LOG_INFO("calibration", QString("eye_in_hand_intrinsics_saved path=%1")
-                        .arg(QString::fromStdString(cameraOutput)));
+                    APP_LOG_EVENT_INFO("calibration",
+                                       "calibration_output",
+                                       "intrinsics_saved",
+                                       {{"type", "eye_in_hand"},
+                                        {"path", QString::fromStdString(cameraOutput)}});
                 }
 
                 std::stringstream ss_in;
@@ -932,12 +1245,18 @@ void CalibrationController::calibrationThreadFunc(
 
                 setResult(resText);
                 setStatus("眼在手内标定成功!");
-                APP_LOG_INFO("calibration", QString("eye_in_hand_success result=%1")
-                    .arg(QString::fromStdString(m_paramPath + "hand_eye_result.yaml")));
+                APP_LOG_EVENT_INFO("calibration",
+                                   "calibration_pipeline",
+                                   "success",
+                                   {{"type", "eye_in_hand"},
+                                    {"result", QString::fromStdString(m_paramPath + "hand_eye_result.yaml" )}});
                 emit calibrationFinished(true, "标定成功");
             } else {
-                APP_LOG_ERROR("calibration", QString("eye_in_hand_failed message=%1")
-                    .arg(QString::fromStdString(result.message)));
+                APP_LOG_EVENT_ERROR("calibration",
+                                    "calibration_pipeline",
+                                    "fail",
+                                    {{"type", "eye_in_hand"},
+                                     {"message", QString::fromStdString(result.message)}});
                 setStatus(QString("标定失败: %1").arg(
                               QString::fromStdString(result.message)));
                 emit calibrationFinished(false,
@@ -970,22 +1289,34 @@ void CalibrationController::calibrationThreadFunc(
             cfg_fs["min_corners"] >> pose_config.min_corners;
             cfg_fs["min_valid_frames"] >> pose_config.min_valid_frames;
             cfg_fs.release();
-            APP_LOG_INFO("calibration", QString("eye_to_hand_config_loaded path=%1")
-                .arg(QString::fromStdString(cfg_path)));
+            APP_LOG_EVENT_INFO("calibration",
+                               "calibration_input",
+                               "config_load",
+                               {{"type", "eye_to_hand"},
+                                {"status", "loaded"},
+                                {"path", QString::fromStdString(cfg_path)}});
         } else {
-            APP_LOG_WARNING("calibration", QString("eye_to_hand_config_missing path=%1 using_defaults=true")
-                .arg(QString::fromStdString(cfg_path)));
+            APP_LOG_EVENT_WARNING("calibration",
+                                  "calibration_input",
+                                  "config_load",
+                                  {{"type", "eye_to_hand"},
+                                   {"status", "missing"},
+                                   {"path", QString::fromStdString(cfg_path)},
+                                   {"using_defaults", "true"}});
         }
 
-        APP_LOG_INFO("calibration", QString("eye_to_hand_config offsets={x:%1,y:%2,z:%3,rx:%4,ry:%5,rz:%6} "
-                                             "min_corners=%7 min_valid_frames=%8")
-            .arg(formatDoubleVector(pose_config.offset_x))
-            .arg(formatDoubleVector(pose_config.offset_y))
-            .arg(formatDoubleVector(pose_config.offset_z))
-            .arg(formatDoubleVector(pose_config.offset_rx))
-            .arg(formatDoubleVector(pose_config.offset_ry))
-            .arg(formatDoubleVector(pose_config.offset_rz))
-            .arg(pose_config.min_corners).arg(pose_config.min_valid_frames));
+        APP_LOG_EVENT_INFO("calibration",
+                           "calibration_input",
+                           "config_detail",
+                           {{"type", "eye_to_hand"},
+                            {"offset_x", formatDoubleVector(pose_config.offset_x)},
+                            {"offset_y", formatDoubleVector(pose_config.offset_y)},
+                            {"offset_z", formatDoubleVector(pose_config.offset_z)},
+                            {"offset_rx", formatDoubleVector(pose_config.offset_rx)},
+                            {"offset_ry", formatDoubleVector(pose_config.offset_ry)},
+                            {"offset_rz", formatDoubleVector(pose_config.offset_rz)},
+                            {"min_corners", QString::number(pose_config.min_corners)},
+                            {"min_valid_frames", QString::number(pose_config.min_valid_frames)}});
 
         std::string save_dir = m_calibrationPath + "eye_to_hand/";
 
@@ -1004,14 +1335,20 @@ void CalibrationController::calibrationThreadFunc(
                 save_dir,
                 calibrationCallback);
 
-            APP_LOG_INFO("calibration", QString("eye_to_hand_core_returned success=%1 cancelled=%2 "
-                                                 "valid_frames=%3 error_mm=%4 message=%5")
-                .arg(ok).arg(m_cancelRequested.load()).arg(result.valid_frames)
-                .arg(result.reproj_error * 1000.0, 0, 'f', 6)
-                .arg(QString::fromStdString(result.message)));
+            APP_LOG_EVENT_INFO("calibration",
+                               "calibration_pipeline",
+                               "eye_to_hand_result",
+                               {{"success", ok ? "true" : "false"},
+                                {"cancelled", m_cancelRequested.load() ? "true" : "false"},
+                                {"valid_frames", QString::number(result.valid_frames)},
+                                {"error_mm", QString::number(result.reproj_error * 1000.0, 'f', 6)},
+                                {"message", QString::fromStdString(result.message)}});
 
             if (m_cancelRequested) {
-                APP_LOG_WARNING("calibration", "eye_to_hand_cancelled");
+                APP_LOG_EVENT_WARNING("calibration",
+                                      "calibration_pipeline",
+                                      "cancelled",
+                                      {{"type", "eye_to_hand"}});
                 setStatus("标定已取消");
                 goto done;
             }
@@ -1025,8 +1362,11 @@ void CalibrationController::calibrationThreadFunc(
                 out << "reprojection_error_mm" << result.reproj_error * 1000.0;
                 out << "valid_frames" << result.valid_frames;
                 out.release();
-                APP_LOG_INFO("calibration", QString("eye_to_hand_result_saved path=%1")
-                    .arg(QString::fromStdString(out_file)));
+                APP_LOG_EVENT_INFO("calibration",
+                                   "calibration_output",
+                                   "result_saved",
+                                   {{"type", "eye_to_hand"},
+                                    {"path", QString::fromStdString(out_file)}});
 
                 // 保存相机内参（如果标定过程中更新了）
                 if (!result.camera_matrix.empty()) {
@@ -1036,8 +1376,11 @@ void CalibrationController::calibrationThreadFunc(
                     outCam << "camera_matrix" << result.camera_matrix;
                     outCam << "distortion_coefficients" << result.dist_coeffs;
                     outCam.release();
-                    APP_LOG_INFO("calibration", QString("eye_to_hand_intrinsics_saved path=%1")
-                        .arg(QString::fromStdString(cameraOutput)));
+                    APP_LOG_EVENT_INFO("calibration",
+                                       "calibration_output",
+                                       "intrinsics_saved",
+                                       {{"type", "eye_to_hand"},
+                                        {"path", QString::fromStdString(cameraOutput)}});
                 }
 
 
@@ -1053,11 +1396,17 @@ void CalibrationController::calibrationThreadFunc(
 
                 setResult(resText);
                 setStatus("眼在手外标定成功!");
-                APP_LOG_INFO("calibration", "eye_to_hand_success");
+                APP_LOG_EVENT_INFO("calibration",
+                                   "calibration_pipeline",
+                                   "success",
+                                   {{"type", "eye_to_hand"}});
                 emit calibrationFinished(true, "标定成功");
             } else {
-                APP_LOG_ERROR("calibration", QString("eye_to_hand_failed message=%1")
-                    .arg(QString::fromStdString(result.message)));
+                APP_LOG_EVENT_ERROR("calibration",
+                                    "calibration_pipeline",
+                                    "fail",
+                                    {{"type", "eye_to_hand"},
+                                     {"message", QString::fromStdString(result.message)}});
                 setStatus(QString("标定失败: %1").arg(
                               QString::fromStdString(result.message)));
                 emit calibrationFinished(false,
@@ -1066,24 +1415,35 @@ void CalibrationController::calibrationThreadFunc(
         }
         }
     } catch (const cv::Exception& e) {
-        APP_LOG_ERROR("calibration", QString("worker_exception type=opencv code=%1 file=%2 line=%3 message=%4")
-            .arg(e.code).arg(QString::fromStdString(e.file)).arg(e.line)
-            .arg(QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("calibration",
+                            "calibration_pipeline",
+                            "exception",
+                            {{"type", "opencv"},
+                             {"code", QString::number(e.code)},
+                             {"file", QString::fromStdString(e.file)},
+                             {"line", QString::number(e.line)},
+                             {"message", QString::fromUtf8(e.what())}});
         const QString message = QString("标定异常 (OpenCV): %1")
                                     .arg(QString::fromUtf8(e.what()));
         setStatus(message);
         setResult(message);
         emit calibrationFinished(false, message);
     } catch (const std::exception& e) {
-        APP_LOG_ERROR("calibration", QString("worker_exception type=std message=%1")
-            .arg(QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("calibration",
+                            "calibration_pipeline",
+                            "exception",
+                            {{"type", "std"},
+                             {"message", QString::fromUtf8(e.what())}});
         const QString message = QString("标定异常: %1")
                                     .arg(QString::fromUtf8(e.what()));
         setStatus(message);
         setResult(message);
         emit calibrationFinished(false, message);
     } catch (...) {
-        APP_LOG_ERROR("calibration", "worker_exception type=unknown");
+        APP_LOG_EVENT_ERROR("calibration",
+                            "calibration_pipeline",
+                            "exception",
+                            {{"type", "unknown"}});
         const QString message = "标定发生未知异常";
         setStatus(message);
         setResult(message);
@@ -1092,8 +1452,12 @@ void CalibrationController::calibrationThreadFunc(
 
 done:
     const bool robotHandleLost = (m_robotHandle == 0);
-    APP_LOG_INFO("calibration", QString("worker_finished elapsed_ms=%1 cancelled=%2 robot_handle_lost=%3")
-        .arg(timer.elapsed()).arg(m_cancelRequested.load()).arg(robotHandleLost));
+    APP_LOG_EVENT_INFO("calibration",
+                       "calibration_pipeline",
+                       "worker_finished",
+                       {{"elapsed_ms", QString::number(timer.elapsed())},
+                        {"cancelled", m_cancelRequested.load() ? "true" : "false"},
+                        {"robot_handle_lost", robotHandleLost ? "true" : "false"}});
     DiagnosticLogger::instance().flush();
     QMetaObject::invokeMethod(this, [this, robotHandleLost]() {
         m_running = false;
@@ -1114,13 +1478,19 @@ done:
 int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
 {
     if (!s_instance) {
-        APP_LOG_WARNING("calibration", "callback_ignored reason=no_controller");
+        APP_LOG_EVENT_WARNING("calibration",
+                              "calibration_callback",
+                              "ignore",
+                              {{"reason", "no_controller"}});
         return 0;
     }
 
     // 取消检查
     if (s_instance->m_cancelRequested) {
-        APP_LOG_WARNING("calibration", "callback_cancel_acknowledged");
+        APP_LOG_EVENT_WARNING("calibration",
+                              "calibration_callback",
+                              "acknowledged",
+                              {{"reason", "cancel_requested"}});
         return -1;
     }
 
@@ -1130,7 +1500,10 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
         int previous = s_instance->m_lastLoggedProgress.load();
         const bool shouldLog = previous < 0 || flag == 100 || flag / 10 > previous / 10;
         if (shouldLog && s_instance->m_lastLoggedProgress.compare_exchange_strong(previous, flag))
-            APP_LOG_INFO("calibration", QString("progress percent=%1").arg(flag));
+            APP_LOG_EVENT_INFO("calibration",
+                               "calibration_progress",
+                               "update",
+                               {{"percent", QString::number(flag)}});
     }
 
     // msg 非空时是已保存的图像路径，加载并发布到 QML 显示
@@ -1141,8 +1514,11 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
             img_path.find(".png") != std::string::npos) {
             cv::Mat frame = cv::imread(img_path);
             if (!frame.empty()) {
-                APP_LOG_DEBUG("calibration", QString("callback_image_loaded path=%1 size=%2x%3")
-                    .arg(QString::fromStdString(img_path)).arg(frame.cols).arg(frame.rows));
+                APP_LOG_EVENT_DEBUG("calibration",
+                                   "calibration_callback",
+                                   "image_loaded",
+                                   {{"path", QString::fromStdString(img_path)},
+                                    {"size", QString("%1x%2").arg(frame.cols).arg(frame.rows)}});
                 s_instance->publishFrame(frame);
                 // 通知 QML 刷新
                 QMetaObject::invokeMethod(s_instance, []() {
@@ -1150,8 +1526,10 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
                         emit s_instance->frameUpdated();
                 }, Qt::QueuedConnection);
             } else {
-                APP_LOG_WARNING("calibration", QString("callback_image_load_failed path=%1")
-                    .arg(QString::fromStdString(img_path)));
+                APP_LOG_EVENT_WARNING("calibration",
+                                      "calibration_callback",
+                                      "image_load_failed",
+                                      {{"path", QString::fromStdString(img_path)}});
             }
         }
     }
@@ -1191,8 +1569,11 @@ void CalibrationController::setStatus(const QString& msg)
     }
 
     if (m_statusMessage != msg) {
-        APP_LOG_INFO("state", QString("status_changed from=%1 to=%2")
-            .arg(m_statusMessage, msg));
+        APP_LOG_EVENT_INFO("state",
+                          "status_update",
+                          "changed",
+                          {{"from", m_statusMessage},
+                           {"to", msg}});
         m_statusMessage = msg;
         emit statusMessageChanged();
     }
@@ -1208,8 +1589,11 @@ void CalibrationController::setProgress(int p)
     }
 
     if (m_progress != p) {
-        APP_LOG_DEBUG("state", QString("progress_changed from=%1 to=%2")
-            .arg(m_progress).arg(p));
+        APP_LOG_EVENT_DEBUG("state",
+                           "progress_update",
+                           "changed",
+                           {{"from", QString::number(m_progress)},
+                            {"to", QString::number(p)}});
         m_progress = p;
         emit progressChanged();
     }
@@ -1225,7 +1609,10 @@ void CalibrationController::setResult(const QString& text)
     }
 
     m_resultText = text;
-    APP_LOG_INFO("state", QString("result_updated characters=%1 empty=%2")
-        .arg(text.size()).arg(text.isEmpty()));
+    APP_LOG_EVENT_INFO("state",
+                       "result_update",
+                       "changed",
+                       {{"characters", QString::number(text.size())},
+                        {"empty", text.isEmpty() ? "true" : "false"}});
     emit resultTextChanged();
 }

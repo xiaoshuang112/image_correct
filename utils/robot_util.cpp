@@ -38,8 +38,12 @@ CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS
     double init_joint[ROB_AXIS_NUM] = {};
     CRresult result = cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
     if (result != sucess) {
-        APP_LOG_ERROR("robot.motion", QString("line_move_get_initial_joint_failed handle=%1 error=%2")
-            .arg(robot_handle).arg(result));
+        APP_LOG_EVENT_ERROR("robot.motion",
+                            "joint_move_linear",
+                            "fail",
+                            {{"reason", "initial_joint_read_failed"},
+                             {"handle", QString::number(robot_handle)},
+                             {"error", QString::number(result)}});
         std::cerr << "[moveLine] 读取当前关节角失败 ret=" << result << std::endl;
         return result;
     }
@@ -96,13 +100,21 @@ CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS
 
 CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     const auto startedAt = std::chrono::steady_clock::now();
-    APP_LOG_INFO("robot.motion", QString("joint_move_begin handle=%1 target=%2")
-        .arg(robot_handle).arg(formatSixValues(joint)));
+    APP_LOG_EVENT_INFO("robot.motion",
+                       "joint_move",
+                       "start",
+                       {{"handle", QString::number(robot_handle)},
+                        {"target", formatSixValues(joint)}});
     double pose[6] = {0, 0, 0, 0, 0, 0};
     CRresult ret = cr_get_jointActualPos(robot_handle, pose);
     if (ret != sucess) {
-        APP_LOG_ERROR("robot.motion", QString("get_initial_joint_failed handle=%1 error=%2")
-            .arg(robot_handle).arg(ret));
+        APP_LOG_EVENT_ERROR("robot.motion",
+                            "joint_move",
+                            "fail",
+                            {{"phase", "query_initial_joint"},
+                             {"reason", "initial_joint_read"},
+                             {"handle", QString::number(robot_handle)},
+                             {"error", QString::number(ret)}});
         std::cerr << "[robot_util] cr_get_jointActualPos failed: "
                   << ret << std::endl;
         return ret;
@@ -124,16 +136,26 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     ret = cr_move_pointControlPara_transfer(
         (RobotHandle)robot_handle, simple, &para);
     if (ret != sucess) {
-        APP_LOG_ERROR("robot.motion", QString("point_parameter_conversion_failed error=%1 target=%2")
-            .arg(ret).arg(formatSixValues(joint)));
+        APP_LOG_EVENT_ERROR("robot.motion",
+                            "joint_move",
+                            "fail",
+                            {{"phase", "command_build"},
+                             {"reason", "point_parameter_conversion"},
+                             {"error", QString::number(ret)},
+                             {"target", formatSixValues(joint)}});
         std::cerr << "[robot_util] cr_move_pointControlPara_transfer failed: "
                   << ret << std::endl;
         return ret;
     }
     ret = cr_move_joint((RobotHandle)robot_handle, para, TRUE);
     if (ret != sucess) {
-        APP_LOG_ERROR("robot.motion", QString("joint_move_command_failed error=%1 target=%2")
-            .arg(ret).arg(formatSixValues(joint)));
+        APP_LOG_EVENT_ERROR("robot.motion",
+                            "joint_move",
+                            "fail",
+                            {{"phase", "command_send"},
+                             {"reason", "move_command"},
+                             {"error", QString::number(ret)},
+                             {"target", formatSixValues(joint)}});
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
     }
@@ -166,14 +188,24 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     (void)polls;
     (void)elapsedMs;
     if (reached) {
-        APP_LOG_INFO("robot.motion", QString("joint_move_complete elapsed_ms=%1 polls=%2 "
-                                              "read_failures=%3 actual=%4")
-            .arg(elapsedMs).arg(polls).arg(readFailures).arg(formatSixValues(actual)));
+        APP_LOG_EVENT_INFO("robot.motion",
+                           "joint_move",
+                           "success",
+                           {{"elapsed_ms", QString::number(elapsedMs)},
+                            {"polls", QString::number(polls)},
+                            {"read_failures", QString::number(readFailures)},
+                            {"actual", formatSixValues(actual)}});
     } else {
-        APP_LOG_ERROR("robot.motion", QString("joint_move_timeout elapsed_ms=%1 polls=%2 "
-                                               "read_failures=%3 target=%4 last_actual=%5")
-            .arg(elapsedMs).arg(polls).arg(readFailures)
-            .arg(formatSixValues(joint), formatSixValues(actual)));
+        APP_LOG_EVENT_ERROR("robot.motion",
+                            "joint_move",
+                            "fail",
+                            {{"phase", "reach"},
+                             {"reason", "timeout"},
+                             {"elapsed_ms", QString::number(elapsedMs)},
+                             {"polls", QString::number(polls)},
+                             {"read_failures", QString::number(readFailures)},
+                             {"target", formatSixValues(joint)},
+                             {"actual", formatSixValues(actual)}});
         return operate_timeout;
     }
 
@@ -230,14 +262,26 @@ bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM]
     double flangePos[ROB_AXIS_NUM] = {};
     CRresult ret = cr_kineForward(robot_handle, const_cast<double*>(joint), flangePos);
     if (ret != sucess) {
-        APP_LOG_ERROR("robot.kinematics", QString("forward_kinematics_failed handle=%1 error=%2 joint=%3")
-            .arg(robot_handle).arg(ret).arg(formatSixValues(joint)));
+        APP_LOG_EVENT_ERROR("robot.kinematics",
+                            "transform",
+                            "fail",
+                            {{"phase", "forward_kinematics"},
+                             {"reason", "forward_kinematics_failed"},
+                             {"handle", QString::number(robot_handle)},
+                             {"error", QString::number(ret)},
+                             {"joint", formatSixValues(joint)}});
         return false;
     }
     ret = cr_AxisAngle2Eule(flangePos, flangeEule);
     if (ret != sucess) {
-        APP_LOG_ERROR("robot.kinematics", QString("axis_to_euler_failed handle=%1 error=%2 flange_axis=%3")
-            .arg(robot_handle).arg(ret).arg(formatSixValues(flangePos)));
+        APP_LOG_EVENT_ERROR("robot.kinematics",
+                            "transform",
+                            "fail",
+                            {{"phase", "axis_to_euler"},
+                             {"reason", "axis_to_euler_failed"},
+                             {"handle", QString::number(robot_handle)},
+                             {"error", QString::number(ret)},
+                             {"flange_axis", formatSixValues(flangePos)}});
         return false;
     }
     return true;

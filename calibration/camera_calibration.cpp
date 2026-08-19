@@ -183,8 +183,13 @@ static bool calibrateCameraFiltered(
     cv::Mat& dist_coeffs) {
     if (object_points.size() != image_points.size() ||
         object_points.size() < kMinCalibrationFrames) {
-        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_rejected object_frames=%1 image_frames=%2")
-            .arg(object_points.size()).arg(image_points.size()));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_intrinsics_initial",
+                           "fail",
+                           {{"reason", "invalid_input"},
+                            {"object_frames", QString::number(object_points.size())},
+                            {"image_frames", QString::number(image_points.size())},
+                            {"min_required", QString::number(kMinCalibrationFrames)}});
         return false;
     }
 
@@ -205,9 +210,15 @@ static bool calibrateCameraFiltered(
     const auto startedAt = Clock::now();
     std::cout << "[cameraCalib] 初始非线性优化: " << selected.size()
               << "/" << object_points.size() << " 帧" << std::endl;
-    APP_LOG_INFO("camera.calibration", QString("initial_optimization_begin input_frames=%1 selected_frames=%2 cap=%3 image=%4x%5 solver=LU")
-        .arg(object_points.size()).arg(selected.size()).arg(kMaxInitialOptimizationFrames)
-        .arg(image_size.width).arg(image_size.height));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_initial",
+                       "start",
+                       {{"phase", "initial_optimizer"},
+                        {"input_frames", QString::number(object_points.size())},
+                        {"selected_frames", QString::number(selected.size())},
+                        {"solver", "LU"},
+                        {"image_w", QString::number(image_size.width)},
+                        {"image_h", QString::number(image_size.height)}});
 
     cv::Mat candidateMatrix = cv::Mat::eye(3, 3, CV_64F);
     cv::Mat candidateDistortion = cv::Mat::zeros(5, 1, CV_64F);
@@ -218,16 +229,26 @@ static bool calibrateCameraFiltered(
                                         candidateMatrix, candidateDistortion,
                                         rvecs, tvecs, kFastCalibrationSolverFlag);
     } catch (const cv::Exception& e) {
-        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_exception selected_frames=%1 elapsed_ms=%2 message=%3")
-            .arg(selected.size()).arg(elapsedMilliseconds(startedAt))
-            .arg(QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_intrinsics_initial",
+                           "fail",
+                           {{"phase", "initial_optimizer"},
+                            {"selected_frames", QString::number(selected.size())},
+                            {"elapsed_ms", QString::number(elapsedMilliseconds(startedAt))},
+                            {"exception", QString::fromUtf8(e.what())}});
         std::cerr << "[autoCalib] 最终相机标定异常: " << e.what() << std::endl;
         return false;
     }
 
     if (!calibrationResultIsValid(final_err, candidateMatrix, candidateDistortion)) {
-        APP_LOG_ERROR("camera.calibration", QString("initial_optimization_invalid_result error=%1 selected_frames=%2")
-            .arg(final_err).arg(selected.size()));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_intrinsics_initial",
+                           "fail",
+                           {{"phase", "initial_optimizer"},
+                            {"error_rms_px", QString::number(final_err, 'f', 6)},
+                            {"selected_frames", QString::number(selected.size())},
+                            {"camera_valid", candidateMatrix.empty() ? "false" : "true"},
+                            {"dist_valid", candidateDistortion.empty() ? "false" : "true"}});
         return false;
     }
 
@@ -237,8 +258,13 @@ static bool calibrateCameraFiltered(
     std::cout << "[cameraCalib] 初始优化完成: " << selected.size()
               << " 帧, " << elapsedMs << " ms, 重投影误差 "
               << final_err << " px" << std::endl;
-    APP_LOG_INFO("camera.calibration", QString("initial_optimization_complete selected_frames=%1 elapsed_ms=%2 rms_px=%3")
-        .arg(selected.size()).arg(elapsedMs).arg(final_err, 0, 'f', 6));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_initial",
+                       "success",
+                       {{"phase", "initial_optimizer"},
+                        {"selected_frames", QString::number(selected.size())},
+                        {"elapsed_ms", QString::number(elapsedMs)},
+                        {"rms_px", QString::number(final_err, 'f', 6)}});
     return true;
 }
 
@@ -255,8 +281,12 @@ static bool refineCameraIntrinsics(
     if (n < static_cast<int>(kMinCalibrationFrames) || all_img.size() != all_obj.size())
         return false;
 
-    APP_LOG_INFO("camera.calibration", QString("refine_evaluation_begin input_frames=%1 optimization_cap=%2")
-        .arg(n).arg(kMaxRefineOptimizationFrames));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_refine",
+                       "start",
+                       {{"phase", "evaluation"},
+                        {"input_frames", QString::number(n)},
+                        {"optimization_cap", QString::number(kMaxRefineOptimizationFrames)}});
 
     // 逐帧 solvePnP + 重投影误差 (快: ~0.2ms/帧)
     struct Rec { int idx; double err; };
@@ -275,13 +305,24 @@ static bool refineCameraIntrinsics(
             continue;
         recs.push_back({i, sum / proj.size()});
         if ((i + 1) % 50 == 0 || i + 1 == n) {
-            APP_LOG_INFO("camera.calibration", QString("refine_evaluation_progress processed=%1 total=%2 valid=%3 elapsed_ms=%4")
-                .arg(i + 1).arg(n).arg(recs.size()).arg(elapsedMilliseconds(stageStartedAt)));
+            APP_LOG_EVENT_DEBUG("camera.calibration",
+                               "camera_intrinsics_refine",
+                               "progress",
+                               {{"phase", "evaluation"},
+                                {"processed", QString::number(i + 1)},
+                                {"total", QString::number(n)},
+                                {"valid", QString::number(recs.size())},
+                                {"elapsed_ms", QString::number(elapsedMilliseconds(stageStartedAt))}});
         }
     }
     if (recs.size() < kMinCalibrationFrames) {
-        APP_LOG_WARNING("camera.calibration", QString("refine_skipped reason=insufficient_pnp_frames valid=%1 total=%2")
-            .arg(recs.size()).arg(n));
+        APP_LOG_EVENT_WARNING("camera.calibration",
+                              "camera_intrinsics_refine",
+                              "skip",
+                              {{"phase", "evaluation"},
+                               {"reason", "insufficient_pnp_frames"},
+                               {"valid_frames", QString::number(recs.size())},
+                               {"total_frames", QString::number(n)}});
         return false;
     }
 
@@ -307,8 +348,14 @@ static bool refineCameraIntrinsics(
             eligibleIndices.push_back(static_cast<size_t>(r.idx));
     }
     if (eligibleIndices.size() < kMinCalibrationFrames) {
-        APP_LOG_WARNING("camera.calibration", QString("refine_skipped reason=insufficient_inliers inliers=%1 median_px=%2 threshold_px=%3")
-            .arg(eligibleIndices.size()).arg(median, 0, 'f', 6).arg(thresh, 0, 'f', 6));
+        APP_LOG_EVENT_WARNING("camera.calibration",
+                              "camera_intrinsics_refine",
+                              "skip",
+                              {{"phase", "selection"},
+                               {"reason", "insufficient_inliers"},
+                               {"eligible", QString::number(eligibleIndices.size())},
+                               {"median_px", QString::number(median, 'f', 6)},
+                               {"threshold_px", QString::number(thresh, 'f', 6)}});
         return false;
     }
 
@@ -328,35 +375,54 @@ static bool refineCameraIntrinsics(
               << " 帧有效, " << eligibleIndices.size() << " 帧通过离群过滤; "
               << "精化优化选取 " << selectedIndices.size() << " 帧, 评估耗时 "
               << evaluationMs << " ms" << std::endl;
-    APP_LOG_INFO("camera.calibration", QString("refine_selection_complete evaluated=%1 eligible=%2 selected=%3 cap=%4 median_px=%5 mad_px=%6 threshold_px=%7 evaluation_ms=%8")
-        .arg(recs.size()).arg(eligibleIndices.size()).arg(selectedIndices.size())
-        .arg(kMaxRefineOptimizationFrames).arg(median, 0, 'f', 6)
-        .arg(mad, 0, 'f', 6).arg(thresh, 0, 'f', 6)
-        .arg(evaluationMs));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_refine",
+                       "select_done",
+                       {{"phase", "selection"},
+                        {"evaluated_frames", QString::number(recs.size())},
+                        {"eligible_frames", QString::number(eligibleIndices.size())},
+                        {"selected_frames", QString::number(selectedIndices.size())},
+                        {"cap", QString::number(kMaxRefineOptimizationFrames)},
+                        {"median_px", QString::number(median, 'f', 6)},
+                        {"mad_px", QString::number(mad, 'f', 6)},
+                        {"threshold_px", QString::number(thresh, 'f', 6)},
+                        {"evaluation_ms", QString::number(evaluationMs)}});
 
     std::vector<cv::Mat> rvecs, tvecs;
     cv::Mat refinedMatrix = K.clone();
     cv::Mat refinedDistortion = D.clone();
     double final_err = std::numeric_limits<double>::quiet_NaN();
     const auto optimizationStartedAt = Clock::now();
-    APP_LOG_INFO("camera.calibration", QString("refine_optimization_begin selected_frames=%1 solver=LU")
-        .arg(selectedIndices.size()));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_refine",
+                       "opt_start",
+                       {{"phase", "optimization"},
+                        {"selected_frames", QString::number(selectedIndices.size())},
+                        {"solver", "LU"}});
     try {
         final_err = cv::calibrateCamera(good_obj, good_img, image_size,
                                         refinedMatrix, refinedDistortion, rvecs, tvecs,
                                         cv::CALIB_USE_INTRINSIC_GUESS |
                                             kFastCalibrationSolverFlag);
     } catch (const cv::Exception& e) {
-        APP_LOG_ERROR("camera.calibration", QString("refine_optimization_exception selected_frames=%1 elapsed_ms=%2 message=%3")
-            .arg(selectedIndices.size()).arg(elapsedMilliseconds(optimizationStartedAt))
-            .arg(QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_intrinsics_refine",
+                           "fail",
+                           {{"phase", "optimization"},
+                            {"selected_frames", QString::number(selectedIndices.size())},
+                            {"elapsed_ms", QString::number(elapsedMilliseconds(optimizationStartedAt))},
+                            {"exception", QString::fromUtf8(e.what())}});
         std::cerr << "[refineCam] 相机内参精化异常: " << e.what() << std::endl;
         return false;
     }
 
     if (!calibrationResultIsValid(final_err, refinedMatrix, refinedDistortion)) {
-        APP_LOG_ERROR("camera.calibration", QString("refine_optimization_invalid_result error=%1 selected_frames=%2")
-            .arg(final_err).arg(selectedIndices.size()));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_intrinsics_refine",
+                           "fail",
+                           {{"phase", "optimization"},
+                            {"error_rms_px", QString::number(final_err, 'f', 6)},
+                            {"selected_frames", QString::number(selectedIndices.size())}});
         return false;
     }
     const long long optimizationMs = elapsedMilliseconds(optimizationStartedAt);
@@ -381,8 +447,12 @@ static bool refineCameraIntrinsics(
         validationErrors.push_back(errorSum / static_cast<double>(projected.size()));
     }
     if (validationErrors.size() < kMinCalibrationFrames) {
-        APP_LOG_WARNING("camera.calibration", QString("refine_rejected reason=insufficient_validation_frames valid=%1")
-            .arg(validationErrors.size()));
+        APP_LOG_EVENT_WARNING("camera.calibration",
+                              "camera_intrinsics_refine",
+                              "reject",
+                              {{"phase", "validation"},
+                               {"reason", "insufficient_validation_frames"},
+                               {"valid_frames", QString::number(validationErrors.size())}});
         return false;
     }
     std::sort(validationErrors.begin(), validationErrors.end());
@@ -394,9 +464,14 @@ static bool refineCameraIntrinsics(
         validationErrors.begin(), validationErrors.end(), 0.0) /
         static_cast<double>(validationErrors.size());
     if (!std::isfinite(validationMedian) || validationMedian > median * 1.05) {
-        APP_LOG_WARNING("camera.calibration", QString("refine_rejected reason=global_error_regression before_median_px=%1 after_median_px=%2 p95_px=%3")
-            .arg(median, 0, 'f', 6).arg(validationMedian, 0, 'f', 6)
-            .arg(validationP95, 0, 'f', 6));
+        APP_LOG_EVENT_WARNING("camera.calibration",
+                              "camera_intrinsics_refine",
+                              "reject",
+                              {{"phase", "validation"},
+                               {"reason", "global_error_regression"},
+                               {"before_median_px", QString::number(median, 'f', 6)},
+                               {"after_median_px", QString::number(validationMedian, 'f', 6)},
+                               {"p95_px", QString::number(validationP95, 'f', 6)}});
         return false;
     }
 
@@ -405,13 +480,23 @@ static bool refineCameraIntrinsics(
     std::cout << "[refineCam] 精化完成: " << good_obj.size() << " 帧, "
               << optimizationMs << " ms, err=" << final_err << " px" << std::endl;
     std::cout << "[autoCalib] 相机矩阵:\n" << K << std::endl;
-    APP_LOG_INFO("camera.calibration", QString("refine_optimization_complete selected_frames=%1 optimization_ms=%2 total_refine_ms=%3 rms_px=%4")
-        .arg(selectedIndices.size()).arg(optimizationMs)
-        .arg(elapsedMilliseconds(stageStartedAt)).arg(final_err, 0, 'f', 6));
-    APP_LOG_INFO("camera.calibration", QString("global_validation_complete frames=%1 before_median_px=%2 after_mean_px=%3 after_median_px=%4 after_p95_px=%5")
-        .arg(validationErrors.size()).arg(median, 0, 'f', 6)
-        .arg(validationMean, 0, 'f', 6).arg(validationMedian, 0, 'f', 6)
-        .arg(validationP95, 0, 'f', 6));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_refine",
+                       "success",
+                       {{"phase", "optimization"},
+                        {"selected_frames", QString::number(selectedIndices.size())},
+                        {"optimization_ms", QString::number(optimizationMs)},
+                        {"total_ms", QString::number(elapsedMilliseconds(stageStartedAt))},
+                        {"rms_px", QString::number(final_err, 'f', 6)}});
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_intrinsics_validation",
+                       "success",
+                       {{"phase", "global_validation"},
+                        {"frames", QString::number(validationErrors.size())},
+                        {"before_median_px", QString::number(median, 'f', 6)},
+                        {"after_mean_px", QString::number(validationMean, 'f', 6)},
+                        {"after_median_px", QString::number(validationMedian, 'f', 6)},
+                        {"after_p95_px", QString::number(validationP95, 'f', 6)}});
     std::cout << "[cameraCalib] 全量复核: " << validationErrors.size()
               << " 帧, mean=" << validationMean
               << " px, median=" << validationMedian
@@ -436,21 +521,31 @@ bool loadImagesFromDisk(const std::string& save_dir,
                 img_files.push_back(entry.path().string());
         }
     } catch (const fs::filesystem_error& e) {
-        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed directory=%1 message=%2")
-            .arg(QString::fromStdString(save_dir), QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_input",
+                           "fail",
+                           {{"reason", "directory_scan"},
+                            {"directory", QString::fromStdString(save_dir)},
+                            {"message", QString::fromUtf8(e.what())}});
         std::cerr << "[cameraCalib] 读取图像目录失败: " << e.what() << std::endl;
         return false;
     }
     std::sort(img_files.begin(), img_files.end());
     if (img_files.empty()) {
-        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed directory=%1 reason=no_jpg_files")
-            .arg(QString::fromStdString(save_dir)));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_input",
+                           "fail",
+                           {{"reason", "no_jpg_files"},
+                            {"directory", QString::fromStdString(save_dir)}});
         return false;
     }
     cv::Mat first = cv::imread(img_files[0]);
     if (first.empty()) {
-        APP_LOG_ERROR("camera.calibration", QString("image_discovery_failed reason=first_image_unreadable path=%1")
-            .arg(QString::fromStdString(img_files[0])));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                           "camera_input",
+                           "fail",
+                           {{"reason", "first_image_unreadable"},
+                            {"path", QString::fromStdString(img_files[0])}});
         return false;
     }
     image_size = first.size();
@@ -601,15 +696,25 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
     std::vector<std::string> img_files;
     cv::Size image_size;
     if (!loadImagesFromDisk(save_dir, img_files, image_size)) {
-        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=image_discovery directory=%1 elapsed_ms=%2")
-            .arg(QString::fromStdString(save_dir)).arg(elapsedMilliseconds(totalStartedAt)));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                            "camera_pipeline",
+                            "fail",
+                            {{"stage", "image_discovery"},
+                             {"reason", "input_load_failed"},
+                             {"directory", QString::fromStdString(save_dir)},
+                             {"elapsed_ms", QString::number(elapsedMilliseconds(totalStartedAt))}});
         return false;
     }
 
-    APP_LOG_INFO("camera.calibration", QString("calibration_begin directory=%1 discovered_images=%2 image=%3x%4 initial_cap=%5 refine_cap=%6")
-        .arg(QString::fromStdString(save_dir)).arg(img_files.size())
-        .arg(image_size.width).arg(image_size.height)
-        .arg(kMaxInitialOptimizationFrames).arg(kMaxRefineOptimizationFrames));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_pipeline",
+                       "start",
+                       {{"directory", QString::fromStdString(save_dir)},
+                        {"discovered_images", QString::number(img_files.size())},
+                        {"image_w", QString::number(image_size.width)},
+                        {"image_h", QString::number(image_size.height)},
+                        {"initial_cap", QString::number(kMaxInitialOptimizationFrames)},
+                        {"refine_cap", QString::number(kMaxRefineOptimizationFrames)}});
     std::cout << "[cameraCalib] 发现 " << img_files.size()
               << " 张图像，开始检测 ChArUco 角点" << std::endl;
 
@@ -653,23 +758,40 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
 
         const size_t processed = fileIndex + 1;
         if (processed % 25 == 0 || processed == img_files.size()) {
-            APP_LOG_INFO("camera.calibration", QString("detection_progress processed=%1 total=%2 valid=%3 unreadable=%4 detection_failed=%5 insufficient_corners=%6 elapsed_ms=%7")
-                .arg(processed).arg(img_files.size()).arg(object_points.size())
-                .arg(unreadableImages).arg(detectionFailures).arg(insufficientCorners)
-                .arg(elapsedMilliseconds(detectionStartedAt)));
+            APP_LOG_EVENT_DEBUG("camera.calibration",
+                                "camera_input",
+                                "progress",
+                                {{"processed", QString::number(processed)},
+                                 {"total", QString::number(img_files.size())},
+                                 {"valid", QString::number(object_points.size())},
+                                 {"unreadable", QString::number(unreadableImages)},
+                                 {"detection_failed", QString::number(detectionFailures)},
+                                 {"insufficient_corners", QString::number(insufficientCorners)},
+                                 {"elapsed_ms", QString::number(elapsedMilliseconds(detectionStartedAt))}});
         }
     }
 
     const long long detectionMs = elapsedMilliseconds(detectionStartedAt);
     std::cout << "[cameraCalib] 角点检测完成: 有效 " << object_points.size()
               << "/" << img_files.size() << " 帧, " << detectionMs << " ms" << std::endl;
-    APP_LOG_INFO("camera.calibration", QString("detection_complete total=%1 valid=%2 unreadable=%3 detection_failed=%4 insufficient_corners=%5 elapsed_ms=%6")
-        .arg(img_files.size()).arg(object_points.size()).arg(unreadableImages)
-        .arg(detectionFailures).arg(insufficientCorners).arg(detectionMs));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_input",
+                       "complete",
+                       {{"total", QString::number(img_files.size())},
+                        {"valid", QString::number(object_points.size())},
+                        {"unreadable", QString::number(unreadableImages)},
+                        {"detection_failed", QString::number(detectionFailures)},
+                        {"insufficient_corners", QString::number(insufficientCorners)},
+                        {"elapsed_ms", QString::number(detectionMs)}});
 
     if (object_points.size() < 5) {
-        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=detection reason=insufficient_frames valid=%1 minimum=5")
-            .arg(object_points.size()));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                            "camera_pipeline",
+                            "fail",
+                            {{"stage", "detection"},
+                             {"reason", "insufficient_frames"},
+                             {"valid_frames", QString::number(object_points.size())},
+                             {"minimum", "5"}});
         std::cerr << "[autoCalib] 帧数不足，无法标定相机内参 (need >=5, got "
                   << object_points.size() << ")" << std::endl;
         return false;
@@ -684,8 +806,12 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
 
     if (!calibrateCameraFiltered(object_points, image_points,
                                  image_size, camera_matrix, dist_coeffs)) {
-        APP_LOG_ERROR("camera.calibration", QString("calibration_failed stage=initial_optimization elapsed_ms=%1")
-            .arg(elapsedMilliseconds(totalStartedAt)));
+        APP_LOG_EVENT_ERROR("camera.calibration",
+                            "camera_pipeline",
+                            "fail",
+                            {{"stage", "initial_optimization"},
+                             {"reason", "initial_stage_failed"},
+                             {"elapsed_ms", QString::number(elapsedMilliseconds(totalStartedAt))}});
         return false;
     }
 
@@ -693,13 +819,23 @@ bool calibrateCameraFromDisk(const std::string& save_dir,
     const bool refined = refineCameraIntrinsics(camera_matrix, dist_coeffs,
                                                 all_obj, all_img, image_size);
     if (!refined) {
-        APP_LOG_WARNING("camera.calibration", "refine_not_applied using_initial_intrinsics=1");
+        APP_LOG_EVENT_WARNING("camera.calibration",
+                              "camera_pipeline",
+                              "skip",
+                              {{"stage", "refinement"},
+                               {"reason", "not_applied"},
+                               {"using_initial_intrinsics", "1"}});
         std::cout << "[cameraCalib] 精化未应用，保留初始内参" << std::endl;
     }
 
     const long long totalMs = elapsedMilliseconds(totalStartedAt);
-    APP_LOG_INFO("camera.calibration", QString("calibration_complete discovered=%1 valid=%2 refined=%3 total_ms=%4")
-        .arg(img_files.size()).arg(all_obj.size()).arg(refined).arg(totalMs));
+    APP_LOG_EVENT_INFO("camera.calibration",
+                       "camera_pipeline",
+                       "success",
+                       {{"discovered", QString::number(img_files.size())},
+                        {"valid", QString::number(all_obj.size())},
+                        {"refined", refined ? "1" : "0"},
+                        {"total_ms", QString::number(totalMs)}});
     std::cout << "[cameraCalib] 相机内参标定完成，总耗时 " << totalMs
               << " ms" << std::endl;
     return true;

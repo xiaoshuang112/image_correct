@@ -64,12 +64,18 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
     CharucoDetector& detector,
     bool use_center) {
     if (!camera) {
-        APP_LOG_ERROR("calibration.pose_search", "pose_evaluation_failed reason=null_camera");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "pose_evaluation",
+                            "fail",
+                            {{"reason", "null_camera"}});
         return {0, 0, cv::Point2f(0, 0)};
     }
     cv::Mat f = camera->captureOneFrame(1500);
     if (f.empty()) {
-        APP_LOG_WARNING("calibration.pose_search", "pose_evaluation_failed reason=empty_frame");
+        APP_LOG_EVENT_WARNING("calibration.pose_search",
+                              "pose_evaluation",
+                              "fail",
+                              {{"reason", "empty_frame"}});
         return {0, 0, cv::Point2f(0, 0)};
     }
 
@@ -85,7 +91,11 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
 
             int call_ret = g_callback((char*)img_name.c_str(), (int)img_name.length(), 1);
             if (call_ret == -1) {
-                APP_LOG_WARNING("calibration.pose_search", "pose_evaluation_cancelled");
+                APP_LOG_EVENT_WARNING("calibration.pose_search",
+                                      "pose_evaluation",
+                                      "skip",
+                                      {{"reason", "cancelled"},
+                                       {"stage", "capture_callback"}});
                 return {-std::numeric_limits<double>::infinity(), 0,
                         cv::Point2f(0, 0)};
             }
@@ -135,14 +145,20 @@ static double tryCandidatePoses(int robot_handle,
     double initJointPos[ROB_AXIS_NUM], tcp_aa[ROB_AXIS_NUM];
     CRresult ret = cr_get_jointActualPos((RobotHandle)robot_handle, initJointPos);
     if (ret != sucess) {
-        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=joint_read error=%1")
-            .arg(ret));
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "candidate_search",
+                            "fail",
+                            {{"reason", "joint_read"},
+                             {"error", QString::number(ret)}});
         return -1.0;
     }
     ret = cr_get_tcpActualPose(robot_handle, tcp_aa);
     if (ret != sucess) {
-        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=tcp_read error=%1")
-            .arg(ret));
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "candidate_search",
+                            "fail",
+                            {{"reason", "tcp_read"},
+                             {"error", QString::number(ret)}});
         return -1.0;
     }
     
@@ -150,7 +166,10 @@ static double tryCandidatePoses(int robot_handle,
     double best_s = -1e18;
     bool found = false;
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j)) {
-        APP_LOG_ERROR("calibration.pose_search", "candidate_search_failed reason=tcp_to_flange_conversion");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "candidate_search",
+                            "fail",
+                            {{"reason", "tcp_to_flange_conversion"}});
         return -1.0;
     }
     for (const auto& euler : candidates) {
@@ -168,15 +187,19 @@ static double tryCandidatePoses(int robot_handle,
 
         if (nullptr!=g_callback) {
             int call_ret = g_callback(nullptr, 0, 1);
-            if (-1==call_ret)
+                if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
                 const CRresult restoreRet = moveToJointPos(robot_handle, initJointPos);
                 if (restoreRet != sucess)
                     std::cerr << "[autoCalib] 取消后恢复机器人位置失败 ret="
                               << restoreRet << std::endl;
-                APP_LOG_WARNING("calibration.pose_search", QString("candidate_search_cancelled restore_error=%1")
-                    .arg(restoreRet));
+                APP_LOG_EVENT_WARNING("calibration.pose_search",
+                                      "candidate_search",
+                                      "skip",
+                                      {{"reason", "cancelled"},
+                                       {"restore_error", QString::number(restoreRet)},
+                                       {"stage", "candidate"}});
                 return -1.0;
             }            
         }    
@@ -186,8 +209,11 @@ static double tryCandidatePoses(int robot_handle,
     // 回到原始位置（由调用方决定是否运动到最佳位姿）
     const CRresult restoreRet = moveToJointPos(robot_handle, initJointPos);
     if (restoreRet != sucess) {
-        APP_LOG_ERROR("calibration.pose_search", QString("candidate_search_failed reason=restore_position error=%1")
-            .arg(restoreRet));
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "candidate_search",
+                            "fail",
+                            {{"reason", "restore_position"},
+                             {"error", QString::number(restoreRet)}});
         return -1.0;
     }
     if (!found){          
@@ -205,14 +231,20 @@ static bool searchXYSteps(int robot_handle,
     double tcp_aa[6]) {
     CRresult ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (ret != sucess) {
-        APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=tcp_read error=%1")
-            .arg(ret));
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "xy_search",
+                            "fail",
+                            {{"reason", "tcp_read"},
+                             {"error", QString::number(ret)}});
         return false;
     }
 
     double flangeEulePos[ROB_AXIS_NUM] = {};
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-        APP_LOG_ERROR("calibration.pose_search", "xy_search_failed reason=tcp_to_flange_conversion");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "xy_search",
+                            "fail",
+                            {{"reason", "tcp_to_flange_conversion"}});
         return false;
     }
 
@@ -231,16 +263,24 @@ static bool searchXYSteps(int robot_handle,
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, xy_candidates, bestFlangeEule) > score) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
-                APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=move_best step_index=%1 step_mm=%2")
-                    .arg(i).arg(step));
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "xy_search",
+                                    "fail",
+                                    {{"reason", "move_best"},
+                                     {"step_index", QString::number(i)},
+                                     {"step_mm", QString::number(step)}});
                 return false;
             }
-            //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));                    
+            //memcpy(flangeEulePos, bestFlangeEule, sizeof(bestFlangeEule));
             ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
             if (ret != sucess ||
                 !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-                APP_LOG_ERROR("calibration.pose_search", QString("xy_search_failed reason=refresh_pose step_index=%1 tcp_error=%2")
-                    .arg(i).arg(ret));
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "xy_search",
+                                    "fail",
+                                    {{"reason", "refresh_pose"},
+                                     {"step_index", QString::number(i)},
+                                     {"tcp_error", QString::number(ret)}});
                 return false;
             }
         }
@@ -251,15 +291,21 @@ static bool searchXYSteps(int robot_handle,
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
 
-                APP_LOG_WARNING("calibration.pose_search", QString("xy_search_cancelled step_index=%1")
-                    .arg(i));
+                APP_LOG_EVENT_WARNING("calibration.pose_search",
+                                      "xy_search",
+                                      "skip",
+                                      {{"reason", "cancelled"},
+                                       {"step_index", QString::number(i)}});
                 return false;
             }            
         }           
 
     }
     if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
-        APP_LOG_ERROR("calibration.pose_search", "xy_search_failed reason=final_move");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "xy_search",
+                            "fail",
+                            {{"reason", "final_move"}});
         return false;
     }
     return true;
@@ -281,17 +327,27 @@ bool autoFindBestPose(int robot_handle,
     double flangeEulePos[ROB_AXIS_NUM] = {};
     double tcp_aa[ROB_AXIS_NUM] = {};
     if (!rotateFlangeToHorizon(robot_handle, flangeEulePos)) {
-        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=initial_horizontal_rotation");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "initial_horizontal_rotation"},
+                             {"reason", "rotate_flange_failed"}});
         return false;
     }
     CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (tcpRet != sucess) {
-        APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=initial_tcp_read error=%1")
-            .arg(tcpRet));
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "initial_tcp_read"},
+                             {"error", QString::number(tcpRet)}});
         return false;
     }
-    APP_LOG_INFO("calibration.pose_search", QString("best_pose_begin handle=%1 save_dir=%2")
-        .arg(robot_handle).arg(QString::fromStdString(save_dir)));
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "best_pose",
+                       "start",
+                       {{"handle", QString::number(robot_handle)},
+                        {"save_dir", QString::fromStdString(save_dir)}});
 
     // 标定板总角点数
     cv::Size board_sz = detector.getChessboardSize();
@@ -331,19 +387,31 @@ bool autoFindBestPose(int robot_handle,
                                            false, z_candidates, bestFlangeEule);
         if (best_s > cur_score) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
-                APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=z_search reason=move_best");
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "z_search"},
+                                     {"reason", "move_best"}});
                 return false;
             }
             tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
             if (tcpRet != sucess) {
-                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=z_search reason=tcp_read error=%1")
-                    .arg(tcpRet));
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "z_search"},
+                                     {"reason", "tcp_read"},
+                                     {"error", QString::number(tcpRet)}});
                 return false;
             }
             std::cout << "[autoFindBestPose] Phase1 选定 Z=" << tcp_aa[2] << std::endl;
         }
         if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
-            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=z_search reason=final_move");
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "z_search"},
+                                 {"reason", "final_move"}});
             return false;
         }
     }
@@ -361,7 +429,11 @@ bool autoFindBestPose(int robot_handle,
         const double steps[] = {240, 120, 60};
         if (!searchXYSteps(robot_handle, camera, detector,
                            steps, std::size(steps), tcp_aa)) {
-            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=coarse_xy");
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "coarse_xy"},
+                                 {"reason", "xy_search_failed"}});
             return false;
         }
     }
@@ -406,8 +478,12 @@ bool autoFindBestPose(int robot_handle,
         }
         
         if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-            APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=tcp_to_flange iter=%1")
-                .arg(iter));
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "zrz"},
+                                 {"reason", "tcp_to_flange"},
+                                 {"iter", QString::number(iter)}});
             return false;
         }
         //ret = cr_AxisAngle2Eule(tcp_aa, eulePos);
@@ -441,15 +517,24 @@ bool autoFindBestPose(int robot_handle,
         if (tryCandidatePoses(robot_handle, camera, detector,
                                false, zrz_candidates, bestFlangeEulePos) > cur_s) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEulePos)) {
-                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=move_best iter=%1")
-                    .arg(iter));
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "zrz"},
+                                     {"reason", "move_best"},
+                                     {"iter", QString::number(iter)}});
                 return false;
             }
             tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
             if (tcpRet != sucess ||
                 !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-                APP_LOG_ERROR("calibration.pose_search", QString("best_pose_failed phase=zrz reason=refresh_pose iter=%1 tcp_error=%2")
-                    .arg(iter).arg(tcpRet));
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "zrz"},
+                                     {"reason", "refresh_pose"},
+                                     {"iter", QString::number(iter)},
+                                     {"tcp_error", QString::number(tcpRet)}});
                 return false;
             }
             flangeEulePos[5] = bound_camera_angle(flangeEulePos[5]);
@@ -459,7 +544,11 @@ bool autoFindBestPose(int robot_handle,
         }
     }
     if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
-        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=zrz reason=final_move");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "zrz"},
+                             {"reason", "final_move"}});
         return false;
     }
     frame = camera->captureOneFrame(1500);
@@ -471,20 +560,31 @@ bool autoFindBestPose(int robot_handle,
     const double steps_fine[] = {60, 30, 15};    
     if (!searchXYSteps(robot_handle, camera, detector,
                        steps_fine, std::size(steps_fine), tcp_aa)) {
-        APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=fine_xy");
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "fine_xy"},
+                             {"reason", "xy_search_failed"}});
         return false;
     }
 
     // 运动到最终最佳位姿（tcp_aa 已包含最优平移+旋转）
     {
         if (!moveToTcpAxisPos(robot_handle, tcp_aa)) {
-            APP_LOG_ERROR("calibration.pose_search", "best_pose_failed phase=final_position");
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "final_position"},
+                                 {"reason", "final_move"}});
             return false;
         }
         frame = camera->captureOneFrame(1500);       
     }
 
-    APP_LOG_INFO("calibration.pose_search", "best_pose_complete");
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "best_pose",
+                       "success",
+                       {{"status", "complete"}});
     return true;
 }
 
@@ -502,12 +602,18 @@ static bool computeZValues(int robot_handle,
     //double orig_joint[ROB_AXIS_NUM];
     const CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (tcpRet != sucess) {
-        APP_LOG_ERROR("calibration.height", QString("z_values_failed reason=tcp_read error=%1")
-            .arg(tcpRet));
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "z_values",
+                            "fail",
+                            {{"reason", "tcp_read"},
+                             {"error", QString::number(tcpRet)}});
         return false;
     }
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, oriFlangeEulePos)) {
-        APP_LOG_ERROR("calibration.height", "z_values_failed reason=tcp_to_flange_conversion");
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "z_values",
+                            "fail",
+                            {{"reason", "tcp_to_flange_conversion"}});
         return false;
     }
     // 估计相机到标定板的距离
@@ -699,12 +805,18 @@ bool generateCandidates(int robot_handle,
     double joint[ROB_AXIS_NUM] = {};
     const CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (tcpRet != sucess) {
-        APP_LOG_ERROR("calibration.candidates", QString("candidate_generation_failed reason=tcp_read error=%1")
-            .arg(tcpRet));
+        APP_LOG_EVENT_ERROR("calibration.candidates",
+                            "candidate_generation",
+                            "fail",
+                            {{"reason", "tcp_read"},
+                             {"error", QString::number(tcpRet)}});
         return false;
     }
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-        APP_LOG_ERROR("calibration.candidates", "candidate_generation_failed reason=tcp_to_flange_conversion");
+        APP_LOG_EVENT_ERROR("calibration.candidates",
+                            "candidate_generation",
+                            "fail",
+                            {{"reason", "tcp_to_flange_conversion"}});
         return false;
     }
     cv::Mat frame = camera->captureOneFrame(1500);
@@ -740,8 +852,11 @@ bool generateCandidates(int robot_handle,
 
     std::cout << "[autoCalib] 729 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
-    APP_LOG_INFO("calibration.candidates", QString("candidate_generation_complete total=%1 reachable=%2")
-        .arg(total).arg(ik_ok));
+    APP_LOG_EVENT_INFO("calibration.candidates",
+                       "candidate_generation",
+                       "success",
+                       {{"total", QString::number(total)},
+                        {"reachable", QString::number(ik_ok)}});
     return !candidates.empty();
 }
 } // anonymous namespace
@@ -773,7 +888,11 @@ bool autoEyeInHandCharucoCalibration(
     // ---- Phase 1b: 自动寻找最佳位姿 ----
     if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
         result.message = "机器人水平姿态调整失败";
-        APP_LOG_ERROR("calibration", "auto_eye_in_hand_aborted phase=initial_rotation");
+        APP_LOG_EVENT_ERROR("calibration",
+                            "pipeline",
+                            "fail",
+                            {{"reason", "initial_rotation_failed"},
+                             {"stage", "prepare"}});
         return false;
     }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;

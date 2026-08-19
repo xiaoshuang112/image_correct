@@ -179,7 +179,7 @@ target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 # ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
-option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" OFF)
+option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
 if(BUILD_QT_GUI)
     find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
     if(Qt5_FOUND)

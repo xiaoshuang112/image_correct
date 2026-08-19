@@ -5,6 +5,9 @@
 
 #include <QString>
 
+#include <initializer_list>
+#include <vector>
+#include <utility>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -25,12 +28,30 @@ public:
     static DiagnosticLogger& instance();
 
     bool initialize();
+    QString sessionId() const;
     void log(Level level,
              const char* category,
              const QString& message,
              const char* file = nullptr,
              int line = 0,
              const char* function = nullptr);
+    using LogField = std::pair<QString, QString>;
+    void logEvent(Level level,
+                  const char* category,
+                  const QString& event,
+                  const QString& result,
+                  std::initializer_list<LogField> fields = {},
+                  const char* file = nullptr,
+                  int line = 0,
+                  const char* function = nullptr);
+    void logEvent(Level level,
+                  const char* category,
+                  const QString& event,
+                  const QString& result,
+                  const std::vector<LogField>& fields,
+                  const char* file = nullptr,
+                  int line = 0,
+                  const char* function = nullptr);
     void flush();
 
     QString logFilePath() const;
@@ -59,6 +80,8 @@ private:
     bool m_previousSessionUnclean = false;
     int m_fd = -1;
     qint64 m_fileSize = 0;
+    std::atomic<qint64> m_sequence{0};
+    QString m_sessionId;
     qint64 m_startMonotonicMs = 0;
     QString m_logDirectory;
     QString m_logFilePath;
@@ -77,6 +100,18 @@ private:
     DiagnosticLogger::instance().log(DiagnosticLogger::Level::Error, category, message, __FILE__, __LINE__, __func__)
 #define APP_LOG_FATAL(category, message) \
     DiagnosticLogger::instance().log(DiagnosticLogger::Level::Fatal, category, message, __FILE__, __LINE__, __func__)
+#define APP_LOG_EVENT(level, category, event, result, ...) \
+    DiagnosticLogger::instance().logEvent(DiagnosticLogger::Level::level, category, event, result, std::vector<DiagnosticLogger::LogField>{__VA_ARGS__}, __FILE__, __LINE__, __func__)
+#define APP_LOG_EVENT_DEBUG(category, event, result, ...) \
+    APP_LOG_EVENT(Debug, category, event, result, __VA_ARGS__)
+#define APP_LOG_EVENT_INFO(category, event, result, ...) \
+    APP_LOG_EVENT(Info, category, event, result, __VA_ARGS__)
+#define APP_LOG_EVENT_WARNING(category, event, result, ...) \
+    APP_LOG_EVENT(Warning, category, event, result, __VA_ARGS__)
+#define APP_LOG_EVENT_ERROR(category, event, result, ...) \
+    APP_LOG_EVENT(Error, category, event, result, __VA_ARGS__)
+#define APP_LOG_EVENT_FATAL(category, event, result, ...) \
+    APP_LOG_EVENT(Fatal, category, event, result, __VA_ARGS__)
 
 #else
 
@@ -87,6 +122,12 @@ private:
 #define APP_LOG_WARNING(category, message) do { } while (false)
 #define APP_LOG_ERROR(category, message) do { } while (false)
 #define APP_LOG_FATAL(category, message) do { } while (false)
+#define APP_LOG_EVENT(level, category, event, result, ...) do { } while (false)
+#define APP_LOG_EVENT_DEBUG(category, event, result, ...) do { } while (false)
+#define APP_LOG_EVENT_INFO(category, event, result, ...) do { } while (false)
+#define APP_LOG_EVENT_WARNING(category, event, result, ...) do { } while (false)
+#define APP_LOG_EVENT_ERROR(category, event, result, ...) do { } while (false)
+#define APP_LOG_EVENT_FATAL(category, event, result, ...) do { } while (false)
 
 #endif // QT_GUI
 

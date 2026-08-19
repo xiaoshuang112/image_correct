@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QStandardPaths>
+#include <QStringList>
 
 #include <algorithm>
 #include <array>
@@ -67,6 +68,14 @@ QString sanitizeMessage(QString message)
     message.replace('\r', "\\r");
     message.replace('\n', "\\n");
     return message;
+}
+
+QString sanitizeFieldValue(QString value)
+{
+    value.replace('"', "'");
+    if (value.contains(' ') || value.contains('='))
+        value.replace(' ', "_");
+    return value;
 }
 
 void writeAll(int fd, const char* data, size_t length)
@@ -299,11 +308,13 @@ DiagnosticLogger& DiagnosticLogger::instance()
 
 DiagnosticLogger::DiagnosticLogger()
     : m_startMonotonicMs(monotonicMilliseconds())
+    , m_sessionId(QString("s_") + QDateTime::currentDateTimeUtc().toString("yyyyMMddHHmmsszzz")
+                  + "_" + QString::number(::getpid()))
 {
 }
 
-bool DiagnosticLogger::initialize()
-{
+    bool DiagnosticLogger::initialize()
+    {
     QString selectedDirectory;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
@@ -340,10 +351,16 @@ bool DiagnosticLogger::initialize()
             .arg(kArchiveCount));
     if (m_previousSessionUnclean) {
         log(Level::Warning, "lifecycle",
-            QString("previous_session_did_not_exit_cleanly previous_log=%1.1")
+            QString("previous_session_did_not_exit_cleanly previous_log=%1")
                 .arg(logFilePath()));
     }
     return !selectedDirectory.isEmpty();
+}
+
+QString DiagnosticLogger::sessionId() const
+{
+    std::lock_guard<std::mutex> lock(m_mutex);
+    return m_sessionId;
 }
 
 bool DiagnosticLogger::openLogFileLocked(const QString& directory)
@@ -454,15 +471,19 @@ void DiagnosticLogger::log(Level level,
     const QString sourceFunction = function
         ? QString::fromLocal8Bit(function)
         : QStringLiteral("-");
+    const qint64 sequence = m_sequence.fetch_add(1, std::memory_order_relaxed) + 1;
     const QString safeMessage = sanitizeMessage(message);
+    const QString sessionId = m_sessionId.isEmpty() ? QStringLiteral("-") : m_sessionId;
 
     const QString formatted =
-        QString("%1 +%2ms [%3] [pid=%4 tid=%5] [%6] %7:%8 %9 | %10")
+        QString("%1 +%2ms [%3] [pid=%4 tid=%5] [run=%6 seq=%7] [%8] %9:%10 %11 | %12")
             .arg(QDateTime::currentDateTime().toString(Qt::ISODateWithMs))
             .arg(elapsed, 8, 10, QLatin1Char('0'))
             .arg(QString::fromLatin1(levelName(level)))
             .arg(QCoreApplication::applicationPid())
             .arg(threadId)
+            .arg(sessionId)
+            .arg(sequence)
             .arg(QString::fromLatin1(category ? category : "app"))
             .arg(sourceFile)
             .arg(line)
@@ -499,6 +520,50 @@ void DiagnosticLogger::log(Level level,
     }
     if (sink)
         sink(formatted + '\n');
+}
+
+void DiagnosticLogger::logEvent(Level level,
+                               const char* category,
+                               const QString& event,
+                               const QString& result,
+                               std::initializer_list<LogField> fields,
+                               const char* file,
+                               int line,
+                               const char* function)
+{
+    QString payload = QString("event=%1 result=%2")
+                          .arg(sanitizeFieldValue(event.isEmpty() ? QStringLiteral("-") : event))
+                          .arg(sanitizeFieldValue(result.isEmpty() ? QStringLiteral("unknown") : result));
+    for (const auto& field : fields) {
+        if (field.first.isEmpty())
+            continue;
+        payload += QString(" %1=%2")
+            .arg(sanitizeFieldValue(field.first))
+            .arg(sanitizeFieldValue(field.second));
+    }
+    log(level, category, payload, file, line, function);
+}
+
+void DiagnosticLogger::logEvent(Level level,
+                               const char* category,
+                               const QString& event,
+                               const QString& result,
+                               const std::vector<LogField>& fields,
+                               const char* file,
+                               int line,
+                               const char* function)
+{
+    QString payload = QString("event=%1 result=%2")
+                          .arg(sanitizeFieldValue(event.isEmpty() ? QStringLiteral("-") : event))
+                          .arg(sanitizeFieldValue(result.isEmpty() ? QStringLiteral("unknown") : result));
+    for (const auto& field : fields) {
+        if (field.first.isEmpty())
+            continue;
+        payload += QString(" %1=%2")
+                       .arg(sanitizeFieldValue(field.first))
+                       .arg(sanitizeFieldValue(field.second));
+    }
+    log(level, category, payload, file, line, function);
 }
 
 void DiagnosticLogger::flush()

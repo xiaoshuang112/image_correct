@@ -16,6 +16,35 @@
 #include <cmath>
 #include <limits>
 #include <iomanip>
+#include <cerrno>
+#include <cstdlib>
+
+namespace {
+
+bool parseDoubles(const std::string& line,
+                  double* values,
+                  size_t expectedCount)
+{
+    std::stringstream ss(line);
+    size_t parsed = 0;
+    for (; parsed < expectedCount; ++parsed) {
+        std::string token;
+        if (!std::getline(ss, token, ','))
+            return false;
+        if (token.empty())
+            return false;
+
+        char* end = nullptr;
+        errno = 0;
+        const double value = std::strtod(token.c_str(), &end);
+        if (errno != 0 || end == token.c_str() || *end != '\0')
+            return false;
+        values[parsed] = value;
+    }
+    return true;
+}
+
+} // namespace
 
 int reconnectRobotHandle(int old_handle, char* pchRobotIP){
     CRresult result = error;
@@ -173,8 +202,12 @@ bool executeCollection(int robot_handle,
     int total = (int)candidates.size();
     int captured = 0;
 
-    APP_LOG_INFO("calibration.collection", QString("collection_begin handle=%1 candidates=%2 save_dir=%3")
-        .arg(robot_handle).arg(total).arg(QString::fromStdString(save_dir)));
+    APP_LOG_EVENT_INFO("calibration.collection",
+                       "collection",
+                       "start",
+                       {{"handle", QString::number(robot_handle)},
+                        {"candidates", QString::number(total)},
+                        {"save_dir", QString::fromStdString(save_dir)}});
 
     if (save_dir.empty()) {
         std::cerr << "[autoCalib] 保存目录为空" << std::endl;
@@ -208,11 +241,22 @@ bool executeCollection(int robot_handle,
         }        
         CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
         if(sucess != ret_move){
-            APP_LOG_WARNING("calibration.collection", QString("pose_move_failed index=%1 total=%2 error=%3")
-                .arg(i).arg(total).arg(ret_move));
+            APP_LOG_EVENT_WARNING("calibration.collection",
+                                  "collection",
+                                  "skip",
+                                  {{"phase", "robot_move"},
+                                   {"reason", "move_failed"},
+                                   {"index", QString::number(i)},
+                                   {"total", QString::number(total)},
+                                   {"error", QString::number(ret_move)}});
             if(operate_timeout == ret_move){
-                APP_LOG_ERROR("calibration.collection", QString("collection_aborted reason=motion_timeout index=%1 captured=%2")
-                    .arg(i).arg(captured));
+                APP_LOG_EVENT_ERROR("calibration.collection",
+                                    "collection",
+                                    "fail",
+                                    {{"phase", "robot_move"},
+                                     {"reason", "motion_timeout"},
+                                     {"index", QString::number(i)},
+                                     {"captured", QString::number(captured)}});
                 std::cerr << "\n[autoCalib] 机器人运动超时，终止本轮标定，请重新连接机器人"
                           << std::endl;
                 return false;
@@ -222,8 +266,13 @@ bool executeCollection(int robot_handle,
 
         cv::Mat frame = camera->captureOneFrame(1500);
         if (frame.empty()) {
-            APP_LOG_WARNING("calibration.collection", QString("pose_image_capture_failed index=%1 captured=%2")
-                .arg(i).arg(captured));
+            APP_LOG_EVENT_WARNING("calibration.collection",
+                                  "collection",
+                                  "skip",
+                                  {{"phase", "image_capture"},
+                                   {"reason", "capture_empty"},
+                                   {"index", QString::number(i)},
+                                   {"captured", QString::number(captured)}});
             std::cerr << "\n[autoCalib] 采集图像失败 (pose " << i << ")" << std::endl;
             continue;
         }
@@ -231,13 +280,25 @@ bool executeCollection(int robot_handle,
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
         if (!detector.detectCorners(frame, corners, ids)) {
-            APP_LOG_WARNING("calibration.collection", QString("pose_detection_failed index=%1 image=%2x%3")
-                .arg(i).arg(frame.cols).arg(frame.rows));
+            APP_LOG_EVENT_WARNING("calibration.collection",
+                                  "collection",
+                                  "skip",
+                                  {{"phase", "corner_detection"},
+                                   {"reason", "detection_failed"},
+                                   {"index", QString::number(i)},
+                                   {"image_w", QString::number(frame.cols)},
+                                   {"image_h", QString::number(frame.rows)}});
             continue;
         }
         if(ids.size() < 12) {
-            APP_LOG_WARNING("calibration.collection", QString("pose_rejected index=%1 reason=insufficient_corners corners=%2 minimum=12")
-                .arg(i).arg(ids.size()));
+            APP_LOG_EVENT_WARNING("calibration.collection",
+                                  "collection",
+                                  "skip",
+                                  {{"phase", "corner_detection"},
+                                   {"reason", "insufficient_corners"},
+                                   {"index", QString::number(i)},
+                                   {"corners", QString::number(ids.size())},
+                                   {"minimum", "12"}});
             continue;
         }
            
@@ -254,14 +315,24 @@ bool executeCollection(int robot_handle,
         double flange_pose[ROB_AXIS_NUM] = {};
         CRresult poseRet = cr_get_jointActualPos((RobotHandle)robot_handle, actual_joint);
         if (poseRet != sucess) {
-            APP_LOG_ERROR("calibration.collection", QString("pose_joint_read_failed index=%1 error=%2")
-                .arg(i).arg(poseRet));
+            APP_LOG_EVENT_ERROR("calibration.collection",
+                                "collection",
+                                "fail",
+                                {{"phase", "pose_save"},
+                                 {"reason", "joint_read_failed"},
+                                 {"index", QString::number(i)},
+                                 {"error", QString::number(poseRet)}});
             continue;
         }
         poseRet = cr_kineForward(robot_handle, actual_joint, flange_pose);
         if (poseRet != sucess) {
-            APP_LOG_ERROR("calibration.collection", QString("pose_forward_kinematics_failed index=%1 error=%2")
-                .arg(i).arg(poseRet));
+            APP_LOG_EVENT_ERROR("calibration.collection",
+                                "collection",
+                                "fail",
+                                {{"phase", "pose_save"},
+                                 {"reason", "forward_kinematics_failed"},
+                                 {"index", QString::number(i)},
+                                 {"error", QString::number(poseRet)}});
             continue;
         }
 
@@ -271,8 +342,13 @@ bool executeCollection(int robot_handle,
                 (captured < 10 ? "00" : captured < 100 ? "0" : "") +
                 std::to_string(captured) + ".jpg";
             if (!cv::imwrite(img_name, frame)) {
-                APP_LOG_ERROR("calibration.collection", QString("pose_image_write_failed index=%1 path=%2")
-                    .arg(i).arg(QString::fromStdString(img_name)));
+                APP_LOG_EVENT_ERROR("calibration.collection",
+                                    "collection",
+                                    "fail",
+                                    {{"phase", "image_save"},
+                                     {"reason", "image_write_failed"},
+                                     {"index", QString::number(i)},
+                                     {"path", QString::fromStdString(img_name)}});
                 continue;
             }
             if (callback) {
@@ -280,8 +356,13 @@ bool executeCollection(int robot_handle,
                 if (-1==call_ret)
                 {
                     std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
-                    APP_LOG_WARNING("calibration.collection", QString("collection_cancelled index=%1 captured=%2")
-                        .arg(i).arg(captured));
+                    APP_LOG_EVENT_WARNING("calibration.collection",
+                                          "collection",
+                                          "skip",
+                                          {{"phase", "user_intervention"},
+                                           {"reason", "cancelled"},
+                                           {"index", QString::number(i)},
+                                           {"captured", QString::number(captured)}});
                     return false;
                 }
             }
@@ -302,15 +383,25 @@ bool executeCollection(int robot_handle,
         }
 
         captured++;
-        APP_LOG_DEBUG("calibration.collection", QString("pose_captured index=%1 captured=%2 total=%3 corners=%4")
-            .arg(i).arg(captured).arg(total).arg(ids.size()));
+        APP_LOG_EVENT_INFO("calibration.collection",
+                           "collection",
+                           "captured",
+                           {{"phase", "save"},
+                            {"index", QString::number(i)},
+                            {"captured", QString::number(captured)},
+                            {"total", QString::number(total)},
+                            {"corners", QString::number(ids.size())}});
     }
 
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
               << "/" << total
               << ", 数据保存到: " << save_dir << std::endl;
-    APP_LOG_INFO("calibration.collection", QString("collection_complete captured=%1 total=%2 save_dir=%3")
-        .arg(captured).arg(total).arg(QString::fromStdString(save_dir)));
+    APP_LOG_EVENT_INFO("calibration.collection",
+                       "collection",
+                       "success",
+                       {{"captured", QString::number(captured)},
+                        {"total", QString::number(total)},
+                        {"save_dir", QString::fromStdString(save_dir)}});
     return captured > 0;
 }
 
@@ -466,33 +557,55 @@ bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
     double tcp_aa[ROB_AXIS_NUM] = {};
     CRresult ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (ret != sucess) {
-        APP_LOG_ERROR("calibration.robot", QString("rotate_horizontal_tcp_read_failed handle=%1 error=%2")
-            .arg(robot_handle).arg(ret));
+        APP_LOG_EVENT_ERROR("calibration.robot",
+                            "robot_pose",
+                            "fail",
+                            {{"phase", "rotate_horizontal"},
+                             {"reason", "tcp_read_failed"},
+                             {"handle", QString::number(robot_handle)},
+                             {"error", QString::number(ret)}});
         return false;
     }
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
-        APP_LOG_ERROR("calibration.robot", QString("rotate_horizontal_tcp_to_flange_failed handle=%1")
-            .arg(robot_handle));
+        APP_LOG_EVENT_ERROR("calibration.robot",
+                            "robot_pose",
+                            "fail",
+                            {{"phase", "rotate_horizontal"},
+                             {"reason", "tcp_to_flange_failed"},
+                             {"handle", QString::number(robot_handle)}});
         return false;
     }
     flangeEulePos[3] = -180.0;
     flangeEulePos[4] = 0.0;
 
-    APP_LOG_INFO("calibration.robot", QString("rotate_horizontal_begin handle=%1 target=[%2,%3,%4,%5,%6,%7]")
-        .arg(robot_handle)
-        .arg(flangeEulePos[0], 0, 'f', 3).arg(flangeEulePos[1], 0, 'f', 3)
-        .arg(flangeEulePos[2], 0, 'f', 3).arg(flangeEulePos[3], 0, 'f', 3)
-        .arg(flangeEulePos[4], 0, 'f', 3).arg(flangeEulePos[5], 0, 'f', 3));
+    APP_LOG_EVENT_INFO("calibration.robot",
+                       "robot_pose",
+                       "start",
+                       {{"phase", "rotate_horizontal"},
+                        {"handle", QString::number(robot_handle)},
+                        {"target_x", QString::number(flangeEulePos[0], 'f', 3)},
+                        {"target_y", QString::number(flangeEulePos[1], 'f', 3)},
+                        {"target_z", QString::number(flangeEulePos[2], 'f', 3)},
+                        {"target_rx", QString::number(flangeEulePos[3], 'f', 3)},
+                        {"target_ry", QString::number(flangeEulePos[4], 'f', 3)},
+                        {"target_rz", QString::number(flangeEulePos[5], 'f', 3)}});
     if (!moveToFlangeEulePos(robot_handle, flangeEulePos)) {
-        APP_LOG_ERROR("calibration.robot", QString("rotate_horizontal_move_failed handle=%1")
-            .arg(robot_handle));
+        APP_LOG_EVENT_ERROR("calibration.robot",
+                            "robot_pose",
+                            "fail",
+                            {{"phase", "rotate_horizontal"},
+                             {"reason", "move_failed"},
+                             {"handle", QString::number(robot_handle)}});
         return false;
     }
     if(pFlangeEulePos!= NULL){
       memcpy(pFlangeEulePos, flangeEulePos, sizeof(flangeEulePos));
     }
-    APP_LOG_INFO("calibration.robot", QString("rotate_horizontal_complete handle=%1")
-        .arg(robot_handle));
+    APP_LOG_EVENT_INFO("calibration.robot",
+                       "robot_pose",
+                       "success",
+                       {{"phase", "rotate_horizontal"},
+                        {"handle", QString::number(robot_handle)}});
     return true;
 }
 
@@ -518,7 +631,10 @@ bool estimateCameraHeight(
     double& heightCamera) {
 
     if (!camera) {
-        APP_LOG_ERROR("calibration.height", "height_estimation_failed reason=null_camera");
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "null_camera"}});
         return false;
     }
 
@@ -526,23 +642,37 @@ bool estimateCameraHeight(
     cv::Mat depth;
     for (int i = 0; i < 3; i++) {
         const int captureRet = camera->captureOneFrameWithDepth(out_frame, depth);
-        APP_LOG_DEBUG("calibration.height", QString("height_capture attempt=%1 result=%2 color=%3x%4 depth=%5x%6")
-            .arg(i + 1).arg(captureRet)
-            .arg(out_frame.cols).arg(out_frame.rows)
-            .arg(depth.cols).arg(depth.rows));
+        APP_LOG_EVENT_DEBUG("calibration.height",
+                            "height_estimate",
+                            "capture_attempt",
+                            {{"attempt", QString::number(i + 1)},
+                             {"ret", QString::number(captureRet)},
+                             {"color_w", QString::number(out_frame.cols)},
+                             {"color_h", QString::number(out_frame.rows)},
+                             {"depth_w", QString::number(depth.cols)},
+                             {"depth_h", QString::number(depth.rows)}});
         if (captureRet != 0 && out_frame.empty())
             continue;
         if (!out_frame.empty() && !depth.empty()) break;
     }
     if (out_frame.empty()) {
-        APP_LOG_ERROR("calibration.height", "height_estimation_failed reason=color_capture_failed attempts=3");
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "color_capture_failed"},
+                             {"attempts", "3"}});
         std::cout << "[estimateCameraHeight] 采集图像失败" << std::endl;
         return false;
     }
 
     if (!detector.detectCorners(out_frame, out_corners, out_ids) || out_ids.size() < 4) {
-        APP_LOG_WARNING("calibration.height", QString("height_estimation_failed reason=insufficient_corners corners=%1 image=%2x%3")
-            .arg(out_ids.size()).arg(out_frame.cols).arg(out_frame.rows));
+        APP_LOG_EVENT_WARNING("calibration.height",
+                              "height_estimate",
+                              "fail",
+                              {{"reason", "insufficient_corners"},
+                               {"corners", QString::number(out_ids.size())},
+                               {"image_w", QString::number(out_frame.cols)},
+                               {"image_h", QString::number(out_frame.rows)}});
         std::cout << "[estimateCameraHeight] ChArUco 角点过少" << std::endl;
         return false;
     }
@@ -557,12 +687,23 @@ bool estimateCameraHeight(
             heightCamera = h;
             heightOk = true;
             std::cout << "[autoCalib] 深度相机高度: " << heightCamera << " mm" << std::endl;
-            APP_LOG_INFO("calibration.height", QString("height_estimated method=depth height_mm=%1 corners=%2 depth=%3x%4")
-                .arg(heightCamera, 0, 'f', 3).arg(out_ids.size())
-                .arg(depth.cols).arg(depth.rows));
+            APP_LOG_EVENT_INFO("calibration.height",
+                               "height_estimate",
+                               "success",
+                               {{"method", "depth"},
+                                {"height_mm", QString::number(heightCamera, 'f', 3)},
+                                {"corners", QString::number(out_ids.size())},
+                                {"depth_w", QString::number(depth.cols)},
+                                {"depth_h", QString::number(depth.rows)}});
         } else {
-            APP_LOG_WARNING("calibration.height", QString("depth_height_invalid corners=%1 depth=%2x%3 valid_range_mm=1..3000")
-                .arg(out_ids.size()).arg(depth.cols).arg(depth.rows));
+            APP_LOG_EVENT_WARNING("calibration.height",
+                                  "height_estimate",
+                                  "skip",
+                                  {{"reason", "depth_invalid"},
+                                   {"corners", QString::number(out_ids.size())},
+                                   {"depth_w", QString::number(depth.cols)},
+                                   {"depth_h", QString::number(depth.rows)},
+                                   {"valid_range_mm", "1..3000"}});
         }
     }
 
@@ -573,8 +714,11 @@ bool estimateCameraHeight(
         double initJoint[6] = {};
         CRresult jointRet = cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
         if (jointRet != sucess) {
-            APP_LOG_ERROR("calibration.height", QString("height_fallback_failed reason=joint_read error=%1")
-                .arg(jointRet));
+            APP_LOG_EVENT_ERROR("calibration.height",
+                                "height_estimate",
+                                "fail",
+                                {{"reason", "joint_read"},
+                                 {"error", QString::number(jointRet)}});
             return false;
         }
         const double Z_STEP = 150.0;
@@ -583,8 +727,11 @@ bool estimateCameraHeight(
         std::copy(oriFlangeEulePos, oriFlangeEulePos + 6, flangeUp);
         flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
         if (!moveToFlangeEulePos(robot_handle, flangeUp)) {
-            APP_LOG_ERROR("calibration.height", QString("height_fallback_failed reason=move_up target_z=%1")
-                .arg(flangeUp[2], 0, 'f', 3));
+            APP_LOG_EVENT_ERROR("calibration.height",
+                                "height_estimate",
+                                "fail",
+                                {{"reason", "move_up"},
+                                 {"target_z", QString::number(flangeUp[2], 'f', 3)}});
             return false;
         }
 
@@ -594,8 +741,11 @@ bool estimateCameraHeight(
             if (restoreRet != sucess)
                 std::cerr << "[estimateCameraHeight] 第二帧采集失败且恢复位置失败 ret="
                           << restoreRet << std::endl;
-            APP_LOG_ERROR("calibration.height", QString("height_fallback_failed reason=second_capture restore_error=%1")
-                .arg(restoreRet));
+            APP_LOG_EVENT_ERROR("calibration.height",
+                                "height_estimate",
+                                "fail",
+                                {{"reason", "second_capture"},
+                                 {"restore_error", QString::number(restoreRet)}});
             return false;
         }
 
@@ -606,14 +756,21 @@ bool estimateCameraHeight(
             if (restoreRet != sucess)
                 std::cerr << "[estimateCameraHeight] 第二帧检测失败且恢复位置失败 ret="
                           << restoreRet << std::endl;
-            APP_LOG_WARNING("calibration.height", QString("height_fallback_failed reason=second_detection corners=%1 restore_error=%2")
-                .arg(ids2.size()).arg(restoreRet));
+            APP_LOG_EVENT_WARNING("calibration.height",
+                                  "height_estimate",
+                                  "skip",
+                                  {{"reason", "second_detection"},
+                                   {"corners", QString::number(ids2.size())},
+                                   {"restore_error", QString::number(restoreRet)}});
             return false;
         }
         const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
         if (restoreRet != sucess) {
-            APP_LOG_ERROR("calibration.height", QString("height_fallback_failed reason=restore_position error=%1")
-                .arg(restoreRet));
+            APP_LOG_EVENT_ERROR("calibration.height",
+                                "height_estimate",
+                                "fail",
+                                {{"reason", "restore_position"},
+                                 {"error", QString::number(restoreRet)}});
             return false;
         }
 
@@ -627,14 +784,22 @@ bool estimateCameraHeight(
             heightCamera = Z_STEP * dim2 / (dim1 - dim2);
             std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
                       << " mm (像素 " << dim1 << "→" << dim2 << " px)" << std::endl;
-            APP_LOG_INFO("calibration.height", QString("height_estimated method=two_images height_mm=%1 span_before=%2 span_after=%3")
-                .arg(heightCamera, 0, 'f', 3).arg(dim1).arg(dim2));
+            APP_LOG_EVENT_INFO("calibration.height",
+                               "height_estimate",
+                               "success",
+                               {{"method", "two_images"},
+                                {"height_mm", QString::number(heightCamera, 'f', 3)},
+                                {"span_before", QString::number(dim1, 'f', 3)},
+                                {"span_after", QString::number(dim2, 'f', 3)}});
             heightOk = true;
         }
     }
 
     if (!heightOk) {
-        APP_LOG_ERROR("calibration.height", "height_estimation_failed reason=no_valid_method");
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "no_valid_method"}});
         std::cout << "[estimateCameraHeight] 高度估计失败" << std::endl;
         return false;
     }
@@ -656,12 +821,10 @@ bool loadRobotPosesFromCSV(const std::string& csv_file,
     int count = 0;
     while (std::getline(f, line)) {
         if (line.empty()) continue;
-        std::stringstream ss(line);
         double vals[6];
-        for (int i = 0; i < 6; i++) {
-            std::string token;
-            if (!std::getline(ss, token, ',')) break;
-            vals[i] = std::stod(token);
+        if (!parseDoubles(line, vals, 6)) {
+            std::cerr << "[calibUtil] rob_pos.csv 行格式错误: " << line << std::endl;
+            continue;
         }
         robot_poses.push_back(calib_transform::axisAnglePoseToTransform(vals));
         count++;
@@ -694,12 +857,10 @@ bool convertEulerCsvToAxisCsv(const std::string& save_dir) {
     int count = 0;
     while (std::getline(fin, line)) {
         if (line.empty()) continue;
-        std::stringstream ss(line);
         double euler[ROB_AXIS_NUM], axis[ROB_AXIS_NUM];
-        for (int i = 0; i < ROB_AXIS_NUM; i++) {
-            std::string token;
-            if (!std::getline(ss, token, ',')) break;
-            euler[i] = std::stod(token);
+        if (!parseDoubles(line, euler, ROB_AXIS_NUM)) {
+            std::cerr << "[calibUtil] rob_eule.csv 行格式错误: " << line << std::endl;
+            continue;
         }
         if (cr_Eule2AxisAngle(euler, axis) != sucess) {
             std::cerr << "[calibUtil] 欧拉→轴角转换失败，第 " << (count + 1) << " 行" << std::endl;
@@ -728,20 +889,32 @@ bool saveCalibrationResult(const std::string& yaml_path,
                             int valid_frames) {
     if (yaml_path.empty() || transform.empty() || camera_matrix.empty() ||
         dist_coeffs.empty()) {
-        APP_LOG_ERROR("calibration.output", QString("yaml_write_rejected path=%1 transform_empty=%2 camera_empty=%3 distortion_empty=%4")
-            .arg(QString::fromStdString(yaml_path)).arg(transform.empty())
-            .arg(camera_matrix.empty()).arg(dist_coeffs.empty()));
+        APP_LOG_EVENT_ERROR("calibration.output",
+                            "yaml_output",
+                            "fail",
+                            {{"reason", "invalid_input"},
+                             {"path", QString::fromStdString(yaml_path)},
+                             {"transform_empty", transform.empty() ? "true" : "false"},
+                             {"camera_empty", camera_matrix.empty() ? "true" : "false"},
+                             {"distortion_empty", dist_coeffs.empty() ? "true" : "false"}});
         return false;
     }
 
-    APP_LOG_INFO("calibration.output", QString("yaml_write_begin path=%1 transform_key=%2 valid_frames=%3 error_mm=%4")
-        .arg(QString::fromStdString(yaml_path), QString::fromStdString(transform_key))
-        .arg(valid_frames).arg(reproj_error_mm, 0, 'f', 6));
+    APP_LOG_EVENT_INFO("calibration.output",
+                       "yaml_output",
+                       "start",
+                       {{"path", QString::fromStdString(yaml_path)},
+                        {"transform_key", QString::fromStdString(transform_key)},
+                        {"valid_frames", QString::number(valid_frames)},
+                        {"error_mm", QString::number(reproj_error_mm, 'f', 6)}});
     try {
         cv::FileStorage out(yaml_path, cv::FileStorage::WRITE);
         if (!out.isOpened()) {
-            APP_LOG_ERROR("calibration.output", QString("yaml_write_failed path=%1 reason=open_failed")
-                .arg(QString::fromStdString(yaml_path)));
+            APP_LOG_EVENT_ERROR("calibration.output",
+                                "yaml_output",
+                                "fail",
+                                {{"path", QString::fromStdString(yaml_path)},
+                                 {"reason", "open_failed"}});
             std::cerr << "[calibUtil] 无法写入 " << yaml_path << std::endl;
             return false;
         }
@@ -752,8 +925,12 @@ bool saveCalibrationResult(const std::string& yaml_path,
         out << "valid_frames" << valid_frames;
         out.release();
     } catch (const cv::Exception& e) {
-        APP_LOG_ERROR("calibration.output", QString("yaml_write_failed path=%1 reason=opencv_exception message=%2")
-            .arg(QString::fromStdString(yaml_path), QString::fromUtf8(e.what())));
+        APP_LOG_EVENT_ERROR("calibration.output",
+                            "yaml_output",
+                            "fail",
+                            {{"path", QString::fromStdString(yaml_path)},
+                             {"reason", "opencv_exception"},
+                             {"message", QString::fromUtf8(e.what())}});
         std::cerr << "[calibUtil] 写入 YAML 异常: " << e.what() << std::endl;
         return false;
     }
@@ -761,13 +938,22 @@ bool saveCalibrationResult(const std::string& yaml_path,
     std::error_code fileError;
     const auto bytes = std::filesystem::file_size(yaml_path, fileError);
     if (fileError || bytes == 0) {
-        APP_LOG_ERROR("calibration.output", QString("yaml_write_failed path=%1 reason=file_verification error=%2 bytes=%3")
-            .arg(QString::fromStdString(yaml_path), QString::fromStdString(fileError.message()))
-            .arg(fileError ? 0 : static_cast<qulonglong>(bytes)));
+        APP_LOG_EVENT_ERROR("calibration.output",
+                            "yaml_output",
+                            "fail",
+                            {{"path", QString::fromStdString(yaml_path)},
+                             {"reason", "file_verification"},
+                             {"error", QString::fromStdString(fileError.message())},
+                             {"bytes", QString::number(fileError ? 0 : static_cast<qulonglong>(bytes))}});
         return false;
     }
     std::cout << "[calibUtil] 结果已保存到: " << yaml_path << std::endl;
-    APP_LOG_INFO("calibration.output", QString("yaml_write_complete path=%1 bytes=%2")
-        .arg(QString::fromStdString(yaml_path)).arg(static_cast<qulonglong>(bytes)));
+    APP_LOG_EVENT_INFO("calibration.output",
+                       "yaml_output",
+                       "success",
+                       {{"path", QString::fromStdString(yaml_path)},
+                        {"bytes", QString::number(static_cast<qulonglong>(bytes))},
+                        {"valid_frames", QString::number(valid_frames)},
+                        {"transform_key", QString::fromStdString(transform_key)}});
     return true;
 }
