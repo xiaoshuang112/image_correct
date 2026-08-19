@@ -15,6 +15,9 @@ constexpr int kMotionProgressLogMs = 2000;
 constexpr int kMotionMinTimeoutMs = 20000;
 constexpr int kMotionMaxTimeoutMs = 120000;
 constexpr double kMotionTimeoutPerDegreeMs = 1500.0;
+constexpr int kIdleWaitTimeoutMs = 10000;
+constexpr int kIdleStablePolls = 3;
+constexpr int kCommandMaxAttempts = 2;
 
 std::atomic<RobotMotionCancelCheck> g_motionCancelCheck{nullptr};
 
@@ -191,6 +194,67 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         return robot_motion_cancelled;
     }
 
+    auto waitUntilRobotIdle = [&](const char* phase) -> CRresult {
+        const auto idleStartedAt = std::chrono::steady_clock::now();
+        int polls = 0;
+        int statusFailures = 0;
+        int stablePolls = 0;
+        BOOL moving = TRUE;
+        while (true) {
+            if (robotMotionCancellationRequested())
+                return robot_motion_cancelled;
+
+            const CRresult statusRet =
+                cr_get_robotMoveStatus((RobotHandle)robot_handle, &moving);
+            ++polls;
+            if (statusRet == sucess) {
+                stablePolls = moving ? 0 : stablePolls + 1;
+                if (stablePolls >= kIdleStablePolls) {
+                    const long long waitedMs =
+                        std::chrono::duration_cast<std::chrono::milliseconds>(
+                            std::chrono::steady_clock::now() - idleStartedAt).count();
+                    if (waitedMs >= kMotionPollMs) {
+                        APP_LOG_EVENT_INFO("robot.motion",
+                                           "joint_move",
+                                           "idle",
+                                           {{"phase", phase},
+                                            {"waited_ms", QString::number(waitedMs)},
+                                            {"polls", QString::number(polls)},
+                                            {"status_failures", QString::number(statusFailures)},
+                                            {"stable_polls", QString::number(stablePolls)}});
+                    }
+                    return sucess;
+                }
+            } else {
+                ++statusFailures;
+                stablePolls = 0;
+            }
+
+            const long long waitedMs =
+                std::chrono::duration_cast<std::chrono::milliseconds>(
+                    std::chrono::steady_clock::now() - idleStartedAt).count();
+            if (waitedMs >= kIdleWaitTimeoutMs) {
+                APP_LOG_EVENT_ERROR("robot.motion",
+                                    "joint_move",
+                                    "fail",
+                                    {{"phase", phase},
+                                     {"reason", "idle_wait_timeout"},
+                                     {"waited_ms", QString::number(waitedMs)},
+                                     {"polls", QString::number(polls)},
+                                     {"status_failures", QString::number(statusFailures)},
+                                     {"moving", moving ? "true" : "false"}});
+                return operate_timeout;
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds(kMotionPollMs));
+        }
+    };
+
+    // 上一个非阻塞命令可能已经进入位置容差但仍在减速。下发新命令前必须
+    // 由控制器连续确认静止，否则 SDK 会返回 result_invalid。
+    ret = waitUntilRobotIdle("before_command");
+    if (ret != sucess)
+        return ret;
+
     PointControlParaSimple simple{};
     for (int i = 0; i < ROB_AXIS_NUM; i++) {
         simple.pose[i] = pose[i];
@@ -219,7 +283,30 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                   << ret << std::endl;
         return ret;
     }
-    ret = cr_move_joint((RobotHandle)robot_handle, para, FALSE);
+    int commandAttempts = 0;
+    for (; commandAttempts < kCommandMaxAttempts; ++commandAttempts) {
+        ret = cr_move_joint((RobotHandle)robot_handle, para, FALSE);
+        if (ret == sucess)
+            break;
+
+        // result_invalid 在实机上表示上一条轨迹尚未完全释放。仅等待并重试一次，
+        // 防止候选循环在机器人忙时连续轰炸控制器。
+        if (ret == result_invalid && commandAttempts + 1 < kCommandMaxAttempts) {
+            APP_LOG_EVENT_WARNING("robot.motion",
+                                  "joint_move",
+                                  "retry",
+                                  {{"phase", "command_send"},
+                                   {"reason", "controller_busy"},
+                                   {"attempt", QString::number(commandAttempts + 1)},
+                                   {"error", QString::number(ret)},
+                                   {"target", formatSixValues(target)}});
+            const CRresult idleRet = waitUntilRobotIdle("command_retry");
+            if (idleRet != sucess)
+                return idleRet;
+            continue;
+        }
+        break;
+    }
     if (ret != sucess) {
         APP_LOG_EVENT_ERROR("robot.motion",
                             "joint_move",
@@ -227,6 +314,7 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                             {{"phase", "command_send"},
                              {"reason", "move_command"},
                              {"error", QString::number(ret)},
+                             {"attempts", QString::number(commandAttempts + 1)},
                              {"target", formatSixValues(target)}});
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
@@ -237,8 +325,11 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     const double tol_deg = 0.5;
     bool reached = false;
     int readFailures = 0;
+    int statusFailures = 0;
+    int stablePolls = 0;
     int polls = 0;
     long long nextProgressLogMs = 0;
+    BOOL moving = TRUE;
     while (true) {
         const auto now = std::chrono::steady_clock::now();
         const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -269,6 +360,9 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                                  {"timeout_ms", QString::number(timeoutMs)},
                                  {"polls", QString::number(polls)},
                                  {"read_failures", QString::number(readFailures)},
+                                 {"status_failures", QString::number(statusFailures)},
+                                 {"moving", moving ? "true" : "false"},
+                                 {"stable_polls", QString::number(stablePolls)},
                                  {"stop_result", QString::number(stopRet)},
                                  {"target", formatSixValues(target)},
                                  {"actual", formatSixValues(actual)}});
@@ -276,11 +370,27 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         }
 
         ++polls;
-        if (cr_get_jointActualPos((RobotHandle)robot_handle, actual) != sucess) {
+        const CRresult actualRet =
+            cr_get_jointActualPos((RobotHandle)robot_handle, actual);
+        const CRresult statusRet =
+            cr_get_robotMoveStatus((RobotHandle)robot_handle, &moving);
+        if (actualRet != sucess) {
             ++readFailures;
-        } else if (jointsWithinTolerance(actual, target, tol_deg)) {
-            // 到位后再稳定 200ms，消除残余抖动
-            std::this_thread::sleep_for(std::chrono::milliseconds(200));
+            stablePolls = 0;
+        }
+        if (statusRet != sucess) {
+            ++statusFailures;
+            stablePolls = 0;
+        }
+
+        const bool positionReached =
+            actualRet == sucess && jointsWithinTolerance(actual, target, tol_deg);
+        if (actualRet == sucess && statusRet == sucess) {
+            stablePolls = positionReached && !moving ? stablePolls + 1 : 0;
+        }
+        if (stablePolls >= kIdleStablePolls) {
+            // 控制器已连续确认停止，再留出一个短稳定窗口。
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
             reached = true;
             break;
         }
@@ -300,6 +410,10 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                                 {"remaining_error_deg", QString::number(remainingError, 'f', 3)},
                                 {"polls", QString::number(polls)},
                                 {"read_failures", QString::number(readFailures)},
+                                {"status_failures", QString::number(statusFailures)},
+                                {"moving", moving ? "true" : "false"},
+                                {"position_reached", positionReached ? "true" : "false"},
+                                {"stable_polls", QString::number(stablePolls)},
                                 {"actual", formatSixValues(actual)},
                                 {"target", formatSixValues(target)}});
             nextProgressLogMs = elapsedMs + kMotionProgressLogMs;
@@ -317,6 +431,10 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                            {{"elapsed_ms", QString::number(elapsedMs)},
                             {"polls", QString::number(polls)},
                             {"read_failures", QString::number(readFailures)},
+                            {"status_failures", QString::number(statusFailures)},
+                            {"moving", moving ? "true" : "false"},
+                            {"stable_polls", QString::number(stablePolls)},
+                            {"command_attempts", QString::number(commandAttempts + 1)},
                             {"actual", formatSixValues(actual)},
                             {"target", formatSixValues(target)}});
     }

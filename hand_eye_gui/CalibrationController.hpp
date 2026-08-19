@@ -160,12 +160,12 @@ private:
     // ==================== 数据成员 ====================
 
     // 配置
-    QString  m_robotIp      = "192.168.1.6";
+    QString  m_robotIp      = "192.168.3.6";
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
     int      m_cameraToTcpEnd = 150;
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
-    QString  m_cameraIp     = "192.168.1.11";
+    QString  m_cameraIp     = "192.168.3.10";
     int      m_cameraPort   = 8090;
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;

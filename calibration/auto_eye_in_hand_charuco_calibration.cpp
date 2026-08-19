@@ -133,12 +133,16 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
 // candidates: 欧拉位姿列表 [x,y,z,rx,ry,rz] (mm, deg)
 // use_center: 评分模式 (true=中心距, false=面积)
 // best_joint: 输出，最佳候选的关节角
-// 返回最佳评分 (全失败返回 -1)
+// 返回最佳评分（运动或基础设施失败时返回负无穷，调用方必须立即终止）
 // 注意：函数会临时运动到候选位姿做评估，返回前会回到原始位置
+static constexpr double kCandidateSearchFailure =
+    -std::numeric_limits<double>::infinity();
+
 static double tryCandidatePoses(int robot_handle,
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
     bool use_center,
+    const char* search_phase,
     const std::vector<std::array<double, 6>>& candidates,
     double bestFlangeEule[6]) {
     // 保存原始关节角
@@ -150,7 +154,7 @@ static double tryCandidatePoses(int robot_handle,
                             "fail",
                             {{"reason", "joint_read"},
                              {"error", QString::number(ret)}});
-        return -1.0;
+        return kCandidateSearchFailure;
     }
     ret = cr_get_tcpActualPose(robot_handle, tcp_aa);
     if (ret != sucess) {
@@ -159,19 +163,23 @@ static double tryCandidatePoses(int robot_handle,
                             "fail",
                             {{"reason", "tcp_read"},
                              {"error", QString::number(ret)}});
-        return -1.0;
+        return kCandidateSearchFailure;
     }
     
+    double initialFlangeEule[ROB_AXIS_NUM];
     double bestFlangeEule_j[ROB_AXIS_NUM];
     double best_s = -1e18;
     bool found = false;
-    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, bestFlangeEule_j)) {
+    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, initialFlangeEule)) {
         APP_LOG_EVENT_ERROR("calibration.pose_search",
                             "candidate_search",
                             "fail",
                             {{"reason", "tcp_to_flange_conversion"}});
-        return -1.0;
+        return kCandidateSearchFailure;
     }
+    const cv::Size boardSize = detector.getChessboardSize();
+    const int totalCorners = (boardSize.width - 1) * (boardSize.height - 1);
+    int candidateIndex = 0;
     for (const auto& euler : candidates) {
              
         if(moveToFlangeEulePos(robot_handle, (double*)euler.data())!= true) {
@@ -180,13 +188,35 @@ static double tryCandidatePoses(int robot_handle,
                                       "candidate_search",
                                       "cancelled",
                                       {{"stage", "robot_move"}});
-                return -1.0;
+                return kCandidateSearchFailure;
             }
-            continue;        
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "candidate_search",
+                                "fail",
+                                {{"reason", "candidate_motion_failed"},
+                                 {"target", QString("[%1,%2,%3,%4,%5,%6]")
+                                     .arg(euler[0], 0, 'f', 3).arg(euler[1], 0, 'f', 3)
+                                     .arg(euler[2], 0, 'f', 3).arg(euler[3], 0, 'f', 3)
+                                     .arg(euler[4], 0, 'f', 3).arg(euler[5], 0, 'f', 3)}});
+            return kCandidateSearchFailure;
         }
 
         double s; int n; cv::Point2f bc;
         std::tie(s, n, bc) = evaluatePose(camera, detector, use_center);
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "candidate_evaluation",
+                           "sampled",
+                           {{"phase", search_phase ? search_phase : "unknown"},
+                            {"index", QString::number(candidateIndex)},
+                            {"total", QString::number(candidates.size())},
+                            {"offset_x_mm", QString::number(euler[0] - initialFlangeEule[0], 'f', 1)},
+                            {"offset_y_mm", QString::number(euler[1] - initialFlangeEule[1], 'f', 1)},
+                            {"offset_z_mm", QString::number(euler[2] - initialFlangeEule[2], 'f', 1)},
+                            {"corners", QString::number(n)},
+                            {"total_corners", QString::number(totalCorners)},
+                            {"score", QString::number(s, 'f', 3)},
+                            {"board_center_x", QString::number(bc.x, 'f', 1)},
+                            {"board_center_y", QString::number(bc.y, 'f', 1)}});
         if (s > best_s) {
             best_s = s;
             std::copy(euler.data(), euler.data() + ROB_AXIS_NUM, bestFlangeEule_j);
@@ -198,19 +228,27 @@ static double tryCandidatePoses(int robot_handle,
                 if (-1==call_ret)
             {
                 std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
-                const CRresult restoreRet = moveToJointPos(robot_handle, initJointPos);
-                if (restoreRet != sucess)
-                    std::cerr << "[autoCalib] 取消后恢复机器人位置失败 ret="
-                              << restoreRet << std::endl;
                 APP_LOG_EVENT_WARNING("calibration.pose_search",
                                       "candidate_search",
-                                      "skip",
+                                      "cancelled",
                                       {{"reason", "cancelled"},
-                                       {"restore_error", QString::number(restoreRet)},
                                        {"stage", "candidate"}});
-                return -1.0;
+                return kCandidateSearchFailure;
             }            
-        }    
+        }
+
+        if (n >= totalCorners) {
+            APP_LOG_EVENT_INFO("calibration.pose_search",
+                               "candidate_search",
+                               "early_stop",
+                               {{"phase", search_phase ? search_phase : "unknown"},
+                                {"reason", "all_corners_visible"},
+                                {"index", QString::number(candidateIndex)},
+                                {"corners", QString::number(n)},
+                                {"total_corners", QString::number(totalCorners)}});
+            break;
+        }
+        ++candidateIndex;
 
     }
 
@@ -222,10 +260,10 @@ static double tryCandidatePoses(int robot_handle,
                             "fail",
                             {{"reason", "restore_position"},
                              {"error", QString::number(restoreRet)}});
-        return -1.0;
+        return kCandidateSearchFailure;
     }
     if (!found){          
-        return -1.0;}
+        return kCandidateSearchFailure;}
 
     std::copy(bestFlangeEule_j, bestFlangeEule_j + ROB_AXIS_NUM, bestFlangeEule);
     return best_s;
@@ -261,15 +299,31 @@ static bool searchXYSteps(int robot_handle,
         double score; int n; cv::Point2f bc;
         std::tie(score, n, bc) = evaluatePose(camera, detector, false);
         std::vector<std::array<double, 6>> xy_candidates;
-        for (int sx : {-1, 0, 1}) for (int sy : {-1, 0, 1}) {
-            if (sx == 0 && sy == 0)
-               continue;
+        // 沿邻接的环形路径走完 8 个方向，避免旧笛卡尔顺序在对角点之间来回跨越。
+        const std::array<std::array<int, 2>, 8> xyOrder{{
+            {{-1, 0}}, {{-1, -1}}, {{0, -1}}, {{1, -1}},
+            {{1, 0}}, {{1, 1}}, {{0, 1}}, {{-1, 1}}
+        }};
+        for (const auto& offset : xyOrder) {
+            const int sx = offset[0];
+            const int sy = offset[1];
             xy_candidates.push_back({flangeEulePos[0] + sx*step, flangeEulePos[1] + sy*step, flangeEulePos[2],
                                       flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
         }
         double bestFlangeEule[ROB_AXIS_NUM];
-        if (tryCandidatePoses(robot_handle, camera, detector,
-                               false, xy_candidates, bestFlangeEule) > score) {
+        const double candidateScore = tryCandidatePoses(
+            robot_handle, camera, detector, false, "coarse_xy",
+            xy_candidates, bestFlangeEule);
+        if (!std::isfinite(candidateScore)) {
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "xy_search",
+                                "fail",
+                                {{"reason", "candidate_search_failed"},
+                                 {"step_index", QString::number(i)},
+                                 {"step_mm", QString::number(step)}});
+            return false;
+        }
+        if (candidateScore > score) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
                 APP_LOG_EVENT_ERROR("calibration.pose_search",
                                     "xy_search",
@@ -324,12 +378,17 @@ bool autoFindBestPose(int robot_handle,
                       std::shared_ptr<AICamera>& camera,
                       CharucoDetector& detector,
                       const std::string& save_dir,
-                      AI_det_callback callback) {
+                      AI_det_callback callback,
+                      std::string* failure_message) {
+
+    if (failure_message)
+        failure_message->clear();
 
     const double TARGET_AREA_RATIO = 0.275;
     const int MAX_REFINE_ZRZ = 6;
     const double Z_STEP = 100.0;
     const double Z_MAX_OFFSET = 600.0;
+    const double Z_MAX_APPROACH_OFFSET = 200.0;
 
     // ---- 固定 rx=-180°, ry=0°（标定板水平），保留 rz ----
     double flangeEulePos[ROB_AXIS_NUM] = {};
@@ -380,18 +439,60 @@ bool autoFindBestPose(int robot_handle,
     cv::Point2f cur_bc;
     std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
-    if (cur_codes > 0 && cur_codes < total_corners) {
+    // 只有完整识别 24/24 时才跳过粗搜索。0 个角点通常意味着起始距离
+    // 过远，恰恰需要用粗粒度 Z/XY 搜索恢复，不能直接进入精细拟合。
+    if (cur_codes < total_corners) {
         std::cout << "[autoFindBestPose] Phase1: Z 搜索 (当前码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "coarse_search",
+                           "start",
+                           {{"phase", "coarse_z"},
+                            {"reason", cur_codes == 0
+                                 ? "recover_board_not_detected" : "incomplete_corners"},
+                            {"corners", QString::number(cur_codes)},
+                            {"total_corners", QString::number(total_corners)}});
 
-        std::vector<std::array<double, 6>> z_candidates;
-        for (int idx = 1; idx * Z_STEP <= Z_MAX_OFFSET; idx++)
-            z_candidates.push_back({flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + idx * Z_STEP,
-                                    flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
-
+        // 现场零角点帧中标定板位于画面中央但尺寸过小。先向靠近标定板的
+        // 方向搜索，未改善时再向远离方向扩展视野；两组之间都会回到起点，
+        // 避免从 -200 mm 直接跨越到 +600 mm。
+        std::vector<std::array<double, 6>> approachCandidates;
+        for (int idx = 1; idx * Z_STEP <= Z_MAX_APPROACH_OFFSET; ++idx) {
+            approachCandidates.push_back({
+                flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] - idx * Z_STEP,
+                flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
+        }
         double bestFlangeEule[ROB_AXIS_NUM];
-        double best_s = tryCandidatePoses(robot_handle, camera, detector,
-                                           false, z_candidates, bestFlangeEule);
+        double best_s = tryCandidatePoses(
+            robot_handle, camera, detector, false, "coarse_z_approach",
+            approachCandidates, bestFlangeEule);
+        if (!std::isfinite(best_s)) {
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "z_search"},
+                                 {"reason", "candidate_search_failed"}});
+            return false;
+        }
+        if (best_s <= cur_score) {
+            std::vector<std::array<double, 6>> retreatCandidates;
+            for (int idx = 1; idx * Z_STEP <= Z_MAX_OFFSET; ++idx) {
+                retreatCandidates.push_back({
+                    flangeEulePos[0], flangeEulePos[1], flangeEulePos[2] + idx * Z_STEP,
+                    flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
+            }
+            best_s = tryCandidatePoses(
+                robot_handle, camera, detector, false, "coarse_z_retreat",
+                retreatCandidates, bestFlangeEule);
+            if (!std::isfinite(best_s)) {
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "z_search"},
+                                     {"reason", "retreat_candidate_search_failed"}});
+                return false;
+            }
+        }
         if (best_s > cur_score) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEule)) {
                 APP_LOG_EVENT_ERROR("calibration.pose_search",
@@ -426,8 +527,7 @@ bool autoFindBestPose(int robot_handle,
                            "phase_skip",
                            "skip",
                            {{"phase", "coarse_z"},
-                            {"reason", cur_codes == total_corners
-                                 ? "all_corners_visible" : "board_not_detected"},
+                            {"reason", "all_corners_visible"},
                             {"corners", QString::number(cur_codes)},
                             {"total_corners", QString::number(total_corners)}});
     }
@@ -438,9 +538,17 @@ bool autoFindBestPose(int robot_handle,
     
     std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
 
-    if (cur_codes > 0 && cur_codes < total_corners) {
+    if (cur_codes < total_corners) {
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
                   << "/" << total_corners << ")" << std::endl;
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "coarse_search",
+                           "start",
+                           {{"phase", "coarse_xy"},
+                            {"reason", cur_codes == 0
+                                 ? "recover_board_not_detected" : "incomplete_corners"},
+                            {"corners", QString::number(cur_codes)},
+                            {"total_corners", QString::number(total_corners)}});
         const double steps[] = {240, 120, 60};
         if (!searchXYSteps(robot_handle, camera, detector,
                            steps, std::size(steps), tcp_aa)) {
@@ -456,8 +564,7 @@ bool autoFindBestPose(int robot_handle,
                            "phase_skip",
                            "skip",
                            {{"phase", "coarse_xy"},
-                            {"reason", cur_codes == total_corners
-                                 ? "all_corners_visible" : "board_not_detected"},
+                            {"reason", "all_corners_visible"},
                             {"corners", QString::number(cur_codes)},
                             {"total_corners", QString::number(total_corners)}});
     }
@@ -469,6 +576,14 @@ bool autoFindBestPose(int robot_handle,
     for (int iter = 0; iter < MAX_REFINE_ZRZ; iter++) {
         cv::Mat frame = camera->captureOneFrame(1500);
         if (frame.empty()) {
+            if (failure_message)
+                *failure_message = "自动寻找最佳位姿失败：相机采集不到图像";
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "zrz"},
+                                 {"reason", "empty_frame"},
+                                 {"iter", QString::number(iter)}});
             std::cerr << "[autoFindBestPose] 采集图像失败" << std::endl;
             return false;
         }
@@ -494,6 +609,21 @@ bool autoFindBestPose(int robot_handle,
         std::vector<int> ids;
         if (!detector.detectCorners(frame, corners, ids) || ids.size() < 4) {
             if (iter == 0) {
+                if (failure_message) {
+                    *failure_message =
+                        "自动寻找最佳位姿失败：粗搜索后仍未检测到足够的标定板角点（" +
+                        std::to_string(ids.size()) + "/" +
+                        std::to_string(total_corners) + "）";
+                }
+                APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                    "best_pose",
+                                    "fail",
+                                    {{"phase", "zrz"},
+                                     {"reason", "insufficient_corners_after_coarse_search"},
+                                     {"iter", QString::number(iter)},
+                                     {"corners", QString::number(ids.size())},
+                                     {"minimum", "4"},
+                                     {"total_corners", QString::number(total_corners)}});
                 std::cerr << "[autoFindBestPose] 初始帧检测失败" << std::endl;
                 return false;
             }
@@ -539,8 +669,19 @@ bool autoFindBestPose(int robot_handle,
         }
 
         double bestFlangeEulePos[ROB_AXIS_NUM];
-        if (tryCandidatePoses(robot_handle, camera, detector,
-                               false, zrz_candidates, bestFlangeEulePos) > cur_s) {
+        const double candidateScore = tryCandidatePoses(
+            robot_handle, camera, detector, false, "refine_zrz",
+            zrz_candidates, bestFlangeEulePos);
+        if (!std::isfinite(candidateScore)) {
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "best_pose",
+                                "fail",
+                                {{"phase", "zrz"},
+                                 {"reason", "candidate_search_failed"},
+                                 {"iter", QString::number(iter)}});
+            return false;
+        }
+        if (candidateScore > cur_s) {
             if (!moveToFlangeEulePos(robot_handle, bestFlangeEulePos)) {
                 APP_LOG_EVENT_ERROR("calibration.pose_search",
                                     "best_pose",
@@ -1007,8 +1148,16 @@ bool autoEyeInHandCharucoCalibration(
         return false;
     }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
+    std::string best_pose_failure;
     if (!autoFindBestPose(robot_handle, camera, detector,
-                            save_dir, callback)) {
+                            save_dir, callback, &best_pose_failure)) {
+        if (robotMotionCancellationRequested()) {
+            result.message = "标定已取消";
+        } else if (!best_pose_failure.empty()) {
+            result.message = best_pose_failure;
+        } else {
+            result.message = "自动寻找最佳位姿失败，请查看诊断日志确认运动、相机或检测原因";
+        }
         std::cerr << "[autoCalib] 自动寻找最佳位姿失败" << std::endl;
         return false;
     }
