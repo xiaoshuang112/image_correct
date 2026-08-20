@@ -177,6 +177,25 @@ add_executable(verify_fk tools/verify_fk.cpp)
 target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 
 # ============================================================
+# 眼在手内离线复算工具（不连接机器人/相机）
+# ============================================================
+add_executable(offline_eye_in_hand
+    tools/offline_eye_in_hand.cpp
+    calibration/charuco_detector.cpp
+    calibration/camera_calibration.cpp
+    calibration/calibration_utils.cpp
+    calibration/semi_auto_eye_in_hand_calibration.cpp
+    utils/calib_transform.cpp
+    utils/robot_util.cpp
+)
+target_include_directories(offline_eye_in_hand PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration
+    ${CGX_SDK_DIR}/include
+)
+target_link_libraries(offline_eye_in_hand ${OpenCV_LIBS} ${CGX_SDK_LIBS})
+
+# ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
 option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)

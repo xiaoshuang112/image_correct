@@ -596,7 +596,15 @@ static bool previewBoardDetection(CharucoDetector& detector,
 void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
     // 尝试加载已有相机内参
     cv::Mat camera_matrix, dist_coeffs;
-    std::string cam_file = g_paramPath + "camera_params.yaml";    
+    std::string cam_file = g_paramPath + "camera_params.yaml";
+    {
+        cv::FileStorage storage(cam_file, cv::FileStorage::READ);
+        if (storage.isOpened()) {
+            storage["camera_matrix"] >> camera_matrix;
+            storage["distortion_coefficients"] >> dist_coeffs;
+            storage.release();
+        }
+    }
 
     checkAndRestoreRobotHand();
     // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
@@ -668,7 +676,15 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
 
     // 加载已知相机内参（如有）
     cv::Mat camera_matrix, dist_coeffs;
-    std::string cam_file = g_paramPath + "camera_params.yaml";  
+    std::string cam_file = g_paramPath + "camera_params.yaml";
+    {
+        cv::FileStorage storage(cam_file, cv::FileStorage::READ);
+        if (storage.isOpened()) {
+            storage["camera_matrix"] >> camera_matrix;
+            storage["distortion_coefficients"] >> dist_coeffs;
+            storage.release();
+        }
+    }
     std::string save_dir = g_paramPath + "semi_eye_in_hand/";
 
     CalibrationResult result;
@@ -981,14 +997,49 @@ static bool handleCLI(int argc, char** argv) {
         return true;
     }
 
-    // --calibrate-eye-in-hand <save_dir>
+    // --calibrate-eye-in-hand <save_dir> [camera_params.yaml] [output.yaml]
     if (strcmp(argv[1], "--calibrate-eye-in-hand") == 0) {
         CharucoBoardConfig board_cfg;
         cv::Mat camera_matrix, dist_coeffs;
         CalibrationResult result;
-        if (argc < 3 || !calibrateEyeInHandFromDisk(argv[2], board_cfg,
-                camera_matrix, dist_coeffs, result)) {
+        if (argc < 3) {
+            std::cerr << "用法: " << argv[0]
+                      << " --calibrate-eye-in-hand <save_dir>"
+                         " [camera_params.yaml] [output.yaml]" << std::endl;
+            return true;
+        }
+
+        fs::path intrinsics_path;
+        if (argc >= 4) {
+            intrinsics_path = argv[3];
+        } else {
+            // 标准目录结构为 param/calibration + param/camera_params.yaml。
+            intrinsics_path = fs::path(argv[2]).parent_path() / "camera_params.yaml";
+        }
+        if (fs::exists(intrinsics_path)) {
+            cv::FileStorage storage(intrinsics_path.string(), cv::FileStorage::READ);
+            if (storage.isOpened()) {
+                storage["camera_matrix"] >> camera_matrix;
+                storage["distortion_coefficients"] >> dist_coeffs;
+                storage.release();
+            }
+            if (camera_matrix.empty() || dist_coeffs.empty()) {
+                std::cerr << "[main] 相机内参读取失败: "
+                          << intrinsics_path << std::endl;
+                return true;
+            }
+            std::cout << "[main] 使用相机内参: " << intrinsics_path << std::endl;
+        } else {
+            std::cout << "[main] 未找到已知内参，将从采集图像重新标定: "
+                      << intrinsics_path << std::endl;
+        }
+
+        const std::string output_yaml = argc >= 5 ? argv[4] : std::string();
+        if (!calibrateEyeInHandFromDisk(argv[2], board_cfg,
+                camera_matrix, dist_coeffs, result, output_yaml)) {
             std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
+        } else if (!output_yaml.empty()) {
+            std::cout << "[main] 离线标定结果: " << output_yaml << std::endl;
         }
         return true;
     }

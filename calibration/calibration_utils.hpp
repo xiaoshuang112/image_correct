@@ -112,7 +112,7 @@ bool convertEulerCsvToAxisCsv(const std::string& save_dir);
  * @param transform      4x4 变换矩阵
  * @param camera_matrix  3x3 相机内参
  * @param dist_coeffs    畸变系数
- * @param reproj_error_mm 重投影误差 (mm)
+ * @param reproj_error_mm 平移一致性 RMS (mm)；YAML 键名为兼容旧版保留
  * @param valid_frames   有效帧数
  */
 bool saveCalibrationResult(const std::string& yaml_path,

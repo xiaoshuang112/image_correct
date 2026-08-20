@@ -2,6 +2,7 @@
 
 #include "camera_calibration.hpp"           // calibrateCameraFromDisk, loadImagesFromDisk
 #include "calibration_utils.hpp"            // executeCollection, PoseCandidate
+#include "hand_eye_gui/DiagnosticLogger.hpp"
 
 #include <opencv2/calib3d.hpp>
 #include <iostream>
@@ -9,6 +10,9 @@
 #include <iomanip>
 #include <cmath>
 #include <filesystem>
+#include <limits>
+#include <numeric>
+#include <sstream>
 
 #include "utils/robot_util.hpp"
 #include "utils/calib_transform.hpp"
@@ -153,7 +157,8 @@ bool semiAutoEyeInHandCalibration(
     // ---- Phase 5: 手眼标定 ----
     if (!calibrateHandEyeFromDisk(save_dir, cam_mat, dist, board_config,
                                    result, output_yaml)) {
-        result.message = "手眼标定失败";
+        if (result.message.empty())
+            result.message = "手眼标定失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
         return false;
     }
@@ -183,7 +188,7 @@ bool calibrateEyeInHandFromDisk(
 
     // ---- Phase 1: 相机内参标定 ----
     cv::Mat cam_mat, dist;
-    if (false ) { // !camera_matrix.empty()
+    if (!camera_matrix.empty() && !dist_coeffs.empty()) {
         cam_mat = camera_matrix.getMat().clone();
         dist = dist_coeffs.getMat().clone();
         std::cout << "[semiAutoEyeInHand] 使用已知相机内参" << std::endl;
@@ -198,7 +203,8 @@ bool calibrateEyeInHandFromDisk(
 
     // ---- Phase 2: 手眼标定 ----
     if (!calibrateHandEyeFromDisk(save_dir, cam_mat, dist, board_config, result, output_yaml)) {
-        result.message = "手眼标定失败";
+        if (result.message.empty())
+            result.message = "手眼标定失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
         return false;
     }
@@ -337,144 +343,426 @@ static cv::Mat refineHandEyePoseConsistency(
     return X;
 }
 
-bool estimateHandEyeTrans(
-     const cv::Mat& camera_matrix,
-    const cv::Mat& dist_coeffs,
-    std::vector<cv::Mat> &robot_poses,
-    std::vector<cv::Mat> &camera_poses,
-    CalibrationResult& result,
-    bool needFilter
-){
-     int valid = (int)robot_poses.size();
-    if (valid < 5) {
-        result.message = "有效帧数不足: " + std::to_string(valid) + " (need >=5)";
-        std::cerr << "[autoCalib] " << result.message << std::endl;
-        return false;
+constexpr int kMinHandEyeFrames = 12;
+constexpr int kMinHandEyeCorners = 12;
+constexpr double kMinimumInlierRatio = 0.60;
+constexpr double kMadScale = 3.0;
+constexpr double kMinimumOutlierThresholdMeters = 0.003;  // 3 mm
+constexpr double kMaxTranslationRmsMeters = 0.005;        // 5 mm
+constexpr double kMaxTranslationP95Meters = 0.008;        // 8 mm
+constexpr double kMaxRotationRmsDegrees = 1.0;
+constexpr double kMaxRotationP95Degrees = 2.0;
+
+static double percentile(std::vector<double> values, double quantile) {
+    if (values.empty())
+        return std::numeric_limits<double>::quiet_NaN();
+    std::sort(values.begin(), values.end());
+    const double position = std::clamp(quantile, 0.0, 1.0) * (values.size() - 1);
+    const size_t lower = static_cast<size_t>(std::floor(position));
+    const size_t upper = static_cast<size_t>(std::ceil(position));
+    const double weight = position - lower;
+    return values[lower] * (1.0 - weight) + values[upper] * weight;
+}
+
+struct HandEyeConsistencyStats {
+    std::vector<double> translation_errors;
+    double translation_rms = std::numeric_limits<double>::quiet_NaN();
+    double translation_mean = std::numeric_limits<double>::quiet_NaN();
+    double translation_median = std::numeric_limits<double>::quiet_NaN();
+    double translation_p95 = std::numeric_limits<double>::quiet_NaN();
+    double translation_max = std::numeric_limits<double>::quiet_NaN();
+    double rotation_rms_degrees = std::numeric_limits<double>::quiet_NaN();
+    double rotation_p95_degrees = std::numeric_limits<double>::quiet_NaN();
+    double rotation_max_degrees = std::numeric_limits<double>::quiet_NaN();
+    cv::Vec3d translation_span_mm{0.0, 0.0, 0.0};
+};
+
+static HandEyeConsistencyStats evaluateHandEyeConsistency(
+    const cv::Mat& transform,
+    const std::vector<cv::Mat>& robot_poses,
+    const std::vector<cv::Mat>& camera_poses) {
+    HandEyeConsistencyStats stats;
+    const int count = static_cast<int>(robot_poses.size());
+    if (transform.empty() || count == 0 || camera_poses.size() != robot_poses.size())
+        return stats;
+
+    std::vector<cv::Mat> base_board_poses;
+    base_board_poses.reserve(count);
+    cv::Mat mean_translation = cv::Mat::zeros(3, 1, CV_64F);
+    cv::Mat rotation_sum = cv::Mat::zeros(3, 3, CV_64F);
+    cv::Vec3d minimum(std::numeric_limits<double>::max(),
+                      std::numeric_limits<double>::max(),
+                      std::numeric_limits<double>::max());
+    cv::Vec3d maximum(-std::numeric_limits<double>::max(),
+                      -std::numeric_limits<double>::max(),
+                      -std::numeric_limits<double>::max());
+
+    for (int index = 0; index < count; ++index) {
+        cv::Mat base_board = robot_poses[index] * transform * camera_poses[index];
+        if (!cv::checkRange(base_board))
+            return stats;
+        base_board_poses.push_back(base_board);
+        mean_translation += base_board(cv::Rect(3, 0, 1, 3));
+        rotation_sum += base_board(cv::Rect(0, 0, 3, 3));
+        for (int axis = 0; axis < 3; ++axis) {
+            const double value = base_board.at<double>(axis, 3);
+            minimum[axis] = std::min(minimum[axis], value);
+            maximum[axis] = std::max(maximum[axis], value);
+        }
+    }
+    mean_translation /= count;
+
+    cv::SVD rotation_svd(rotation_sum, cv::SVD::FULL_UV);
+    cv::Mat mean_rotation = rotation_svd.u * rotation_svd.vt;
+    if (cv::determinant(mean_rotation) < 0.0) {
+        cv::Mat corrected_u = rotation_svd.u.clone();
+        corrected_u.col(2) *= -1.0;
+        mean_rotation = corrected_u * rotation_svd.vt;
     }
 
-    result.valid_frames = valid;
+    double translation_squared_sum = 0.0;
+    double translation_sum = 0.0;
+    double rotation_squared_sum = 0.0;
+    std::vector<double> rotation_errors;
+    stats.translation_errors.reserve(count);
+    rotation_errors.reserve(count);
+    for (const cv::Mat& base_board : base_board_poses) {
+        const cv::Mat difference = base_board(cv::Rect(3, 0, 1, 3)) - mean_translation;
+        const double translation_error = std::sqrt(difference.dot(difference));
+        stats.translation_errors.push_back(translation_error);
+        translation_squared_sum += translation_error * translation_error;
+        translation_sum += translation_error;
 
-    std::vector<cv::Mat> R_gripper2base, t_gripper2base;
-    std::vector<cv::Mat> R_target2cam, t_target2cam;
-    for (int i = 0; i < valid; i++) {
-        R_gripper2base.push_back(robot_poses[i](cv::Rect(0, 0, 3, 3)).clone());
-        t_gripper2base.push_back(robot_poses[i](cv::Rect(3, 0, 1, 3)).clone());
-        R_target2cam.push_back(camera_poses[i](cv::Rect(0, 0, 3, 3)).clone());
-        t_target2cam.push_back(camera_poses[i](cv::Rect(3, 0, 1, 3)).clone());
+        const cv::Mat relative_rotation =
+            mean_rotation.t() * base_board(cv::Rect(0, 0, 3, 3));
+        const double cosine = std::clamp(
+            (cv::trace(relative_rotation)[0] - 1.0) * 0.5, -1.0, 1.0);
+        const double rotation_error = std::acos(cosine) * 180.0 / CV_PI;
+        rotation_errors.push_back(rotation_error);
+        rotation_squared_sum += rotation_error * rotation_error;
     }
 
-    struct CalibMethodResult {
-        std::string name;
-        cv::Mat T;
-        double reproj_error;
-        std::vector<double> per_frame_errors;
-    };
-    std::vector<CalibMethodResult> calib_results;
-    std::vector<cv::HandEyeCalibrationMethod> calib_methods = {cv::CALIB_HAND_EYE_TSAI, cv::CALIB_HAND_EYE_PARK, cv::CALIB_HAND_EYE_HORAUD};
-    std::vector<std::string> calib_method_names = {"TSAI", "PARK", "HORAUD"};
+    stats.translation_rms = std::sqrt(translation_squared_sum / count);
+    stats.translation_mean = translation_sum / count;
+    stats.translation_median = percentile(stats.translation_errors, 0.5);
+    stats.translation_p95 = percentile(stats.translation_errors, 0.95);
+    stats.translation_max = *std::max_element(
+        stats.translation_errors.begin(), stats.translation_errors.end());
+    stats.rotation_rms_degrees = std::sqrt(rotation_squared_sum / count);
+    stats.rotation_p95_degrees = percentile(rotation_errors, 0.95);
+    stats.rotation_max_degrees = *std::max_element(rotation_errors.begin(), rotation_errors.end());
+    for (int axis = 0; axis < 3; ++axis)
+        stats.translation_span_mm[axis] = (maximum[axis] - minimum[axis]) * 1000.0;
+    return stats;
+}
 
-    for (size_t m = 0; m < calib_methods.size(); m++) {
-        cv::Mat R_cam_gripper, t_cam_gripper;
+struct HandEyeMethodResult {
+    std::string name;
+    cv::HandEyeCalibrationMethod method;
+    cv::Mat transform;
+    HandEyeConsistencyStats stats;
+};
+
+static std::vector<HandEyeMethodResult> solveHandEyeMethods(
+    const std::vector<cv::Mat>& robot_poses,
+    const std::vector<cv::Mat>& camera_poses,
+    const char* phase) {
+    std::vector<cv::Mat> robot_rotations, robot_translations;
+    std::vector<cv::Mat> camera_rotations, camera_translations;
+    robot_rotations.reserve(robot_poses.size());
+    robot_translations.reserve(robot_poses.size());
+    camera_rotations.reserve(camera_poses.size());
+    camera_translations.reserve(camera_poses.size());
+    for (size_t index = 0; index < robot_poses.size(); ++index) {
+        robot_rotations.push_back(robot_poses[index](cv::Rect(0, 0, 3, 3)).clone());
+        robot_translations.push_back(robot_poses[index](cv::Rect(3, 0, 1, 3)).clone());
+        camera_rotations.push_back(camera_poses[index](cv::Rect(0, 0, 3, 3)).clone());
+        camera_translations.push_back(camera_poses[index](cv::Rect(3, 0, 1, 3)).clone());
+    }
+
+    const std::array<std::pair<const char*, cv::HandEyeCalibrationMethod>, 5> methods{{
+        {"TSAI", cv::CALIB_HAND_EYE_TSAI},
+        {"PARK", cv::CALIB_HAND_EYE_PARK},
+        {"HORAUD", cv::CALIB_HAND_EYE_HORAUD},
+        {"ANDREFF", cv::CALIB_HAND_EYE_ANDREFF},
+        {"DANIILIDIS", cv::CALIB_HAND_EYE_DANIILIDIS}
+    }};
+
+    std::vector<HandEyeMethodResult> results;
+    for (const auto& method : methods) {
+        cv::Mat rotation_camera_to_gripper, translation_camera_to_gripper;
         try {
-            cv::calibrateHandEye(R_gripper2base, t_gripper2base,
-                                  R_target2cam, t_target2cam,
-                                  R_cam_gripper, t_cam_gripper,
-                                  calib_methods[m]);
-        } catch (const cv::Exception& e) {
-            std::cerr << "[autoCalib] " << calib_method_names[m] << " 标定异常: " << e.what() << std::endl;
+            cv::calibrateHandEye(robot_rotations, robot_translations,
+                                 camera_rotations, camera_translations,
+                                 rotation_camera_to_gripper,
+                                 translation_camera_to_gripper,
+                                 method.second);
+        } catch (const cv::Exception& exception) {
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                                  "hand_eye_method",
+                                  "fail",
+                                  {{"phase", phase},
+                                   {"method", method.first},
+                                   {"frames", QString::number(robot_poses.size())},
+                                   {"reason", "opencv_exception"},
+                                   {"message", QString::fromUtf8(exception.what())}});
+            continue;
+        }
+        if (rotation_camera_to_gripper.empty() || translation_camera_to_gripper.empty() ||
+            !cv::checkRange(rotation_camera_to_gripper) ||
+            !cv::checkRange(translation_camera_to_gripper)) {
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                                  "hand_eye_method",
+                                  "fail",
+                                  {{"phase", phase},
+                                   {"method", method.first},
+                                   {"frames", QString::number(robot_poses.size())},
+                                   {"reason", "non_finite_output"}});
             continue;
         }
 
-        cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-        R_cam_gripper.copyTo(T(cv::Rect(0, 0, 3, 3)));
-        t_cam_gripper.copyTo(T(cv::Rect(3, 0, 1, 3)));
-
-        T = refineHandEyePoseConsistency(T, robot_poses, camera_poses);
-
-        std::vector<double> vErr;
-        double sum_err = 0.0;
-        cv::Mat mean_t(3, 1, CV_64F, cv::Scalar(0));
-        for (int i = 0; i < valid; i++)
-            mean_t += (robot_poses[i] * T * camera_poses[i])(cv::Rect(3, 0, 1, 3));
-        mean_t /= valid;
-        for (int i = 0; i < valid; i++) {
-            cv::Mat d = (robot_poses[i] * T * camera_poses[i])(cv::Rect(3, 0, 1, 3)) - mean_t;
-            vErr.push_back(std::sqrt(d.dot(d)));
-            sum_err += d.dot(d);
+        cv::Mat transform = cv::Mat::eye(4, 4, CV_64F);
+        rotation_camera_to_gripper.copyTo(transform(cv::Rect(0, 0, 3, 3)));
+        translation_camera_to_gripper.copyTo(transform(cv::Rect(3, 0, 1, 3)));
+        transform = refineHandEyePoseConsistency(transform, robot_poses, camera_poses);
+        HandEyeConsistencyStats stats =
+            evaluateHandEyeConsistency(transform, robot_poses, camera_poses);
+        if (!std::isfinite(stats.translation_rms) ||
+            !std::isfinite(stats.rotation_rms_degrees)) {
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                                  "hand_eye_method",
+                                  "fail",
+                                  {{"phase", phase},
+                                   {"method", method.first},
+                                   {"frames", QString::number(robot_poses.size())},
+                                   {"reason", "invalid_quality_metrics"}});
+            continue;
         }
-        calib_results.push_back({calib_method_names[m], T, std::sqrt(sum_err / valid), vErr});
 
-        std::cout << "[autoCalib] " << calib_method_names[m]
-                  << " -> 平移一致性误差: " << (std::sqrt(sum_err / valid) * 1000.0)
-                  << " mm" << std::endl;
+        APP_LOG_EVENT_INFO("calibration.hand_eye",
+                           "hand_eye_method",
+                           "success",
+                           {{"phase", phase},
+                            {"method", method.first},
+                            {"frames", QString::number(robot_poses.size())},
+                            {"translation_rms_mm", QString::number(stats.translation_rms * 1000.0, 'f', 6)},
+                            {"translation_p95_mm", QString::number(stats.translation_p95 * 1000.0, 'f', 6)},
+                            {"rotation_rms_deg", QString::number(stats.rotation_rms_degrees, 'f', 6)},
+                            {"rotation_p95_deg", QString::number(stats.rotation_p95_degrees, 'f', 6)}});
+        std::cout << "[autoCalib] " << method.first
+                  << " -> 平移一致性 RMS: " << stats.translation_rms * 1000.0
+                  << " mm, P95: " << stats.translation_p95 * 1000.0
+                  << " mm, 旋转 RMS: " << stats.rotation_rms_degrees << " deg" << std::endl;
+        results.push_back({method.first, method.second, transform, std::move(stats)});
+    }
+    return results;
+}
+
+static size_t bestMethodIndex(const std::vector<HandEyeMethodResult>& results) {
+    return static_cast<size_t>(std::distance(
+        results.begin(), std::min_element(
+            results.begin(), results.end(),
+            [](const HandEyeMethodResult& lhs, const HandEyeMethodResult& rhs) {
+                return lhs.stats.translation_rms < rhs.stats.translation_rms;
+            })));
+}
+
+static bool estimateHandEyeTrans(
+    const cv::Mat& camera_matrix,
+    const cv::Mat& dist_coeffs,
+    std::vector<cv::Mat>& robot_poses,
+    std::vector<cv::Mat>& camera_poses,
+    CalibrationResult& result) {
+    result.success = false;
+    result.valid_frames = 0;
+    result.reproj_error = 0.0;
+    result.T_flange_camera.release();
+
+    if (robot_poses.size() != camera_poses.size()) {
+        result.message = "机器人位姿与标定板位姿数量不匹配";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_quality",
+                            "fail",
+                            {{"reason", "pose_count_mismatch"},
+                             {"robot_poses", QString::number(robot_poses.size())},
+                             {"camera_poses", QString::number(camera_poses.size())}});
+        return false;
     }
 
-    if (calib_results.empty()) {
-        result.message = "所有手眼标定方法均失败";
+    const int initial_count = static_cast<int>(robot_poses.size());
+    if (initial_count < kMinHandEyeFrames) {
+        result.message = "有效帧数不足: " + std::to_string(initial_count) +
+                         " (need >=" + std::to_string(kMinHandEyeFrames) + ")";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_quality",
+                            "fail",
+                            {{"reason", "insufficient_frames"},
+                             {"frames", QString::number(initial_count)},
+                             {"minimum", QString::number(kMinHandEyeFrames)}});
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return false;
     }
 
-    size_t best_idx = 0;
-    for (size_t i = 1; i < calib_results.size(); i++) {
-        if (calib_results[i].reproj_error < calib_results[best_idx].reproj_error)
-            best_idx = i;
+    std::vector<HandEyeMethodResult> method_results =
+        solveHandEyeMethods(robot_poses, camera_poses, "initial");
+    if (method_results.empty()) {
+        result.message = "所有手眼标定方法均失败";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_quality",
+                            "fail",
+                            {{"reason", "all_methods_failed"},
+                             {"frames", QString::number(initial_count)}});
+        std::cerr << "[autoCalib] " << result.message << std::endl;
+        return false;
     }
 
-    cv::Mat T = calib_results[best_idx].T.clone();
+    size_t best_index = bestMethodIndex(method_results);
+    const std::vector<double>& initial_errors =
+        method_results[best_index].stats.translation_errors;
+    const double median_error = percentile(initial_errors, 0.5);
+    std::vector<double> deviations;
+    deviations.reserve(initial_errors.size());
+    for (const double error : initial_errors)
+        deviations.push_back(std::abs(error - median_error));
+    const double mad = percentile(deviations, 0.5);
+    const double outlier_threshold = std::max(
+        kMinimumOutlierThresholdMeters,
+        median_error + kMadScale * 1.4826 * mad);
 
-    std::vector<double>& vErr = calib_results[best_idx].per_frame_errors;
-    double rms_err = calib_results[best_idx].reproj_error;
+    std::vector<cv::Mat> filtered_robot_poses;
+    std::vector<cv::Mat> filtered_camera_poses;
+    filtered_robot_poses.reserve(robot_poses.size());
+    filtered_camera_poses.reserve(camera_poses.size());
+    for (size_t index = 0; index < initial_errors.size(); ++index) {
+        if (initial_errors[index] <= outlier_threshold) {
+            filtered_robot_poses.push_back(robot_poses[index]);
+            filtered_camera_poses.push_back(camera_poses[index]);
+        }
+    }
 
-    result.T_flange_camera = T.clone();
+    const int filtered_count = static_cast<int>(filtered_robot_poses.size());
+    const int minimum_inliers = std::max(
+        kMinHandEyeFrames,
+        static_cast<int>(std::ceil(initial_count * kMinimumInlierRatio)));
+    APP_LOG_EVENT_INFO("calibration.hand_eye",
+                       "hand_eye_outlier_filter",
+                       filtered_count >= minimum_inliers ? "success" : "fail",
+                       {{"input_frames", QString::number(initial_count)},
+                        {"kept_frames", QString::number(filtered_count)},
+                        {"removed_frames", QString::number(initial_count - filtered_count)},
+                        {"minimum_inliers", QString::number(minimum_inliers)},
+                        {"median_mm", QString::number(median_error * 1000.0, 'f', 6)},
+                        {"mad_mm", QString::number(mad * 1000.0, 'f', 6)},
+                        {"threshold_mm", QString::number(outlier_threshold * 1000.0, 'f', 6)},
+                        {"mad_scale", QString::number(kMadScale, 'f', 2)}});
+    std::cout << "[autoCalib] 鲁棒离群过滤: " << initial_count - filtered_count
+              << " 帧, 阈值 " << outlier_threshold * 1000.0 << " mm, 剩余 "
+              << filtered_count << "/" << initial_count << " 帧" << std::endl;
+    if (filtered_count < minimum_inliers) {
+        result.message = "离群过滤后有效帧数不足: " +
+                         std::to_string(filtered_count) + " (need >=" +
+                         std::to_string(minimum_inliers) + ")";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_outlier_filter",
+                            "fail",
+                            {{"reason", "insufficient_inliers"},
+                             {"input_frames", QString::number(initial_count)},
+                             {"kept_frames", QString::number(filtered_count)},
+                             {"minimum_inliers", QString::number(minimum_inliers)},
+                             {"threshold_mm", QString::number(outlier_threshold * 1000.0, 'f', 6)}});
+        std::cerr << "[autoCalib] " << result.message << std::endl;
+        return false;
+    }
+
+    if (filtered_count != initial_count) {
+        method_results = solveHandEyeMethods(
+            filtered_robot_poses, filtered_camera_poses, "refit");
+        if (method_results.empty()) {
+            result.message = "离群过滤后所有手眼标定方法均失败";
+            APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                                "hand_eye_quality",
+                                "fail",
+                                {{"reason", "refit_failed"},
+                                 {"frames", QString::number(filtered_count)}});
+            return false;
+        }
+        best_index = bestMethodIndex(method_results);
+    }
+
+    const HandEyeMethodResult& best = method_results[best_index];
+    const HandEyeConsistencyStats& quality = best.stats;
+    std::string failure_reason;
+    if (quality.translation_rms > kMaxTranslationRmsMeters)
+        failure_reason = "translation_rms_exceeded";
+    else if (quality.translation_p95 > kMaxTranslationP95Meters)
+        failure_reason = "translation_p95_exceeded";
+    else if (quality.rotation_rms_degrees > kMaxRotationRmsDegrees)
+        failure_reason = "rotation_rms_exceeded";
+    else if (quality.rotation_p95_degrees > kMaxRotationP95Degrees)
+        failure_reason = "rotation_p95_exceeded";
+
+    const bool quality_passed = failure_reason.empty();
+    APP_LOG_EVENT(Info,
+                  "calibration.hand_eye",
+                  "hand_eye_quality",
+                  quality_passed ? "success" : "fail",
+                  {"method", QString::fromStdString(best.name)},
+                  {"input_frames", QString::number(initial_count)},
+                  {"valid_frames", QString::number(filtered_count)},
+                  {"translation_rms_mm", QString::number(quality.translation_rms * 1000.0, 'f', 6)},
+                  {"translation_mean_mm", QString::number(quality.translation_mean * 1000.0, 'f', 6)},
+                  {"translation_median_mm", QString::number(quality.translation_median * 1000.0, 'f', 6)},
+                  {"translation_p95_mm", QString::number(quality.translation_p95 * 1000.0, 'f', 6)},
+                  {"translation_max_mm", QString::number(quality.translation_max * 1000.0, 'f', 6)},
+                  {"rotation_rms_deg", QString::number(quality.rotation_rms_degrees, 'f', 6)},
+                  {"rotation_p95_deg", QString::number(quality.rotation_p95_degrees, 'f', 6)},
+                  {"rotation_max_deg", QString::number(quality.rotation_max_degrees, 'f', 6)},
+                  {"max_translation_rms_mm", QString::number(kMaxTranslationRmsMeters * 1000.0, 'f', 3)},
+                  {"max_translation_p95_mm", QString::number(kMaxTranslationP95Meters * 1000.0, 'f', 3)},
+                  {"max_rotation_rms_deg", QString::number(kMaxRotationRmsDegrees, 'f', 3)},
+                  {"max_rotation_p95_deg", QString::number(kMaxRotationP95Degrees, 'f', 3)},
+                  {"failure_reason", QString::fromStdString(failure_reason)},
+                  {"span_x_mm", QString::number(quality.translation_span_mm[0], 'f', 3)},
+                  {"span_y_mm", QString::number(quality.translation_span_mm[1], 'f', 3)},
+                  {"span_z_mm", QString::number(quality.translation_span_mm[2], 'f', 3)});
+    if (!quality_passed) {
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_quality_gate",
+                            "fail",
+                            {{"reason", QString::fromStdString(failure_reason)},
+                             {"method", QString::fromStdString(best.name)},
+                             {"valid_frames", QString::number(filtered_count)},
+                             {"translation_rms_mm", QString::number(quality.translation_rms * 1000.0, 'f', 6)},
+                             {"translation_p95_mm", QString::number(quality.translation_p95 * 1000.0, 'f', 6)},
+                             {"rotation_rms_deg", QString::number(quality.rotation_rms_degrees, 'f', 6)},
+                             {"rotation_p95_deg", QString::number(quality.rotation_p95_degrees, 'f', 6)}});
+        std::ostringstream message;
+        message << "手眼标定质量未通过: " << failure_reason
+                << ", RMS=" << quality.translation_rms * 1000.0
+                << "mm, P95=" << quality.translation_p95 * 1000.0
+                << "mm, rotation_RMS=" << quality.rotation_rms_degrees << "deg";
+        result.message = message.str();
+        std::cerr << "[autoCalib] " << result.message << std::endl;
+        return false;
+    }
+
+    robot_poses.swap(filtered_robot_poses);
+    camera_poses.swap(filtered_camera_poses);
+    result.T_flange_camera = best.transform.clone();
     result.camera_matrix = camera_matrix.clone();
     result.dist_coeffs = dist_coeffs.clone();
-    result.reproj_error = rms_err;
+    result.reproj_error = quality.translation_rms;
+    result.valid_frames = filtered_count;
     result.success = true;
-    result.message = "标定成功, 有效帧: " + std::to_string(valid) +
-                     ", 平均误差: " + std::to_string(rms_err * 1000.0) + " mm"
-                     " (最优: " + calib_results[best_idx].name + ")";
-
+    std::ostringstream message;
+    message << "标定成功, 有效帧: " << filtered_count
+            << ", 平移 RMS: " << quality.translation_rms * 1000.0
+            << " mm, P95: " << quality.translation_p95 * 1000.0
+            << " mm, 旋转 RMS: " << quality.rotation_rms_degrees
+            << " deg (最优: " << best.name << ")";
+    result.message = message.str();
     std::cout << "[autoCalib] " << result.message << std::endl;
-    std::cout << "[autoCalib] 最优方法: " << calib_results[best_idx].name << std::endl;
     std::cout << "[autoCalib] T_flange_camera:\n" << result.T_flange_camera << std::endl;
-
-    if (valid > 0) {
-        cv::Mat T0 = robot_poses[0] * T * camera_poses[0];
-        double x_min = T0.at<double>(0, 3) * 1000.0, x_max = x_min;
-        double y_min = T0.at<double>(1, 3) * 1000.0, y_max = y_min;
-        double z_min = T0.at<double>(2, 3) * 1000.0, z_max = z_min;
-        for (int i = 1; i < valid; i++) {
-            cv::Mat T_base = robot_poses[i] * T * camera_poses[i];
-            double x = T_base.at<double>(0, 3) * 1000.0;
-            double y = T_base.at<double>(1, 3) * 1000.0;
-            double z = T_base.at<double>(2, 3) * 1000.0;
-            if (x < x_min) x_min = x; if (x > x_max) x_max = x;
-            if (y < y_min) y_min = y; if (y > y_max) y_max = y;
-            if (z < z_min) z_min = z; if (z > z_max) z_max = z;
-        }
-        std::cout << "[autoCalib] 标定板在基坐标系下的空间分布:" << std::endl;
-        std::cout << "[autoCalib]   X: " << x_min << " ~ " << x_max << " mm, 跨度 " << (x_max - x_min) << " mm" << std::endl;
-        std::cout << "[autoCalib]   Y: " << y_min << " ~ " << y_max << " mm, 跨度 " << (y_max - y_min) << " mm" << std::endl;
-        std::cout << "[autoCalib]   Z: " << z_min << " ~ " << z_max << " mm, 跨度 " << (z_max - z_min) << " mm" << std::endl;
-    }
-
-    if(needFilter){
-        int removed = 0;
-        float thresh = 0.001;
-        for(int i=valid-1; i>=0; i--){
-            if(vErr[i] > thresh){
-                robot_poses.erase(robot_poses.begin() + i);
-                camera_poses.erase(camera_poses.begin() + i);
-                removed++;
-            }
-       }
-        if (removed > 0) {
-            std::cout << "[autoCalib] 离群剔除: " << removed
-                      << " 帧 (阈值 " << thresh << "mm), 剩余 " << robot_poses.size() << " 帧" << std::endl;
-        }
-    }
-
     return true;
 }}
 
@@ -488,6 +776,27 @@ bool calibrateHandEyeFromDisk(
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
     const std::string& output_yaml) {
+
+    result.success = false;
+    result.valid_frames = 0;
+    result.reproj_error = 0.0;
+    result.message.clear();
+    result.T_flange_camera.release();
+
+    if (camera_matrix.rows != 3 || camera_matrix.cols != 3 ||
+        dist_coeffs.empty() || !cv::checkRange(camera_matrix) ||
+        !cv::checkRange(dist_coeffs) || camera_matrix.at<double>(0, 0) <= 0.0 ||
+        camera_matrix.at<double>(1, 1) <= 0.0) {
+        result.message = "相机内参无效，拒绝进行手眼标定";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_input",
+                            "fail",
+                            {{"reason", "invalid_intrinsics"},
+                             {"matrix_rows", QString::number(camera_matrix.rows)},
+                             {"matrix_cols", QString::number(camera_matrix.cols)},
+                             {"distortion_count", QString::number(dist_coeffs.total())}});
+        return false;
+    }
 
     CharucoDetector detector(board_config);
     detector.setCameraParams(camera_matrix, dist_coeffs);
@@ -506,7 +815,21 @@ bool calibrateHandEyeFromDisk(
     if (!loadImagesFromDisk(save_dir, img_files, image_size))
         return false;
 
-    size_t n = std::min(img_files.size(), flange_poses.size());
+    if (img_files.size() != flange_poses.size()) {
+        result.message = "图像数量 (" + std::to_string(img_files.size()) +
+                         ") 与机器人位姿数量 (" +
+                         std::to_string(flange_poses.size()) + ") 不匹配";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_input",
+                            "fail",
+                            {{"reason", "image_pose_count_mismatch"},
+                             {"images", QString::number(img_files.size())},
+                             {"robot_poses", QString::number(flange_poses.size())}});
+        std::cerr << "[autoCalib] " << result.message << std::endl;
+        return false;
+    }
+
+    const size_t n = img_files.size();
     const auto& board_points = detector.getChessboardCorners3D();
 
     struct FrameRecord {
@@ -516,16 +839,26 @@ bool calibrateHandEyeFromDisk(
     };
     std::vector<FrameRecord> frames;
     frames.reserve(n);
+    size_t unreadable_images = 0;
+    size_t pose_detection_failures = 0;
+    size_t invalid_correspondences = 0;
+    double reprojection_error_sum = 0.0;
 
     for (size_t i = 0; i < n; i++) {
         cv::Mat img = cv::imread(img_files[i]);
-        if (img.empty()) continue;
+        if (img.empty()) {
+            ++unreadable_images;
+            continue;
+        }
         cv::Mat rvec, tvec;
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
 
-        if (!detector.detectPose(img, rvec, tvec, corners, ids, 16))
+        // 与采集阶段使用同一个 12 角点门限，避免“采集成功但求解大量丢帧”。
+        if (!detector.detectPose(img, rvec, tvec, corners, ids, kMinHandEyeCorners)) {
+            ++pose_detection_failures;
             continue;
+        }
 
         std::vector<cv::Point3f> pts3;
         std::vector<cv::Point2f> pts2;
@@ -536,7 +869,10 @@ bool calibrateHandEyeFromDisk(
                 pts2.push_back(corners[j]);
             }
         }
-        if (pts3.size() < 4) continue;
+        if (pts3.size() < static_cast<size_t>(kMinHandEyeCorners)) {
+            ++invalid_correspondences;
+            continue;
+        }
 
         std::vector<cv::Point2f> projected;
         cv::projectPoints(pts3, rvec, tvec, camera_matrix, dist_coeffs, projected);
@@ -545,29 +881,52 @@ bool calibrateHandEyeFromDisk(
             sum_err += cv::norm(projected[j] - pts2[j]);
 
         double err = sum_err / projected.size();
+        reprojection_error_sum += err;
         frames.push_back({flange_poses[i], calib_transform::rvecTvecToTransform(rvec, tvec), err});
     }
 
-    std::sort(frames.begin(), frames.end(),
-              [](const FrameRecord& a, const FrameRecord& b) { return a.error < b.error; });
-
-    size_t n_orig = frames.size();
-    size_t n_keep = std::min(n_orig, std::max(size_t(300), size_t(n_orig * 0.7)));
-    std::cout << "[autoCalib] 手眼标定: " << n_orig << " 帧, 保留误差最小的 "
-              << n_keep << " 帧" << std::endl;
+    const size_t detected_frames = frames.size();
+    const double mean_reprojection_error = detected_frames > 0
+        ? reprojection_error_sum / detected_frames
+        : std::numeric_limits<double>::quiet_NaN();
+    APP_LOG_EVENT_INFO("calibration.hand_eye",
+                       "hand_eye_input",
+                       detected_frames >= static_cast<size_t>(kMinHandEyeFrames) ? "success" : "fail",
+                       {{"images", QString::number(img_files.size())},
+                        {"robot_poses", QString::number(flange_poses.size())},
+                        {"valid_frames", QString::number(detected_frames)},
+                        {"unreadable_images", QString::number(unreadable_images)},
+                        {"pose_detection_failures", QString::number(pose_detection_failures)},
+                        {"invalid_correspondences", QString::number(invalid_correspondences)},
+                        {"minimum_corners", QString::number(kMinHandEyeCorners)},
+                        {"mean_reprojection_px", QString::number(mean_reprojection_error, 'f', 6)},
+                        {"fx", QString::number(camera_matrix.at<double>(0, 0), 'f', 6)},
+                        {"fy", QString::number(camera_matrix.at<double>(1, 1), 'f', 6)},
+                        {"cx", QString::number(camera_matrix.at<double>(0, 2), 'f', 6)},
+                        {"cy", QString::number(camera_matrix.at<double>(1, 2), 'f', 6)}});
+    std::cout << "[autoCalib] 手眼位姿检测: " << detected_frames << "/" << n
+              << " 帧, 平均重投影误差 " << mean_reprojection_error << " px" << std::endl;
 
     std::vector<cv::Mat> robot_poses, camera_poses;
-    robot_poses.reserve(n_keep);
-    camera_poses.reserve(n_keep);
-    for (size_t i = 0; i < n_keep; i++) {
-        robot_poses.push_back(frames[i].robot_pose);
-        camera_poses.push_back(frames[i].camera_pose);
+    robot_poses.reserve(detected_frames);
+    camera_poses.reserve(detected_frames);
+    for (const FrameRecord& frame : frames) {
+        robot_poses.push_back(frame.robot_pose);
+        camera_poses.push_back(frame.camera_pose);
     }
 
-    estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, true);
-    estimateHandEyeTrans(camera_matrix, dist_coeffs, robot_poses, camera_poses, result, false);
+    if (!estimateHandEyeTrans(
+            camera_matrix, dist_coeffs, robot_poses, camera_poses, result)) {
+        APP_LOG_EVENT_ERROR("calibration.hand_eye",
+                            "hand_eye_pipeline",
+                            "fail",
+                            {{"stage", "solve_and_validate"},
+                             {"valid_frames", QString::number(robot_poses.size())},
+                             {"message", QString::fromStdString(result.message)}});
+        return false;
+    }
 
-    if (!output_yaml.empty() && result.success) {
+    if (!output_yaml.empty()) {
         if (!saveCalibrationResult(output_yaml, "T_flange_camera",
                                    result.T_flange_camera, result.camera_matrix, result.dist_coeffs,
                                    result.reproj_error * 1000.0, result.valid_frames)) {
@@ -578,15 +937,13 @@ bool calibrateHandEyeFromDisk(
         }
     }
 
-    if (result.success) {
-        std::cout << "\n========== 标定结果 ==========" << std::endl;
-        std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
-        std::cout << "有效帧数: " << result.valid_frames << std::endl;
-        std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
-        std::cout << result.message << std::endl;
-        if (!output_yaml.empty())
-            std::cout << "结果已保存到: " << output_yaml << std::endl;
-    }
+    std::cout << "\n========== 标定结果 ==========" << std::endl;
+    std::cout << "手眼矩阵 T_flange_camera:\n" << result.T_flange_camera << std::endl;
+    std::cout << "有效帧数: " << result.valid_frames << std::endl;
+    std::cout << "平移一致性 RMS: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
+    std::cout << result.message << std::endl;
+    if (!output_yaml.empty())
+        std::cout << "结果已保存到: " << output_yaml << std::endl;
 
-    return result.success;
+    return true;
 }

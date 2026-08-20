@@ -1058,18 +1058,21 @@ bool generateCandidates(int robot_handle,
     int total = 0, ik_ok = 0;
 
     // 每层 5 个 XY 覆盖点 × 6 个姿态，共 3 × 5 × 6 = 90 个候选。
-    // Rz 正负方向按位置交替，兼顾旋转多样性而不扩张为笛卡尔积。
+    // 距离越远，标定板在画面中的边界余量越大，允许更大的 X/Y 倾角；
+    // 近距离层使用较小倾角保证标定板完整可见。这比原先的 5°/10°
+    // 提供更好的旋转激励，但不增加候选数和标定时间。
+    const std::array<double, 3> tiltByDistance{{18.0, 14.0, 10.0}};
     for (int zi = 0; zi < 3; ++zi) {
         const double z = z_values[zi];
         const double dlt = 360.0 * (3 - zi) / 3.0;
-        const double tilt = zi == 0 ? 5.0 : 10.0;
+        const double tilt = tiltByDistance[zi];
         const std::array<std::array<double, 2>, 5> xyOffsets{{
             {{0.0, 0.0}}, {{-dlt, -dlt}}, {{-dlt, dlt}},
             {{dlt, -dlt}}, {{dlt, dlt}}
         }};
 
         for (size_t xyIndex = 0; xyIndex < xyOffsets.size(); ++xyIndex) {
-            const double rz = ((zi + static_cast<int>(xyIndex)) % 2 == 0) ? 10.0 : -10.0;
+            const double rz = ((zi + static_cast<int>(xyIndex)) % 2 == 0) ? 15.0 : -15.0;
             const std::array<std::array<double, 3>, 6> attitudeOffsets{{
                 {{0.0, 0.0, 0.0}},
                 {{tilt, 0.0, rz}},
@@ -1108,7 +1111,11 @@ bool generateCandidates(int robot_handle,
                         {"target", "90"},
                         {"total", QString::number(total)},
                         {"reachable", QString::number(ik_ok)},
-                        {"ordered", QString::number(candidates.size())}});
+                        {"ordered", QString::number(candidates.size())},
+                        {"tilt_far_deg", QString::number(tiltByDistance[0], 'f', 1)},
+                        {"tilt_mid_deg", QString::number(tiltByDistance[1], 'f', 1)},
+                        {"tilt_near_deg", QString::number(tiltByDistance[2], 'f', 1)},
+                        {"rz_deg", "15.0"}});
     return !candidates.empty();
 }
 } // anonymous namespace
@@ -1136,6 +1143,20 @@ bool autoEyeInHandCharucoCalibration(
     std::cout << "\n========== 自动手眼标定开始 ==========" << std::endl;
 
     CharucoDetector detector(board_config);
+    const bool has_provided_intrinsics =
+        !camera_matrix.empty() && !dist_coeffs.empty();
+    if (has_provided_intrinsics) {
+        detector.setCameraParams(camera_matrix.getMat(), dist_coeffs.getMat());
+        APP_LOG_EVENT_INFO("calibration",
+                           "camera_intrinsics_source",
+                           "selected",
+                           {{"source", "provided"},
+                            {"fx", QString::number(camera_matrix.getMat().at<double>(0, 0), 'f', 6)},
+                            {"fy", QString::number(camera_matrix.getMat().at<double>(1, 1), 'f', 6)},
+                            {"cx", QString::number(camera_matrix.getMat().at<double>(0, 2), 'f', 6)},
+                            {"cy", QString::number(camera_matrix.getMat().at<double>(1, 2), 'f', 6)},
+                            {"distortion_count", QString::number(dist_coeffs.getMat().total())}});
+    }
 
     // ---- Phase 1b: 自动寻找最佳位姿 ----
     if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
@@ -1196,14 +1217,22 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 5: 标定（直接从磁盘读取） ----
     cv::Mat K, D;
-    if (true) //camera_matrix.empty() || dist_coeffs.empty()) 
-    {
+    if (!has_provided_intrinsics) {
         std::cout << "[autoCalib] 相机内参未知，从磁盘标定..." << std::endl;
         if (!calibrateCameraFromDisk(save_dir, detector, K, D)) {
             result.message = "相机内参标定失败";
             std::cerr << "[autoCalib] " << result.message << std::endl;
             return false;
         }
+        APP_LOG_EVENT_INFO("calibration",
+                           "camera_intrinsics_source",
+                           "selected",
+                           {{"source", "calibrated_from_collection"},
+                            {"fx", QString::number(K.at<double>(0, 0), 'f', 6)},
+                            {"fy", QString::number(K.at<double>(1, 1), 'f', 6)},
+                            {"cx", QString::number(K.at<double>(0, 2), 'f', 6)},
+                            {"cy", QString::number(K.at<double>(1, 2), 'f', 6)},
+                            {"distortion_count", QString::number(D.total())}});
     } else {
         camera_matrix.getMat().copyTo(K);
         dist_coeffs.getMat().copyTo(D);

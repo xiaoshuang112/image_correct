@@ -1239,7 +1239,7 @@ void CalibrationController::calibrationThreadFunc(
                 ss_in << result.T_flange_camera;
                 QString resText = QString(
                     "T_flange_camera:\n%1\n"
-                    "重投影误差: %2 mm\n"
+                    "平移一致性 RMS: %2 mm\n"
                     "有效帧数: %3")
                     .arg(QString::fromStdString(ss_in.str()))
                     .arg(result.reproj_error * 1000.0, 0, 'f', 4)

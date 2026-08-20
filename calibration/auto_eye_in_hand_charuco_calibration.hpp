@@ -22,7 +22,9 @@ struct CalibrationResult {
     cv::Mat camera_matrix;     // 3x3 相机内参（标定或输入值）
     cv::Mat dist_coeffs;      // 畸变系数
     int valid_frames = 0;      // 参与标定的有效帧数
-    double reproj_error = 0.0; // 重投影误差
+    // 基座坐标系下标定板平移一致性 RMS（m）。
+    // 字段名为兼容旧接口保留，不是像素重投影误差。
+    double reproj_error = 0.0;
     std::string message;       // 状态/错误信息
 };
 

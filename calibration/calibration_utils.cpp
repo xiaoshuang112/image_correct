@@ -274,7 +274,39 @@ bool executeCollection(int robot_handle,
             continue;
         }
 
-        cv::Mat frame = camera->captureOneFrame(1500);
+        // 偶发的曝光或帧同步问题不应该直接浪费一个有价值的机器人姿态。
+        // 首帧合格立即结束；只有首帧不合格时才最多重试两次。
+        constexpr int kMaximumCaptureAttempts = 3;
+        cv::Mat frame;
+        std::vector<cv::Point2f> corners;
+        std::vector<int> ids;
+        int capture_attempts = 0;
+        int empty_attempts = 0;
+        int detection_failures = 0;
+        for (int attempt = 1; attempt <= kMaximumCaptureAttempts; ++attempt) {
+            ++capture_attempts;
+            cv::Mat candidate_frame = camera->captureOneFrame(1500);
+            if (candidate_frame.empty()) {
+                ++empty_attempts;
+                continue;
+            }
+
+            std::vector<cv::Point2f> candidate_corners;
+            std::vector<int> candidate_ids;
+            const bool detected = detector.detectCorners(
+                candidate_frame, candidate_corners, candidate_ids);
+            if (!detected)
+                ++detection_failures;
+
+            if (frame.empty() || candidate_ids.size() > ids.size()) {
+                frame = candidate_frame;
+                corners = std::move(candidate_corners);
+                ids = std::move(candidate_ids);
+            }
+            if (detected && ids.size() >= 12)
+                break;
+        }
+
         if (frame.empty()) {
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
@@ -282,14 +314,13 @@ bool executeCollection(int robot_handle,
                                   {{"phase", "image_capture"},
                                    {"reason", "capture_empty"},
                                    {"index", QString::number(i)},
-                                   {"captured", QString::number(captured)}});
+                                   {"captured", QString::number(captured)},
+                                   {"attempts", QString::number(capture_attempts)},
+                                   {"empty_attempts", QString::number(empty_attempts)}});
             std::cerr << "\n[autoCalib] 采集图像失败 (pose " << i << ")" << std::endl;
             continue;
         }
-
-        std::vector<cv::Point2f> corners;
-        std::vector<int> ids;
-        if (!detector.detectCorners(frame, corners, ids)) {
+        if (ids.empty()) {
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
                                   "skip",
@@ -297,7 +328,9 @@ bool executeCollection(int robot_handle,
                                    {"reason", "detection_failed"},
                                    {"index", QString::number(i)},
                                    {"image_w", QString::number(frame.cols)},
-                                   {"image_h", QString::number(frame.rows)}});
+                                   {"image_h", QString::number(frame.rows)},
+                                   {"attempts", QString::number(capture_attempts)},
+                                   {"detection_failures", QString::number(detection_failures)}});
             continue;
         }
         if(ids.size() < 12) {
@@ -308,8 +341,19 @@ bool executeCollection(int robot_handle,
                                    {"reason", "insufficient_corners"},
                                    {"index", QString::number(i)},
                                    {"corners", QString::number(ids.size())},
-                                   {"minimum", "12"}});
+                                   {"minimum", "12"},
+                                   {"attempts", QString::number(capture_attempts)}});
             continue;
+        }
+        if (capture_attempts > 1) {
+            APP_LOG_EVENT_INFO("calibration.collection",
+                               "collection_capture_retry",
+                               "recovered",
+                               {{"index", QString::number(i)},
+                                {"attempts", QString::number(capture_attempts)},
+                                {"empty_attempts", QString::number(empty_attempts)},
+                                {"detection_failures", QString::number(detection_failures)},
+                                {"corners", QString::number(ids.size())}});
         }
            
         // double tcp_pose[ROB_AXIS_NUM];
@@ -400,7 +444,8 @@ bool executeCollection(int robot_handle,
                             {"index", QString::number(i)},
                             {"captured", QString::number(captured)},
                             {"total", QString::number(total)},
-                            {"corners", QString::number(ids.size())}});
+                            {"corners", QString::number(ids.size())},
+                            {"capture_attempts", QString::number(capture_attempts)}});
     }
 
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
