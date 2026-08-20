@@ -55,6 +55,8 @@ struct CalibrationSessionOptions {
     CharucoBoardConfig board;
     cv::Mat camera_matrix;
     cv::Mat dist_coeffs;
+    std::string source_session_id;
+    std::string source_manifest_sha256;
 };
 
 class CalibrationSession final {
@@ -109,12 +111,17 @@ public:
     static std::string sha256File(const std::string& path);
     static bool verifyManifest(const std::string& session_directory,
                                std::vector<std::string>& problems);
+    static bool recoverPendingSessions(const std::string& base_directory,
+                                       std::vector<std::string>& recovered_sessions,
+                                       std::string& error);
 
 private:
     explicit CalibrationSession(CalibrationSessionOptions options);
 
     bool initialize(std::string& error);
-    bool writeSessionYaml(const std::string& status, std::string& error);
+    bool writeSessionYaml(const std::string& lifecycle_status,
+                          const std::string& result_status,
+                          std::string& error);
     bool writeEffectiveConfig(std::string& error);
     bool writeReport(const std::string& status,
                      const std::string& failure_stage,
@@ -125,6 +132,10 @@ private:
                      const std::string& message,
                      std::string& error);
     bool writeManifest(std::string& error);
+    bool appendDurableEvent(const std::string& event,
+                            const std::string& result,
+                            const std::string& detail,
+                            std::string& error);
     void markInterruptedNoThrow();
 
     CalibrationSessionOptions options_;
@@ -137,6 +148,7 @@ private:
     std::string current_stage_ = "created";
     std::vector<CalibrationFrameAudit> frames_;
     bool finalized_ = false;
+    bool terminalization_attempted_ = false;
 };
 
 #endif  // CALIBRATION_SESSION_HPP

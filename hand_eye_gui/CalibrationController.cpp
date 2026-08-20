@@ -1,6 +1,7 @@
 #include "CalibrationController.hpp"
 #include "CameraImageProvider.hpp"
 #include "calibration/auto_eye_in_hand_charuco_calibration.hpp"
+#include "calibration/calibration_session.hpp"
 #include "calibration/eye_to_hand_calibration.hpp"
 #include "utils/robot_util.hpp"
 #include "DiagnosticLogger.hpp"
@@ -28,6 +29,7 @@
 #include <sstream>
 #include <filesystem>
 #include <algorithm>
+#include <array>
 
 namespace fs = std::filesystem;
 
@@ -129,6 +131,24 @@ void CalibrationController::init(CameraImageProvider* provider)
                         {"image_provider", QString::number(reinterpret_cast<quintptr>(provider), 16)}});
     setupPaths();
     loadConfigYaml();
+    std::vector<std::string> recoveredSessions;
+    std::string recoveryError;
+    const std::array<std::string, 2> auditRoots{{
+        m_calibrationPath, m_paramPath + "semi_eye_in_hand/"}};
+    for (const std::string& root : auditRoots) {
+        std::vector<std::string> recovered;
+        if (!CalibrationSession::recoverPendingSessions(root, recovered, recoveryError)) {
+            APP_LOG_EVENT_ERROR("calibration.audit", "startup_recovery", "fail",
+                                {{"root", QString::fromStdString(root)},
+                                 {"error", QString::fromStdString(recoveryError)}});
+            continue;
+        }
+        recoveredSessions.insert(recoveredSessions.end(), recovered.begin(), recovered.end());
+    }
+    for (const std::string& session : recoveredSessions) {
+        APP_LOG_EVENT_WARNING("calibration.audit", "startup_recovery", "recovered",
+                              {{"session", QString::fromStdString(session)}});
+    }
     setStatus("就绪 — 请连接机器人");
 }
 

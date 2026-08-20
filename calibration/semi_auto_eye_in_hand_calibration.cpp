@@ -85,6 +85,26 @@ static std::string auditBaseDirectoryForSource(const std::string& source) {
     return source;
 }
 
+static void populateSourceSessionLineage(const std::string& source,
+                                         CalibrationSessionOptions& options) {
+    namespace fs = std::filesystem;
+    const fs::path sourcePath(source);
+    const fs::path manifest = sourcePath / "manifest.sha256";
+    const fs::path session = sourcePath / "session.yaml";
+    if (!fs::exists(manifest) || !fs::exists(session))
+        return;
+    options.source_manifest_sha256 = CalibrationSession::sha256File(manifest.string());
+    try {
+        cv::FileStorage storage(session.string(), cv::FileStorage::READ);
+        if (storage.isOpened())
+            storage["session_id"] >> options.source_session_id;
+    } catch (const cv::Exception&) {
+        options.source_session_id.clear();
+    }
+    if (options.source_session_id.empty())
+        options.source_session_id = sourcePath.filename().string();
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -910,6 +930,7 @@ bool calibrateHandEyeFromDisk(
         options.board = board_config;
         options.camera_matrix = camera_matrix.clone();
         options.dist_coeffs = dist_coeffs.clone();
+        populateSourceSessionLineage(save_dir, options);
         std::string session_error;
         owned_session = CalibrationSession::create(options, session_error);
         if (!owned_session) {

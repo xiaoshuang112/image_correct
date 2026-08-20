@@ -4,6 +4,11 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
+#include <cctype>
+#include <csignal>
+#include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
@@ -12,6 +17,7 @@
 #include <system_error>
 
 #if defined(__linux__)
+#include <fcntl.h>
 #include <unistd.h>
 #endif
 
@@ -59,16 +65,74 @@ std::string executablePath() {
     return "unknown";
 }
 
+bool syncFile(const fs::path& path, std::string& error) {
+#if defined(__linux__)
+    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        error = "cannot open file for fsync: " + path.string() + ": " +
+                std::strerror(errno);
+        return false;
+    }
+    int result;
+    do {
+        result = ::fsync(fd);
+    } while (result != 0 && errno == EINTR);
+    const int savedErrno = errno;
+    ::close(fd);
+    if (result != 0) {
+        error = "cannot fsync file: " + path.string() + ": " +
+                std::strerror(savedErrno);
+        return false;
+    }
+#else
+    (void)path;
+    (void)error;
+#endif
+    return true;
+}
+
+bool syncDirectory(const fs::path& path, std::string& error) {
+#if defined(__linux__)
+    const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (fd < 0) {
+        error = "cannot open directory for fsync: " + path.string() + ": " +
+                std::strerror(errno);
+        return false;
+    }
+    int result;
+    do {
+        result = ::fsync(fd);
+    } while (result != 0 && errno == EINTR);
+    const int savedErrno = errno;
+    ::close(fd);
+    if (result != 0) {
+        error = "cannot fsync directory: " + path.string() + ": " +
+                std::strerror(savedErrno);
+        return false;
+    }
+#else
+    (void)path;
+    (void)error;
+#endif
+    return true;
+}
+
 bool atomicRename(const fs::path& temporary,
                   const fs::path& destination,
                   std::string& error) {
+    if (!syncFile(temporary, error)) {
+        std::error_code ignored;
+        fs::remove(temporary, ignored);
+        return false;
+    }
     std::error_code ec;
     fs::rename(temporary, destination, ec);
-    if (!ec)
-        return true;
-    fs::remove(temporary);
-    error = "atomic rename failed: " + ec.message();
-    return false;
+    if (ec) {
+        fs::remove(temporary);
+        error = "atomic rename failed: " + ec.message();
+        return false;
+    }
+    return syncDirectory(destination.parent_path(), error);
 }
 
 template <typename Writer>
@@ -111,6 +175,91 @@ bool atomicTextWrite(const fs::path& destination,
     return atomicRename(temporary, destination, error);
 }
 
+bool atomicFileCopy(const fs::path& source,
+                    const fs::path& destination,
+                    std::string& error) {
+    std::ifstream input(source, std::ios::binary);
+    if (!input) {
+        error = "cannot open publication candidate: " + source.string();
+        return false;
+    }
+    std::ostringstream contents;
+    contents << input.rdbuf();
+    if (!input.eof() && input.fail()) {
+        error = "cannot read publication candidate: " + source.string();
+        return false;
+    }
+    return atomicTextWrite(destination, contents.str(), error);
+}
+
+bool durableRemove(const fs::path& path, std::string& error) {
+    std::error_code ec;
+    const bool removed = fs::remove(path, ec);
+    if (ec) {
+        error = "cannot remove durable marker: " + path.string() + ": " + ec.message();
+        return false;
+    }
+    return !removed || syncDirectory(path.parent_path(), error);
+}
+
+bool durableAppend(const fs::path& path,
+                   const std::string& contents,
+                   std::string& error) {
+#if defined(__linux__)
+    const int fd = ::open(path.c_str(), O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+    if (fd < 0) {
+        error = "cannot open append log: " + path.string() + ": " + std::strerror(errno);
+        return false;
+    }
+    size_t offset = 0;
+    while (offset < contents.size()) {
+        const ssize_t count = ::write(fd, contents.data() + offset, contents.size() - offset);
+        if (count < 0 && errno == EINTR)
+            continue;
+        if (count <= 0) {
+            const int savedErrno = errno;
+            ::close(fd);
+            error = "cannot append log: " + path.string() + ": " +
+                    std::strerror(savedErrno);
+            return false;
+        }
+        offset += static_cast<size_t>(count);
+    }
+    int result;
+    do {
+        result = ::fsync(fd);
+    } while (result != 0 && errno == EINTR);
+    const int savedErrno = errno;
+    ::close(fd);
+    if (result != 0) {
+        error = "cannot fsync append log: " + path.string() + ": " +
+                std::strerror(savedErrno);
+        return false;
+    }
+    return syncDirectory(path.parent_path(), error);
+#else
+    std::ofstream output(path, std::ios::binary | std::ios::app);
+    output << contents;
+    output.flush();
+    if (!output) {
+        error = "cannot append log: " + path.string();
+        return false;
+    }
+    return true;
+#endif
+}
+
+void maybeInjectTestCrash(const char* point) {
+    const char* requested = std::getenv("CAITU_CALIBRATION_TEST_CRASH_POINT");
+    if (!requested || std::string(requested) != point)
+        return;
+#if defined(__linux__)
+    ::kill(::getpid(), SIGKILL);
+#else
+    std::_Exit(86);
+#endif
+}
+
 std::string relativeOrFilename(const fs::path& path, const fs::path& base) {
     std::error_code ec;
     fs::path relative = fs::relative(path, base, ec);
@@ -131,75 +280,310 @@ void writeStringSequence(cv::FileStorage& storage,
     storage << "]";
 }
 
-void recoverInterruptedSessions(const fs::path& sessionsDirectory) {
+bool excludedFromManifest(const fs::path& path) {
+    const std::string name = path.filename().string();
+    return name == "manifest.sha256" || name == ".running" ||
+           name.find(".tmp.") != std::string::npos ||
+           (name.size() >= 4 && name.substr(name.size() - 4) == ".tmp");
+}
+
+bool writeManifestForDirectory(const fs::path& directory, std::string& error) {
+    std::vector<fs::path> files;
+    std::vector<fs::path> directories{directory};
+    std::error_code ec;
+    for (const auto& entry : fs::recursive_directory_iterator(directory, ec)) {
+        if (ec) {
+            error = "cannot scan session for manifest: " + ec.message();
+            return false;
+        }
+        if (entry.is_directory()) {
+            directories.push_back(entry.path());
+        } else if (entry.is_regular_file() && !excludedFromManifest(entry.path())) {
+            files.push_back(entry.path());
+        }
+    }
+    std::sort(files.begin(), files.end());
+    for (const fs::path& file : files) {
+        if (!syncFile(file, error))
+            return false;
+    }
+    std::sort(directories.begin(), directories.end(), [](const fs::path& left,
+                                                          const fs::path& right) {
+        return left.native().size() > right.native().size();
+    });
+    for (const fs::path& child : directories) {
+        if (!syncDirectory(child, error))
+            return false;
+    }
+    std::ostringstream manifest;
+    for (const fs::path& file : files)
+        manifest << CalibrationSession::sha256File(file.string()) << "  "
+                 << relativeOrFilename(file, directory) << '\n';
+    return atomicTextWrite(directory / "manifest.sha256", manifest.str(), error);
+}
+
+struct PublicationIntent {
+    std::string targetFile;
+    std::string candidateFile;
+    std::string candidateSha256;
+    bool previousExists = false;
+    std::string previousSha256;
+};
+
+bool readPublicationIntent(const fs::path& path,
+                           PublicationIntent& intent,
+                           std::string& error) {
+    try {
+        cv::FileStorage storage(path.string(), cv::FileStorage::READ);
+        if (!storage.isOpened()) {
+            error = "cannot open publication intent: " + path.string();
+            return false;
+        }
+        storage["target_file"] >> intent.targetFile;
+        storage["candidate_file"] >> intent.candidateFile;
+        storage["candidate_sha256"] >> intent.candidateSha256;
+        int previousExists = 0;
+        storage["previous_exists"] >> previousExists;
+        intent.previousExists = previousExists != 0;
+        storage["previous_sha256"] >> intent.previousSha256;
+    } catch (const cv::Exception& exception) {
+        error = exception.what();
+        return false;
+    }
+    if (intent.targetFile.empty() || intent.candidateSha256.size() != 64) {
+        error = "publication intent is incomplete: " + path.string();
+        return false;
+    }
+    return true;
+}
+
+std::string readString(const cv::FileNode& node, const char* key) {
+    std::string value;
+    if (!node.empty())
+        node[key] >> value;
+    return value;
+}
+
+bool writeRecoveredSessionStatus(const fs::path& sessionFile,
+                                 const std::string& sessionId,
+                                 const std::string& lifecycleStatus,
+                                 const std::string& resultStatus,
+                                 const std::string& stage,
+                                 const std::string& publicationState,
+                                 std::string& error) {
+    std::string timestamp;
+    std::string mode;
+    std::string sourceDirectory;
+    std::string effectiveConfigFile = "effective_config.yaml";
+    std::string effectiveConfigHash;
+    std::string sourceSessionId;
+    std::string sourceManifestHash;
+    std::array<std::string, 7> software{};
+    try {
+        cv::FileStorage input(sessionFile.string(), cv::FileStorage::READ);
+        if (input.isOpened()) {
+            timestamp = readString(input.root(), "timestamp_utc");
+            mode = readString(input.root(), "mode");
+            sourceDirectory = readString(input.root(), "source_data_directory");
+            const std::string configFile = readString(input.root(), "effective_config_file");
+            if (!configFile.empty())
+                effectiveConfigFile = configFile;
+            effectiveConfigHash = readString(input.root(), "effective_config_sha256");
+            const cv::FileNode lineage = input["lineage"];
+            sourceSessionId = readString(lineage, "source_session_id");
+            sourceManifestHash = readString(lineage, "source_manifest_sha256");
+            const cv::FileNode node = input["software"];
+            const char* keys[] = {"build_type", "build_timestamp", "git_commit",
+                                  "git_worktree_state", "opencv_version", "executable",
+                                  "executable_sha256"};
+            for (size_t index = 0; index < software.size(); ++index)
+                software[index] = readString(node, keys[index]);
+        }
+    } catch (const cv::Exception&) {
+        // A damaged partial session is still recoverable into a minimal audit record.
+    }
+    return atomicYamlWrite(sessionFile, [&](cv::FileStorage& out) {
+        out << "schema_version" << 1;
+        out << "session_id" << sessionId;
+        out << "timestamp_utc" << timestamp;
+        out << "lifecycle_status" << lifecycleStatus;
+        out << "result_status" << resultStatus;
+        out << "current_stage" << stage;
+        out << "publication_state" << publicationState;
+        out << "recovered_at_utc" << utcNow();
+        out << "mode" << mode;
+        out << "source_data_directory" << sourceDirectory;
+        out << "software" << "{";
+        const char* keys[] = {"build_type", "build_timestamp", "git_commit",
+                              "git_worktree_state", "opencv_version", "executable",
+                              "executable_sha256"};
+        for (size_t index = 0; index < software.size(); ++index)
+            out << keys[index] << software[index];
+        out << "}";
+        out << "effective_config_file" << effectiveConfigFile;
+        out << "effective_config_sha256" << effectiveConfigHash;
+        out << "lineage" << "{";
+        out << "source_session_id" << sourceSessionId;
+        out << "source_manifest_sha256" << sourceManifestHash;
+        out << "}";
+    }, error);
+}
+
+bool recoverTerminalFailure(const fs::path& directory,
+                            const std::string& resultStatus,
+                            const std::string& reason,
+                            const std::string& publicationState,
+                            std::string& error) {
+    const fs::path report = directory / "calibration_report.yaml";
+    const fs::path sessionFile = directory / "session.yaml";
+    if (fs::exists(report) &&
+        !fs::exists(directory / "calibration_report.partial.yaml") &&
+        !atomicFileCopy(report, directory / "calibration_report.partial.yaml", error))
+        return false;
+    if (fs::exists(sessionFile) &&
+        !fs::exists(directory / "session.partial.yaml") &&
+        !atomicFileCopy(sessionFile, directory / "session.partial.yaml", error))
+        return false;
+    if (!atomicYamlWrite(report, [&](cv::FileStorage& out) {
+        out << "schema_version" << 1;
+        out << "session_id" << directory.filename().string();
+        out << "result" << "{";
+        out << "status" << resultStatus;
+        out << "failure_stage" << "process_lifecycle";
+        out << "failure_reason" << reason;
+        out << "publication_state" << publicationState;
+        out << "recovered_at_utc" << utcNow();
+        out << "partial_report" << "calibration_report.partial.yaml";
+        out << "}";
+    }, error))
+        return false;
+    if (!writeRecoveredSessionStatus(sessionFile, directory.filename().string(),
+                                     "sealed", resultStatus, "process_lifecycle",
+                                     publicationState, error))
+        return false;
+    if (!durableAppend(directory / "calibration.log",
+                       utcNow() + " event=session_recovery result=" + resultStatus +
+                       " detail=\"" + reason + "\"\n", error))
+        return false;
+    if (!writeManifestForDirectory(directory, error))
+        return false;
+    return durableRemove(directory / ".running", error);
+}
+
+bool recoverPublishedSession(const fs::path& directory,
+                             const PublicationIntent& intent,
+                             std::string& error) {
+    const fs::path commit = directory / "publication.commit.yaml";
+    if (!fs::exists(commit) &&
+        !atomicYamlWrite(commit, [&](cv::FileStorage& out) {
+            out << "schema_version" << 1;
+            out << "session_id" << directory.filename().string();
+            out << "target_file" << intent.targetFile;
+            out << "candidate_sha256" << intent.candidateSha256;
+            out << "state" << "committed";
+            out << "committed_at_utc" << utcNow();
+            out << "recovered_after_interruption" << 1;
+        }, error))
+        return false;
+    if (!writeRecoveredSessionStatus(directory / "session.yaml",
+                                     directory.filename().string(), "sealed", "pass",
+                                     "complete", "published", error))
+        return false;
+    if (!durableAppend(directory / "calibration.log",
+                       utcNow() + " event=session_recovery result=pass"
+                       " detail=\"production_candidate_already_published\"\n", error))
+        return false;
+    if (!writeManifestForDirectory(directory, error))
+        return false;
+    return durableRemove(directory / ".running", error);
+}
+
+bool recoverAlreadySealedSession(const fs::path& directory,
+                                 bool& wasSealed,
+                                 std::string& error) {
+    wasSealed = false;
+    std::string lifecycle;
+    std::string result;
+    try {
+        cv::FileStorage input((directory / "session.yaml").string(),
+                              cv::FileStorage::READ);
+        if (!input.isOpened())
+            return true;
+        input["lifecycle_status"] >> lifecycle;
+        input["result_status"] >> result;
+    } catch (const cv::Exception&) {
+        return true;
+    }
+    if (lifecycle != "sealed" ||
+        (result != "pass" && result != "fail" && result != "interrupted"))
+        return true;
+    wasSealed = true;
+    if (!durableAppend(directory / "calibration.log",
+                       utcNow() + " event=session_recovery result=" + result +
+                       " detail=\"terminal_files_completed_before_marker_cleanup\"\n",
+                       error))
+        return false;
+    if (!writeManifestForDirectory(directory, error))
+        return false;
+    return durableRemove(directory / ".running", error);
+}
+
+bool recoverInterruptedSessions(const fs::path& sessionsDirectory,
+                                std::vector<std::string>& recoveredSessions,
+                                std::string& error) {
     std::error_code ec;
     if (!fs::exists(sessionsDirectory, ec))
-        return;
+        return !ec;
     for (const auto& entry : fs::directory_iterator(sessionsDirectory, ec)) {
-        if (ec || !entry.is_directory())
-            continue;
-        const fs::path running = entry.path() / ".running";
-        if (!fs::exists(running, ec))
-            continue;
-        const fs::path report = entry.path() / "calibration_report.yaml";
-        if (fs::exists(report, ec)) {
-            fs::copy_file(report, entry.path() / "calibration_report.partial.yaml",
-                          fs::copy_options::overwrite_existing, ec);
-            ec.clear();
+        if (ec) {
+            error = "cannot scan pending sessions: " + ec.message();
+            return false;
         }
-        const fs::path sessionFile = entry.path() / "session.yaml";
-        if (fs::exists(sessionFile, ec)) {
-            fs::copy_file(sessionFile, entry.path() / "session.partial.yaml",
-                          fs::copy_options::overwrite_existing, ec);
-            ec.clear();
-        }
-        std::string error;
-        atomicYamlWrite(report,
-                        [&](cv::FileStorage& out) {
-            out << "schema_version" << 1;
-            out << "session_id" << entry.path().filename().string();
-            out << "result" << "{";
-            out << "status" << "interrupted";
-            out << "failure_stage" << "process_lifecycle";
-            out << "failure_reason" << "previous_process_did_not_finalize_session";
-            out << "recovered_at_utc" << utcNow();
-            out << "partial_report" << "calibration_report.partial.yaml";
-            out << "}";
-        }, error);
-        atomicYamlWrite(sessionFile, [&](cv::FileStorage& out) {
-            out << "schema_version" << 1;
-            out << "session_id" << entry.path().filename().string();
-            out << "status" << "interrupted";
-            out << "current_stage" << "process_lifecycle";
-            out << "recovered_at_utc" << utcNow();
-            out << "partial_session" << "session.partial.yaml";
-            out << "effective_config_file" << "effective_config.yaml";
-        }, error);
-        std::ofstream log(entry.path() / "calibration.log", std::ios::app);
-        log << utcNow() << " event=session_recovery result=interrupted"
-            << " detail=previous_process_did_not_finalize_session\n";
-        log.flush();
+        if (!entry.is_directory() || !fs::exists(entry.path() / ".running"))
+            continue;
 
-        std::vector<fs::path> files;
-        ec.clear();
-        for (const auto& recovered : fs::recursive_directory_iterator(entry.path(), ec)) {
-            if (ec || !recovered.is_regular_file())
-                continue;
-            const std::string name = recovered.path().filename().string();
-            if (name == "manifest.sha256" || name == ".running" ||
-                name.find(".tmp.") != std::string::npos ||
-                (name.size() >= 4 && name.substr(name.size() - 4) == ".tmp"))
-                continue;
-            files.push_back(recovered.path());
+        const fs::path intentPath = entry.path() / "publication.intent.yaml";
+        bool recovered = false;
+        if (fs::exists(intentPath)) {
+            PublicationIntent intent;
+            if (!readPublicationIntent(intentPath, intent, error))
+                return false;
+            const fs::path target(intent.targetFile);
+            const bool targetExists = fs::exists(target, ec);
+            if (ec) {
+                error = "cannot inspect production target: " + ec.message();
+                return false;
+            }
+            const std::string targetHash = targetExists
+                ? CalibrationSession::sha256File(target.string()) : std::string();
+            const bool candidatePublished = targetExists &&
+                targetHash == intent.candidateSha256;
+            const bool previousStillPresent = targetExists == intent.previousExists &&
+                (!targetExists || targetHash == intent.previousSha256);
+            if (candidatePublished) {
+                recovered = recoverPublishedSession(entry.path(), intent, error);
+            } else if (previousStillPresent) {
+                recovered = recoverTerminalFailure(
+                    entry.path(), "interrupted",
+                    "publication_prepared_but_not_committed", "not_published", error);
+            } else {
+                recovered = recoverTerminalFailure(
+                    entry.path(), "fail", "production_state_ambiguous",
+                    "ambiguous_no_automatic_overwrite", error);
+            }
+        } else {
+            bool wasSealed = false;
+            if (!recoverAlreadySealedSession(entry.path(), wasSealed, error))
+                return false;
+            recovered = wasSealed || recoverTerminalFailure(
+                entry.path(), "interrupted",
+                "previous_process_did_not_finalize_session", "not_started", error);
         }
-        std::sort(files.begin(), files.end());
-        std::ostringstream manifest;
-        for (const fs::path& file : files)
-            manifest << CalibrationSession::sha256File(file.string()) << "  "
-                     << relativeOrFilename(file, entry.path()) << '\n';
-        if (atomicTextWrite(entry.path() / "manifest.sha256", manifest.str(), error))
-            fs::remove(running, ec);
+        if (!recovered)
+            return false;
+        recoveredSessions.push_back(entry.path().string());
     }
+    return true;
 }
 
 // Small self-contained SHA-256 implementation. It avoids adding a crypto
@@ -327,6 +711,25 @@ std::string intrinsicFingerprint(const cv::Mat& cameraMatrix,
     return sha256Text(canonical.str());
 }
 
+std::string intrinsicBindingFingerprint(const CalibrationSessionOptions& options) {
+    const std::string intrinsics = intrinsicFingerprint(options.camera_matrix,
+                                                         options.dist_coeffs);
+    if (intrinsics.empty())
+        return "";
+    std::ostringstream canonical;
+    canonical << "intrinsics=" << intrinsics
+              << "|serial=" << options.camera_serial
+              << "|model=" << options.camera_model
+              << "|firmware=" << options.camera_firmware
+              << "|endpoint=" << options.camera_endpoint
+              << "|stream=" << options.camera_stream
+              << "|resolution=" << options.image_width << 'x' << options.image_height
+              << "|roi=0,0," << options.image_width << ',' << options.image_height
+              << "|binning=unknown|decimation=unknown|scaling=unknown|rotation=unknown"
+              << "|distortion_model=opencv_plumb_bob";
+    return sha256Text(canonical.str());
+}
+
 bool copyDatasetFile(const fs::path& source,
                      const fs::path& destination,
                      std::string& error) {
@@ -353,7 +756,7 @@ std::unique_ptr<CalibrationSession> CalibrationSession::create(
 }
 
 CalibrationSession::~CalibrationSession() {
-    if (!finalized_)
+    if (!finalized_ && !terminalization_attempted_ && !directory_.empty())
         markInterruptedNoThrow();
 }
 
@@ -369,7 +772,9 @@ bool CalibrationSession::initialize(std::string& error) {
         error = "cannot create sessions directory: " + ec.message();
         return false;
     }
-    recoverInterruptedSessions(sessionsDirectory);
+    std::vector<std::string> recoveredSessions;
+    if (!recoverInterruptedSessions(sessionsDirectory, recoveredSessions, error))
+        return false;
 
     timestamp_utc_ = utcNow();
     std::random_device random;
@@ -388,10 +793,15 @@ bool CalibrationSession::initialize(std::string& error) {
         error = "cannot create session directories: " + ec.message();
         return false;
     }
+    if (!syncDirectory(sessionsDirectory, error) ||
+        !syncDirectory(directory_, error))
+        return false;
     if (!atomicTextWrite(fs::path(directory_) / ".running", timestamp_utc_ + "\n", error))
         return false;
-    appendEvent("session", "start", options_.mode);
-    if (!writeEffectiveConfig(error) || !writeSessionYaml("running", error))
+    if (!appendDurableEvent("session", "start", options_.mode, error))
+        return false;
+    if (!writeEffectiveConfig(error) ||
+        !writeSessionYaml("running", "pending", error))
         return false;
     cv::Mat empty;
     if (!writeReport("running", "", "", empty, 0.0, 0, "", error))
@@ -403,7 +813,7 @@ void CalibrationSession::setStage(const std::string& stage) {
     current_stage_ = stage;
     appendEvent("stage", "start", stage);
     std::string ignored;
-    writeSessionYaml("running", ignored);
+    writeSessionYaml("running", "pending", ignored);
 }
 
 void CalibrationSession::setIntrinsics(const cv::Mat& camera_matrix,
@@ -434,14 +844,24 @@ void CalibrationSession::setFrames(const std::vector<CalibrationFrameAudit>& fra
 void CalibrationSession::appendEvent(const std::string& event,
                                      const std::string& result,
                                      const std::string& detail) {
-    if (directory_.empty())
-        return;
-    std::ofstream log(fs::path(directory_) / "calibration.log", std::ios::app);
+    std::string ignored;
+    appendDurableEvent(event, result, detail, ignored);
+}
+
+bool CalibrationSession::appendDurableEvent(const std::string& event,
+                                            const std::string& result,
+                                            const std::string& detail,
+                                            std::string& error) {
+    if (directory_.empty()) {
+        error = "session directory is empty";
+        return false;
+    }
+    std::ostringstream log;
     log << utcNow() << " event=" << event << " result=" << result;
     if (!detail.empty())
         log << " detail=\"" << detail << "\"";
     log << '\n';
-    log.flush();
+    return durableAppend(fs::path(directory_) / "calibration.log", log.str(), error);
 }
 
 bool CalibrationSession::importLegacyDataset(const std::string& source_directory,
@@ -577,8 +997,10 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
         out << "source_file_sha256" << intrinsicFileHash;
         out << "source_calibration_timestamp" << "unknown";
         out << "loaded_at_utc" << timestamp_utc_;
-        out << "effective_parameters_sha256"
+        out << "intrinsics_sha256"
             << intrinsicFingerprint(options_.camera_matrix, options_.dist_coeffs);
+        out << "intrinsics_binding_sha256"
+            << intrinsicBindingFingerprint(options_);
         out << "distortion_model" << "opencv_plumb_bob";
         out << "camera_matrix" << options_.camera_matrix;
         out << "distortion_coefficients" << options_.dist_coeffs;
@@ -611,7 +1033,8 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
     }, error);
 }
 
-bool CalibrationSession::writeSessionYaml(const std::string& status,
+bool CalibrationSession::writeSessionYaml(const std::string& lifecycle_status,
+                                          const std::string& result_status,
                                           std::string& error) {
     const std::string executable = executablePath();
     const std::string configHash = sha256File(
@@ -621,8 +1044,14 @@ bool CalibrationSession::writeSessionYaml(const std::string& status,
         out << "schema_version" << 1;
         out << "session_id" << id_;
         out << "timestamp_utc" << timestamp_utc_;
-        out << "status" << status;
+        out << "lifecycle_status" << lifecycle_status;
+        out << "result_status" << result_status;
         out << "current_stage" << current_stage_;
+        out << "publication_state"
+            << (fs::exists(fs::path(directory_) / "publication.commit.yaml")
+                    ? "published"
+                    : (fs::exists(fs::path(directory_) / "publication.intent.yaml")
+                           ? "prepared" : "not_started"));
         out << "mode" << options_.mode;
         out << "source_data_directory" << options_.source_data_directory;
         out << "software" << "{";
@@ -636,6 +1065,10 @@ bool CalibrationSession::writeSessionYaml(const std::string& status,
         out << "}";
         out << "effective_config_file" << "effective_config.yaml";
         out << "effective_config_sha256" << configHash;
+        out << "lineage" << "{";
+        out << "source_session_id" << options_.source_session_id;
+        out << "source_manifest_sha256" << options_.source_manifest_sha256;
+        out << "}";
     }, error);
 }
 
@@ -667,6 +1100,8 @@ bool CalibrationSession::writeReport(const std::string& status,
         out << "session_file" << "session.yaml";
         out << "effective_config_file" << "effective_config.yaml";
         out << "manifest_file" << "manifest.sha256";
+        out << "source_session_id" << options_.source_session_id;
+        out << "source_manifest_sha256" << options_.source_manifest_sha256;
         out << "}";
         out << "result" << "{";
         out << "status" << status;
@@ -756,13 +1191,10 @@ bool CalibrationSession::finalizeSuccess(const cv::Mat& transform,
         out << "source_production_yaml" << production_yaml;
     }, error))
         return false;
-    if (!writeSessionYaml("sealed", error))
-        return false;
-    appendEvent("session", "sealed", "pass");
-    if (!writeManifest(error))
-        return false;
+
     if (!production_yaml.empty()) {
-        if (!atomicYamlWrite(production_yaml, [&](cv::FileStorage& out) {
+        const fs::path candidate = fs::path(directory_) / "publication.candidate.yaml";
+        if (!atomicYamlWrite(candidate, [&](cv::FileStorage& out) {
             out << "T_flange_camera" << transform;
             out << "camera_matrix" << camera_matrix;
             out << "distortion_coefficients" << dist_coeffs;
@@ -770,9 +1202,61 @@ bool CalibrationSession::finalizeSuccess(const cv::Mat& transform,
             out << "valid_frames" << valid_frames;
         }, error))
             return false;
+
+        const fs::path target = fs::absolute(fs::path(production_yaml)).lexically_normal();
+        std::error_code ec;
+        const bool previousExists = fs::exists(target, ec);
+        if (ec) {
+            error = "cannot inspect previous production YAML: " + ec.message();
+            return false;
+        }
+        const std::string candidateHash = sha256File(candidate.string());
+        const std::string previousHash = previousExists ? sha256File(target.string()) : "";
+        if (candidateHash.empty() || (previousExists && previousHash.empty())) {
+            error = "cannot hash publication candidate or previous production YAML";
+            return false;
+        }
+        if (!atomicYamlWrite(fs::path(directory_) / "publication.intent.yaml",
+                             [&](cv::FileStorage& out) {
+            out << "schema_version" << 1;
+            out << "session_id" << id_;
+            out << "target_file" << target.string();
+            out << "candidate_file" << candidate.filename().string();
+            out << "candidate_sha256" << candidateHash;
+            out << "previous_exists" << static_cast<int>(previousExists);
+            out << "previous_sha256" << previousHash;
+            out << "state" << "prepared";
+            out << "prepared_at_utc" << utcNow();
+        }, error))
+            return false;
+
+        maybeInjectTestCrash("publication_before_rename");
+        if (!atomicFileCopy(candidate, target, error))
+            return false;
+        maybeInjectTestCrash("publication_after_rename");
+
+        if (!atomicYamlWrite(fs::path(directory_) / "publication.commit.yaml",
+                             [&](cv::FileStorage& out) {
+            out << "schema_version" << 1;
+            out << "session_id" << id_;
+            out << "target_file" << target.string();
+            out << "candidate_sha256" << candidateHash;
+            out << "state" << "committed";
+            out << "committed_at_utc" << utcNow();
+            out << "recovered_after_interruption" << 0;
+        }, error))
+            return false;
     }
-    std::error_code ignored;
-    fs::remove(fs::path(directory_) / ".running", ignored);
+
+    if (!writeSessionYaml("sealed", "pass", error))
+        return false;
+    if (!appendDurableEvent("session", "sealed", "pass", error))
+        return false;
+    maybeInjectTestCrash("manifest_before_write");
+    if (!writeManifest(error))
+        return false;
+    if (!durableRemove(fs::path(directory_) / ".running", error))
+        return false;
     finalized_ = true;
     return true;
 }
@@ -782,57 +1266,60 @@ bool CalibrationSession::finalizeFailure(const std::string& stage,
                                          const std::string& message) {
     if (finalized_)
         return true;
+    terminalization_attempted_ = true;
+    if (fs::exists(fs::path(directory_) / "publication.intent.yaml")) {
+        std::string ignored;
+        appendDurableEvent("session", "pending_recovery",
+                           "failure_after_publication_intent stage=" + stage +
+                           " reason=" + reason, ignored);
+        return false;
+    }
     current_stage_ = stage;
     std::string error;
     cv::Mat empty;
     bool ok = writeReport("fail", stage, reason, empty, 0.0, 0, message, error) &&
-              writeSessionYaml("sealed", error);
-    appendEvent("session", "sealed", "fail stage=" + stage + " reason=" + reason);
-    ok = writeManifest(error) && ok;
-    std::error_code ignored;
-    fs::remove(fs::path(directory_) / ".running", ignored);
-    finalized_ = true;
+              writeSessionYaml("sealed", "fail", error) &&
+              appendDurableEvent("session", "sealed",
+                                 "fail stage=" + stage + " reason=" + reason, error) &&
+              writeManifest(error);
+    if (ok)
+        ok = durableRemove(fs::path(directory_) / ".running", error);
+    finalized_ = ok;
     return ok;
 }
 
 void CalibrationSession::markInterruptedNoThrow() {
+    if (fs::exists(fs::path(directory_) / "publication.intent.yaml"))
+        return;
     std::string error;
     cv::Mat empty;
     current_stage_ = current_stage_.empty() ? "unknown" : current_stage_;
-    writeReport("interrupted", current_stage_, "session_destructor_without_finalize",
-                empty, 0.0, 0, "标定会话未正常结束", error);
-    writeSessionYaml("sealed", error);
-    appendEvent("session", "sealed", "interrupted");
-    writeManifest(error);
-    std::error_code ignored;
-    fs::remove(fs::path(directory_) / ".running", ignored);
-    finalized_ = true;
+    const bool ok = writeReport("interrupted", current_stage_,
+                                "session_destructor_without_finalize",
+                                empty, 0.0, 0, "标定会话未正常结束", error) &&
+                    writeSessionYaml("sealed", "interrupted", error) &&
+                    appendDurableEvent("session", "sealed", "interrupted", error) &&
+                    writeManifest(error) &&
+                    durableRemove(fs::path(directory_) / ".running", error);
+    finalized_ = ok;
 }
 
 bool CalibrationSession::writeManifest(std::string& error) {
-    std::vector<fs::path> files;
-    std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(directory_, ec)) {
-        if (ec) {
-            error = "cannot scan session for manifest: " + ec.message();
-            return false;
-        }
-        if (!entry.is_regular_file())
-            continue;
-        const std::string name = entry.path().filename().string();
-        if (name == "manifest.sha256" || name == ".running" ||
-            name.find(".tmp.") != std::string::npos ||
-            (name.size() >= 4 && name.substr(name.size() - 4) == ".tmp"))
-            continue;
-        files.push_back(entry.path());
+    return writeManifestForDirectory(directory_, error);
+}
+
+bool CalibrationSession::recoverPendingSessions(
+    const std::string& base_directory,
+    std::vector<std::string>& recovered_sessions,
+    std::string& error) {
+    recovered_sessions.clear();
+    error.clear();
+    if (base_directory.empty()) {
+        error = "session base directory is empty";
+        return false;
     }
-    std::sort(files.begin(), files.end());
-    std::ostringstream manifest;
-    for (const fs::path& file : files)
-        manifest << sha256File(file.string()) << "  "
-                 << relativeOrFilename(file, directory_) << '\n';
-    return atomicTextWrite(fs::path(directory_) / "manifest.sha256",
-                           manifest.str(), error);
+    return recoverInterruptedSessions(fs::path(base_directory) / "sessions",
+                                      recovered_sessions, error);
 }
 
 std::string CalibrationSession::sha256File(const std::string& path) {
@@ -867,10 +1354,35 @@ bool CalibrationSession::verifyManifest(const std::string& session_directory,
         }
         const std::string expected = line.substr(0, 64);
         const std::string relative = line.substr(66);
+        if (!std::all_of(expected.begin(), expected.end(), [](unsigned char value) {
+                return std::isxdigit(value) != 0;
+            })) {
+            problems.push_back("manifest_hash_malformed:" + relative);
+            continue;
+        }
+        const fs::path relativePath(relative);
+        bool unsafePath = relative.empty() || relativePath.is_absolute();
+        for (const fs::path& component : relativePath) {
+            if (component == "..")
+                unsafePath = true;
+        }
+        if (unsafePath) {
+            problems.push_back("manifest_unsafe_path:" + relative);
+            continue;
+        }
+        if (std::find(expectedFiles.begin(), expectedFiles.end(), relative) !=
+            expectedFiles.end()) {
+            problems.push_back("manifest_duplicate:" + relative);
+            continue;
+        }
         expectedFiles.push_back(relative);
-        const fs::path file = fs::path(session_directory) / relative;
+        const fs::path file = fs::path(session_directory) / relativePath;
         if (!fs::exists(file)) {
             problems.push_back("missing:" + relative);
+            continue;
+        }
+        if (fs::is_symlink(file)) {
+            problems.push_back("symlink_not_allowed:" + relative);
             continue;
         }
         if (sha256File(file.string()) != expected)
@@ -881,10 +1393,7 @@ bool CalibrationSession::verifyManifest(const std::string& session_directory,
     for (const auto& entry : fs::recursive_directory_iterator(session_directory, ec)) {
         if (ec || !entry.is_regular_file())
             continue;
-        const std::string name = entry.path().filename().string();
-        if (name == "manifest.sha256" || name == ".running" ||
-            name.find(".tmp.") != std::string::npos ||
-            (name.size() >= 4 && name.substr(name.size() - 4) == ".tmp"))
+        if (excludedFromManifest(entry.path()))
             continue;
         const std::string relative = relativeOrFilename(entry.path(), session_directory);
         if (!std::binary_search(expectedFiles.begin(), expectedFiles.end(), relative))

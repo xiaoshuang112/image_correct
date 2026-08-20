@@ -1,6 +1,7 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 #include "eye_to_hand_calibration.hpp"
 #include "calibration_utils.hpp"
+#include "calibration_session.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
 #include "charuco_detector.hpp"
 #include <iostream>
@@ -13,6 +14,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <set>
 
 #ifdef _WIN32
     #define WIN32_LEAN_AND_MEAN
@@ -1062,6 +1064,24 @@ int main(int argc, char** argv) {
 
     if (!GetBasePathInfo())
         return EXIT_FAILURE;
+
+    std::set<std::string> auditRoots{
+        g_calibrationPath,
+        g_paramPath + "semi_eye_in_hand/"
+    };
+    if (argc >= 3 && std::string(argv[1]) == "--calibrate-eye-in-hand")
+        auditRoots.insert(argv[2]);
+    for (const std::string& root : auditRoots) {
+        std::vector<std::string> recovered;
+        std::string recoveryError;
+        if (!CalibrationSession::recoverPendingSessions(root, recovered, recoveryError)) {
+            std::cerr << "[main] 标定 Session 启动恢复失败: " << recoveryError
+                      << ", root=" << root << std::endl;
+            return EXIT_FAILURE;
+        }
+        for (const std::string& session : recovered)
+            std::cout << "[main] 已恢复未完成标定 Session: " << session << std::endl;
+    }
 
     if (handleCLI(argc, argv))
         return 0;

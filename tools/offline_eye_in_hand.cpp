@@ -4,10 +4,34 @@
 #include <opencv2/core.hpp>
 
 #include <cstdlib>
+#include <filesystem>
 #include <iostream>
 #include <string>
 
 namespace {
+
+namespace fs = std::filesystem;
+
+std::string auditBaseDirectoryForSource(const std::string& source) {
+    const fs::path path(source);
+    if (fs::exists(path / "session.yaml") &&
+        path.parent_path().filename() == "sessions")
+        return path.parent_path().parent_path().string();
+    return source;
+}
+
+bool recoverBeforeUse(const std::string& source) {
+    std::vector<std::string> recovered;
+    std::string error;
+    if (!CalibrationSession::recoverPendingSessions(
+            auditBaseDirectoryForSource(source), recovered, error)) {
+        std::cerr << "[offlineEyeInHand] Session 启动恢复失败: " << error << std::endl;
+        return false;
+    }
+    for (const std::string& session : recovered)
+        std::cout << "[offlineEyeInHand] 已恢复未完成 Session: " << session << std::endl;
+    return true;
+}
 
 bool loadIntrinsics(const std::string& path, cv::Mat& cameraMatrix,
                     cv::Mat& distortion) {
@@ -45,6 +69,13 @@ void loadBoardConfig(const std::string& sessionDirectory,
 }  // namespace
 
 int main(int argc, char** argv) {
+    if (argc >= 3) {
+        const std::string source = (std::string(argv[1]) == "--verify-session" ||
+                                    std::string(argv[1]) == "--replay-session")
+            ? argv[2] : argv[1];
+        if (!recoverBeforeUse(source))
+            return EXIT_FAILURE;
+    }
     if (argc == 3 && std::string(argv[1]) == "--verify-session") {
         std::vector<std::string> problems;
         if (!CalibrationSession::verifyManifest(argv[2], problems)) {
@@ -59,6 +90,14 @@ int main(int argc, char** argv) {
     }
     if (argc == 4 && std::string(argv[1]) == "--replay-session") {
         const std::string sessionDirectory = argv[2];
+        std::vector<std::string> problems;
+        if (!CalibrationSession::verifyManifest(sessionDirectory, problems)) {
+            std::cerr << "[offlineEyeInHand] 拒绝复算：源 Session 完整性校验失败"
+                      << std::endl;
+            for (const std::string& problem : problems)
+                std::cerr << "  " << problem << std::endl;
+            return EXIT_FAILURE;
+        }
         cv::Mat cameraMatrix;
         cv::Mat distortion;
         if (!loadIntrinsics(sessionDirectory + "/effective_config.yaml",
