@@ -2,6 +2,7 @@
 
 #include "camera_calibration.hpp"           // calibrateCameraFromDisk, loadImagesFromDisk
 #include "calibration_utils.hpp"            // executeCollection, PoseCandidate
+#include "calibration_session.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 
 #include <opencv2/calib3d.hpp>
@@ -74,6 +75,16 @@ static int countCapturedFrames(const std::string& dir) {
     return count;
 }
 
+static std::string auditBaseDirectoryForSource(const std::string& source) {
+    namespace fs = std::filesystem;
+    const fs::path sourcePath(source);
+    if (fs::exists(sourcePath / "session.yaml") &&
+        sourcePath.parent_path().filename() == "sessions") {
+        return sourcePath.parent_path().parent_path().string();
+    }
+    return source;
+}
+
 } // anonymous namespace
 
 // ============================================================
@@ -95,17 +106,57 @@ bool semiAutoEyeInHandCalibration(
 
     std::cout << "\n========== 半自动眼在手内 ChArUco 标定 ==========" << std::endl;
 
+    result = CalibrationResult{};
+    CalibrationSessionOptions session_options;
+    session_options.base_directory = auditBaseDirectoryForSource(save_dir);
+    session_options.mode = "online_semi_auto_eye_in_hand";
+    session_options.source_data_directory = "live_capture";
+    session_options.board = board_config;
+    session_options.robot_endpoint = pchRobotIP ? pchRobotIP : "";
+    if (camera) {
+        const CONFIG& config = camera->getConfig();
+        const CameraDeviceAuditInfo deviceInfo = camera->getDeviceAuditInfo();
+        session_options.camera_serial = deviceInfo.serial;
+        session_options.camera_model = deviceInfo.model;
+        session_options.camera_firmware = deviceInfo.firmware;
+        session_options.camera_endpoint = config.cam_ip + ":" +
+            std::to_string(config.cam_port);
+        session_options.image_width = config.cam_width;
+        session_options.image_height = config.cam_height;
+    }
+    const bool provided_intrinsics = !camera_matrix.empty() && !dist_coeffs.empty();
+    session_options.intrinsic_source = provided_intrinsics
+        ? "provided_runtime" : "calibrated_from_collection";
+    if (provided_intrinsics) {
+        session_options.camera_matrix = camera_matrix.getMat().clone();
+        session_options.dist_coeffs = dist_coeffs.getMat().clone();
+    }
+    std::string session_error;
+    std::unique_ptr<CalibrationSession> session =
+        CalibrationSession::create(session_options, session_error);
+    if (!session) {
+        result.message = "无法创建标定审计会话: " + session_error;
+        return false;
+    }
+    result.session_dir = session->directory();
+    auto failSession = [&](const std::string& stage,
+                           const std::string& reason) -> bool {
+        session->finalizeFailure(stage, reason, result.message);
+        return false;
+    };
+
     // ---- Phase 1: 获取示教原点 ----
+    session->setStage("prepare");
     double tcp_aa[6], flangeEuleInit[6];
     if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess) {
         result.message = "获取机器人位姿失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-        return false;
+        return failSession("prepare", "robot_pose_read_failed");
     }
     if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEuleInit)) {
         result.message = "轴角转法兰欧拉失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-        return false;
+        return failSession("prepare", "flange_pose_conversion_failed");
     }
     std::cout << "[semiAutoEyeInHand] 示教原点 (法兰欧拉): "
               << flangeEuleInit[0] << ", " << flangeEuleInit[1] << ", " << flangeEuleInit[2] << " mm, "
@@ -117,24 +168,26 @@ bool semiAutoEyeInHandCalibration(
     if (!generateEyeInHandCandidates(robot_handle, flangeEuleInit, pose_config, candidates)) {
         result.message = "无 IK 可达位姿";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-        return false;
+        return failSession("pose_generation", "no_reachable_pose");
     }
 
     // ---- Phase 3: 逐点采集 ----
+    session->setStage("collection");
     if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
-                            candidates, save_dir, callback)) {
+                            candidates, session->framesDirectory(), callback,
+                            session.get(), session->robotPosesDirectory())) {
         result.message = "采集失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-        return false;
+        return failSession("collection", "collection_failed");
     }
 
     {
-        int captured = countCapturedFrames(save_dir);
+        int captured = countCapturedFrames(session->framesDirectory());
         if (captured < pose_config.min_valid_frames) {
             result.message = "有效帧数不足: " + std::to_string(captured) +
                              " (need >= " + std::to_string(pose_config.min_valid_frames) + ")";
             std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-            return false;
+            return failSession("collection", "insufficient_captured_frames");
         }
         std::cout << "[semiAutoEyeInHand] 有效帧: " << captured << std::endl;
     }
@@ -146,17 +199,20 @@ bool semiAutoEyeInHandCalibration(
         dist = dist_coeffs.getMat().clone();
         std::cout << "[semiAutoEyeInHand] 使用已知相机内参" << std::endl;
     } else {
-        if (!calibrateCameraFromDisk(save_dir, detector, cam_mat, dist)) {
+        if (!calibrateCameraFromDisk(session->framesDirectory(), detector, cam_mat, dist)) {
             result.message = "相机内参标定失败";
             std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-            return false;
+            return failSession("intrinsic_calibration", "intrinsic_calibration_failed");
         }
         std::cout << "[semiAutoEyeInHand] 相机内参已标定" << std::endl;
     }
+    session->setIntrinsics(cam_mat, dist, provided_intrinsics
+        ? "provided_runtime" : "calibrated_from_collection");
 
     // ---- Phase 5: 手眼标定 ----
-    if (!calibrateHandEyeFromDisk(save_dir, cam_mat, dist, board_config,
-                                   result, output_yaml)) {
+    if (!calibrateHandEyeFromDisk(session->framesDirectory(), cam_mat, dist,
+                                   board_config, result, output_yaml,
+                                   session.get())) {
         if (result.message.empty())
             result.message = "手眼标定失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
@@ -181,10 +237,40 @@ bool calibrateEyeInHandFromDisk(
     CalibrationResult& result,
     const std::string& output_yaml) {
 
+    result = CalibrationResult{};
     std::cout << "\n========== 半自动眼在手内离线标定 ==========" << std::endl;
     std::cout << "[semiAutoEyeInHand] 数据目录: " << save_dir << std::endl;
 
     CharucoDetector detector(board_config);
+    CalibrationSessionOptions session_options;
+    session_options.base_directory = save_dir;
+    session_options.mode = "offline_eye_in_hand_with_intrinsic_calibration";
+    session_options.source_data_directory = save_dir;
+    session_options.intrinsic_source = (!camera_matrix.empty() && !dist_coeffs.empty())
+        ? "provided_offline" : "calibrated_from_collection";
+    session_options.board = board_config;
+    if (!camera_matrix.empty() && !dist_coeffs.empty()) {
+        session_options.camera_matrix = camera_matrix.getMat().clone();
+        session_options.dist_coeffs = dist_coeffs.getMat().clone();
+    }
+    std::string session_error;
+    std::unique_ptr<CalibrationSession> session =
+        CalibrationSession::create(session_options, session_error);
+    if (!session) {
+        result.message = "无法创建标定审计会话: " + session_error;
+        return false;
+    }
+    result.session_dir = session->directory();
+    if (!session->importLegacyDataset(save_dir, session_error)) {
+        result.message = "无法导入离线数据集: " + session_error;
+        session->finalizeFailure("dataset_import", "dataset_import_failed", result.message);
+        return false;
+    }
+    auto failSession = [&](const std::string& stage,
+                           const std::string& reason) -> bool {
+        session->finalizeFailure(stage, reason, result.message);
+        return false;
+    };
 
     // ---- Phase 1: 相机内参标定 ----
     cv::Mat cam_mat, dist;
@@ -193,16 +279,22 @@ bool calibrateEyeInHandFromDisk(
         dist = dist_coeffs.getMat().clone();
         std::cout << "[semiAutoEyeInHand] 使用已知相机内参" << std::endl;
     } else {
-        if (!calibrateCameraFromDisk(save_dir, detector, cam_mat, dist)) {
+        session->setStage("intrinsic_calibration");
+        if (!calibrateCameraFromDisk(session->framesDirectory(), detector, cam_mat, dist)) {
             result.message = "相机内参标定失败";
             std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-            return false;
+            return failSession("intrinsic_calibration", "intrinsic_calibration_failed");
         }
         std::cout << "[semiAutoEyeInHand] 相机内参已标定" << std::endl;
     }
+    session->setIntrinsics(cam_mat, dist,
+        (!camera_matrix.empty() && !dist_coeffs.empty())
+            ? "provided_offline" : "calibrated_from_collection");
 
     // ---- Phase 2: 手眼标定 ----
-    if (!calibrateHandEyeFromDisk(save_dir, cam_mat, dist, board_config, result, output_yaml)) {
+    if (!calibrateHandEyeFromDisk(session->framesDirectory(), cam_mat, dist,
+                                  board_config, result, output_yaml,
+                                  session.get())) {
         if (result.message.empty())
             result.message = "手眼标定失败";
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
@@ -463,6 +555,14 @@ struct HandEyeMethodResult {
     HandEyeConsistencyStats stats;
 };
 
+struct HandEyeSolveAudit {
+    std::vector<double> initial_consistency_errors;
+    std::vector<bool> mad_inliers;
+    double mad_threshold = std::numeric_limits<double>::quiet_NaN();
+    std::string selected_method;
+    bool quality_passed = false;
+};
+
 static std::vector<HandEyeMethodResult> solveHandEyeMethods(
     const std::vector<cv::Mat>& robot_poses,
     const std::vector<cv::Mat>& camera_poses,
@@ -572,7 +672,8 @@ static bool estimateHandEyeTrans(
     const cv::Mat& dist_coeffs,
     std::vector<cv::Mat>& robot_poses,
     std::vector<cv::Mat>& camera_poses,
-    CalibrationResult& result) {
+    CalibrationResult& result,
+    HandEyeSolveAudit* audit) {
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
@@ -628,6 +729,11 @@ static bool estimateHandEyeTrans(
     const double outlier_threshold = std::max(
         kMinimumOutlierThresholdMeters,
         median_error + kMadScale * 1.4826 * mad);
+    if (audit) {
+        audit->initial_consistency_errors = initial_errors;
+        audit->mad_inliers.assign(initial_errors.size(), false);
+        audit->mad_threshold = outlier_threshold;
+    }
 
     std::vector<cv::Mat> filtered_robot_poses;
     std::vector<cv::Mat> filtered_camera_poses;
@@ -637,6 +743,8 @@ static bool estimateHandEyeTrans(
         if (initial_errors[index] <= outlier_threshold) {
             filtered_robot_poses.push_back(robot_poses[index]);
             filtered_camera_poses.push_back(camera_poses[index]);
+            if (audit)
+                audit->mad_inliers[index] = true;
         }
     }
 
@@ -702,6 +810,10 @@ static bool estimateHandEyeTrans(
         failure_reason = "rotation_p95_exceeded";
 
     const bool quality_passed = failure_reason.empty();
+    if (audit) {
+        audit->selected_method = best.name;
+        audit->quality_passed = quality_passed;
+    }
     APP_LOG_EVENT(Info,
                   "calibration.hand_eye",
                   "hand_eye_quality",
@@ -775,13 +887,59 @@ bool calibrateHandEyeFromDisk(
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
-    const std::string& output_yaml) {
+    const std::string& output_yaml,
+    CalibrationSession* session,
+    const std::string& intrinsic_source_file) {
 
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
     result.message.clear();
+    result.session_dir.clear();
     result.T_flange_camera.release();
+
+    std::unique_ptr<CalibrationSession> owned_session;
+    std::string data_directory = save_dir;
+    if (!session) {
+        CalibrationSessionOptions options;
+        options.base_directory = auditBaseDirectoryForSource(save_dir);
+        options.mode = "offline_eye_in_hand";
+        options.source_data_directory = save_dir;
+        options.intrinsic_source = "provided_offline";
+        options.intrinsic_source_file = intrinsic_source_file;
+        options.board = board_config;
+        options.camera_matrix = camera_matrix.clone();
+        options.dist_coeffs = dist_coeffs.clone();
+        std::string session_error;
+        owned_session = CalibrationSession::create(options, session_error);
+        if (!owned_session) {
+            result.message = "无法创建标定审计会话: " + session_error;
+            return false;
+        }
+        session = owned_session.get();
+        result.session_dir = session->directory();
+        if (!session->importLegacyDataset(save_dir, session_error)) {
+            result.message = "无法导入离线数据集: " + session_error;
+            session->finalizeFailure("dataset_import", "dataset_import_failed",
+                                     result.message);
+            return false;
+        }
+        data_directory = session->framesDirectory();
+    } else {
+        result.session_dir = session->directory();
+    }
+
+    auto failSession = [&](const std::string& stage,
+                           const std::string& reason) -> bool {
+        if (session) {
+            session->setStage(stage);
+            session->finalizeFailure(stage, reason, result.message);
+        }
+        return false;
+    };
+    session->setStage("hand_eye_input");
+    session->setIntrinsics(camera_matrix, dist_coeffs,
+                           owned_session ? "provided_offline" : "effective_runtime");
 
     if (camera_matrix.rows != 3 || camera_matrix.cols != 3 ||
         dist_coeffs.empty() || !cv::checkRange(camera_matrix) ||
@@ -795,7 +953,7 @@ bool calibrateHandEyeFromDisk(
                              {"matrix_rows", QString::number(camera_matrix.rows)},
                              {"matrix_cols", QString::number(camera_matrix.cols)},
                              {"distortion_count", QString::number(dist_coeffs.total())}});
-        return false;
+        return failSession("hand_eye_input", "invalid_intrinsics");
     }
 
     CharucoDetector detector(board_config);
@@ -803,17 +961,25 @@ bool calibrateHandEyeFromDisk(
 
     // 读取法兰位姿
     std::vector<cv::Mat> flange_poses;
-    if (!loadRobotPosesFromCSV(save_dir + "/rob_pos.csv", flange_poses)) {
-        result.message = "无法加载 " + save_dir + "/rob_pos.csv";
+    std::string robot_pose_file = data_directory + "/rob_pos.csv";
+    if (session && std::filesystem::exists(
+            session->robotPosesDirectory() + "/rob_pos.csv")) {
+        robot_pose_file = session->robotPosesDirectory() + "/rob_pos.csv";
+    }
+    if (!loadRobotPosesFromCSV(robot_pose_file, flange_poses)) {
+        result.message = "无法加载 " + robot_pose_file;
         std::cerr << "[autoCalib] " << result.message << std::endl;
-        return false;
+        return failSession("hand_eye_input", "robot_pose_load_failed");
     }
 
     // 扫描图像文件
     std::vector<std::string> img_files;
     cv::Size image_size;
-    if (!loadImagesFromDisk(save_dir, img_files, image_size))
-        return false;
+    if (!loadImagesFromDisk(data_directory, img_files, image_size)) {
+        result.message = "无法加载标定图像: " + data_directory;
+        return failSession("hand_eye_input", "image_load_failed");
+    }
+    session->setImageSize(image_size.width, image_size.height);
 
     if (img_files.size() != flange_poses.size()) {
         result.message = "图像数量 (" + std::to_string(img_files.size()) +
@@ -826,30 +992,65 @@ bool calibrateHandEyeFromDisk(
                              {"images", QString::number(img_files.size())},
                              {"robot_poses", QString::number(flange_poses.size())}});
         std::cerr << "[autoCalib] " << result.message << std::endl;
-        return false;
+        return failSession("hand_eye_input", "image_pose_count_mismatch");
     }
 
     const size_t n = img_files.size();
     const auto& board_points = detector.getChessboardCorners3D();
 
     struct FrameRecord {
+        size_t source_index;
         cv::Mat robot_pose;
         cv::Mat camera_pose;
         double error;
     };
     std::vector<FrameRecord> frames;
     frames.reserve(n);
+    std::vector<CalibrationFrameAudit> frame_audits(n);
     size_t unreadable_images = 0;
     size_t pose_detection_failures = 0;
     size_t invalid_correspondences = 0;
     double reprojection_error_sum = 0.0;
 
     for (size_t i = 0; i < n; i++) {
+        CalibrationFrameAudit& audit = frame_audits[i];
+        audit.frame_id = static_cast<int>(i);
+        audit.source_index = static_cast<int>(i);
+        audit.image_file = "frames/" +
+            std::filesystem::path(img_files[i]).filename().generic_string();
+        audit.image_sha256 = CalibrationSession::sha256File(img_files[i]);
+        audit.T_base_flange = flange_poses[i].clone();
+
+        std::ostringstream raw_name;
+        raw_name << "frame_" << std::setw(4) << std::setfill('0') << i << ".json";
+        const std::string raw_pose_path =
+            session->robotPosesDirectory() + "/" + raw_name.str();
+        if (std::filesystem::exists(raw_pose_path)) {
+            cv::FileStorage raw_pose(raw_pose_path, cv::FileStorage::READ);
+            std::string image_timestamp;
+            std::string robot_timestamp;
+            raw_pose["timing"]["image_host_realtime_ns"] >> image_timestamp;
+            raw_pose["timing"]["robot_host_realtime_ns"] >> robot_timestamp;
+            try {
+                if (!image_timestamp.empty())
+                    audit.image_timestamp_ns = std::stoull(image_timestamp);
+                if (!robot_timestamp.empty())
+                    audit.robot_timestamp_ns = std::stoull(robot_timestamp);
+            } catch (const std::exception&) {
+                audit.reject_reasons.push_back("invalid_audit_timestamp");
+            }
+        }
+
         cv::Mat img = cv::imread(img_files[i]);
         if (img.empty()) {
             ++unreadable_images;
+            audit.reject_stage = "image_read";
+            audit.reject_reasons.push_back("image_unreadable");
             continue;
         }
+        audit.image_read_pass = true;
+        audit.image_width = img.cols;
+        audit.image_height = img.rows;
         cv::Mat rvec, tvec;
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
@@ -857,7 +1058,30 @@ bool calibrateHandEyeFromDisk(
         // 与采集阶段使用同一个 12 角点门限，避免“采集成功但求解大量丢帧”。
         if (!detector.detectPose(img, rvec, tvec, corners, ids, kMinHandEyeCorners)) {
             ++pose_detection_failures;
+            std::vector<cv::Point2f> diagnostic_corners;
+            std::vector<int> diagnostic_ids;
+            const bool charuco_detected = detector.detectCorners(
+                img, diagnostic_corners, diagnostic_ids);
+            audit.corner_count = static_cast<int>(diagnostic_ids.size());
+            audit.charuco_pass = charuco_detected &&
+                diagnostic_ids.size() >= static_cast<size_t>(kMinHandEyeCorners);
+            if (audit.charuco_pass) {
+                audit.reject_stage = "pnp";
+                audit.reject_reasons.push_back("pose_estimation_or_reprojection_filter_failed");
+            } else {
+                audit.reject_stage = "charuco";
+                audit.reject_reasons.push_back(charuco_detected
+                    ? "insufficient_corners" : "detection_failed");
+            }
             continue;
+        }
+        audit.charuco_pass = true;
+        audit.corner_count = static_cast<int>(ids.size());
+        if (corners.size() >= 3 && img.total() > 0) {
+            std::vector<cv::Point2f> hull;
+            cv::convexHull(corners, hull);
+            audit.coverage = std::abs(cv::contourArea(hull)) /
+                static_cast<double>(img.total());
         }
 
         std::vector<cv::Point3f> pts3;
@@ -871,19 +1095,32 @@ bool calibrateHandEyeFromDisk(
         }
         if (pts3.size() < static_cast<size_t>(kMinHandEyeCorners)) {
             ++invalid_correspondences;
+            audit.reject_stage = "pnp";
+            audit.reject_reasons.push_back("insufficient_valid_correspondences");
             continue;
         }
 
         std::vector<cv::Point2f> projected;
         cv::projectPoints(pts3, rvec, tvec, camera_matrix, dist_coeffs, projected);
-        double sum_err = 0.0;
-        for (size_t j = 0; j < projected.size(); j++)
-            sum_err += cv::norm(projected[j] - pts2[j]);
+        double squared_error_sum = 0.0;
+        std::vector<double> pixel_errors;
+        pixel_errors.reserve(projected.size());
+        for (size_t j = 0; j < projected.size(); j++) {
+            const double pixel_error = cv::norm(projected[j] - pts2[j]);
+            pixel_errors.push_back(pixel_error);
+            squared_error_sum += pixel_error * pixel_error;
+        }
 
-        double err = sum_err / projected.size();
+        const double err = std::sqrt(squared_error_sum / projected.size());
+        audit.pnp_pass = true;
+        audit.reprojection_rms_px = err;
+        audit.reprojection_p95_px = percentile(pixel_errors, 0.95);
+        audit.T_camera_board = calib_transform::rvecTvecToTransform(rvec, tvec);
         reprojection_error_sum += err;
-        frames.push_back({flange_poses[i], calib_transform::rvecTvecToTransform(rvec, tvec), err});
+        frames.push_back({i, flange_poses[i], audit.T_camera_board, err});
     }
+
+    session->setFrames(frame_audits);
 
     const size_t detected_frames = frames.size();
     const double mean_reprojection_error = detected_frames > 0
@@ -915,26 +1152,61 @@ bool calibrateHandEyeFromDisk(
         camera_poses.push_back(frame.camera_pose);
     }
 
+    session->setStage("solve_and_validate");
+    HandEyeSolveAudit solve_audit;
     if (!estimateHandEyeTrans(
-            camera_matrix, dist_coeffs, robot_poses, camera_poses, result)) {
+            camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
+            &solve_audit)) {
+        for (size_t index = 0; index < frames.size(); ++index) {
+            CalibrationFrameAudit& audit = frame_audits[frames[index].source_index];
+            if (index < solve_audit.initial_consistency_errors.size())
+                audit.consistency_error_mm =
+                    solve_audit.initial_consistency_errors[index] * 1000.0;
+            if (index < solve_audit.mad_inliers.size()) {
+                audit.mad_filter_pass = solve_audit.mad_inliers[index];
+                audit.quality_gate_pass = solve_audit.quality_passed &&
+                                          audit.mad_filter_pass;
+                if (!audit.mad_filter_pass) {
+                    audit.reject_stage = "mad_filter";
+                    audit.reject_reasons.push_back("translation_consistency_outlier");
+                }
+            }
+        }
+        session->setFrames(frame_audits);
         APP_LOG_EVENT_ERROR("calibration.hand_eye",
                             "hand_eye_pipeline",
                             "fail",
                             {{"stage", "solve_and_validate"},
                              {"valid_frames", QString::number(robot_poses.size())},
                              {"message", QString::fromStdString(result.message)}});
-        return false;
+        return failSession("solve_and_validate", "hand_eye_quality_failed");
     }
 
-    if (!output_yaml.empty()) {
-        if (!saveCalibrationResult(output_yaml, "T_flange_camera",
-                                   result.T_flange_camera, result.camera_matrix, result.dist_coeffs,
-                                   result.reproj_error * 1000.0, result.valid_frames)) {
-            result.success = false;
-            result.message = "标定结果 YAML 写入失败: " + output_yaml;
-            std::cerr << "[autoCalib] " << result.message << std::endl;
-            return false;
+    for (size_t index = 0; index < frames.size(); ++index) {
+        CalibrationFrameAudit& audit = frame_audits[frames[index].source_index];
+        if (index < solve_audit.initial_consistency_errors.size())
+            audit.consistency_error_mm =
+                solve_audit.initial_consistency_errors[index] * 1000.0;
+        audit.mad_filter_pass = index < solve_audit.mad_inliers.size() &&
+                                solve_audit.mad_inliers[index];
+        audit.quality_gate_pass = solve_audit.quality_passed &&
+                                  audit.mad_filter_pass;
+        audit.final_accepted = audit.mad_filter_pass && solve_audit.quality_passed;
+        if (!audit.mad_filter_pass) {
+            audit.reject_stage = "mad_filter";
+            audit.reject_reasons.push_back("translation_consistency_outlier");
         }
+    }
+    session->setFrames(frame_audits);
+
+    std::string finalize_error;
+    if (!session->finalizeSuccess(result.T_flange_camera, result.camera_matrix,
+                                  result.dist_coeffs, result.reproj_error * 1000.0,
+                                  result.valid_frames, result.message, output_yaml,
+                                  finalize_error)) {
+        result.success = false;
+        result.message = "标定结果发布或审计会话封存失败: " + finalize_error;
+        return failSession("output", "session_seal_or_atomic_publish_failed");
     }
 
     std::cout << "\n========== 标定结果 ==========" << std::endl;

@@ -1,0 +1,142 @@
+#ifndef CALIBRATION_SESSION_HPP
+#define CALIBRATION_SESSION_HPP
+
+#include <opencv2/core.hpp>
+
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "charuco_detector.hpp"
+
+struct CalibrationFrameAudit {
+    int frame_id = -1;
+    int source_index = -1;
+    std::string image_file;
+    std::string image_sha256;
+    std::uint64_t image_timestamp_ns = 0;
+    std::uint64_t robot_timestamp_ns = 0;
+    int image_width = 0;
+    int image_height = 0;
+    int corner_count = 0;
+    double coverage = 0.0;
+    double reprojection_rms_px = 0.0;
+    double reprojection_p95_px = 0.0;
+    double consistency_error_mm = 0.0;
+    bool image_read_pass = false;
+    bool charuco_pass = false;
+    bool pnp_pass = false;
+    bool quality_gate_pass = false;
+    bool mad_filter_pass = false;
+    bool final_accepted = false;
+    std::string reject_stage;
+    std::vector<std::string> reject_reasons;
+    cv::Mat T_base_flange;
+    cv::Mat T_camera_board;
+};
+
+struct CalibrationSessionOptions {
+    std::string base_directory;
+    std::string mode;
+    std::string source_data_directory;
+    std::string camera_serial;
+    std::string camera_model;
+    std::string camera_firmware;
+    std::string camera_endpoint;
+    std::string camera_stream = "color";
+    int image_width = 0;
+    int image_height = 0;
+    std::string intrinsic_source;
+    std::string intrinsic_source_file;
+    std::string robot_endpoint;
+    std::string robot_model;
+    std::string robot_controller;
+    CharucoBoardConfig board;
+    cv::Mat camera_matrix;
+    cv::Mat dist_coeffs;
+};
+
+class CalibrationSession final {
+public:
+    static std::unique_ptr<CalibrationSession> create(
+        const CalibrationSessionOptions& options,
+        std::string& error);
+
+    ~CalibrationSession();
+
+    CalibrationSession(const CalibrationSession&) = delete;
+    CalibrationSession& operator=(const CalibrationSession&) = delete;
+
+    const std::string& id() const { return id_; }
+    const std::string& directory() const { return directory_; }
+    const std::string& framesDirectory() const { return frames_directory_; }
+    const std::string& robotPosesDirectory() const { return robot_poses_directory_; }
+    const std::string& previewDirectory() const { return preview_directory_; }
+
+    void setStage(const std::string& stage);
+    void setIntrinsics(const cv::Mat& camera_matrix,
+                       const cv::Mat& dist_coeffs,
+                       const std::string& source);
+    void setImageSize(int width, int height);
+    void setFrames(const std::vector<CalibrationFrameAudit>& frames);
+    void appendEvent(const std::string& event,
+                     const std::string& result,
+                     const std::string& detail = "");
+
+    bool importLegacyDataset(const std::string& source_directory,
+                             std::string& error);
+    bool writeRawRobotPose(int frame_id,
+                           int candidate_index,
+                           const double actual_joint[6],
+                           const double flange_pose[6],
+                           std::uint64_t image_timestamp_ns,
+                           std::uint64_t robot_timestamp_ns,
+                           std::string& error);
+
+    bool finalizeSuccess(const cv::Mat& transform,
+                         const cv::Mat& camera_matrix,
+                         const cv::Mat& dist_coeffs,
+                         double translation_rms_mm,
+                         int valid_frames,
+                         const std::string& message,
+                         const std::string& production_yaml,
+                         std::string& error);
+    bool finalizeFailure(const std::string& stage,
+                         const std::string& reason,
+                         const std::string& message = "");
+
+    static std::string sha256File(const std::string& path);
+    static bool verifyManifest(const std::string& session_directory,
+                               std::vector<std::string>& problems);
+
+private:
+    explicit CalibrationSession(CalibrationSessionOptions options);
+
+    bool initialize(std::string& error);
+    bool writeSessionYaml(const std::string& status, std::string& error);
+    bool writeEffectiveConfig(std::string& error);
+    bool writeReport(const std::string& status,
+                     const std::string& failure_stage,
+                     const std::string& failure_reason,
+                     const cv::Mat& transform,
+                     double translation_rms_mm,
+                     int valid_frames,
+                     const std::string& message,
+                     std::string& error);
+    bool writeManifest(std::string& error);
+    void markInterruptedNoThrow();
+
+    CalibrationSessionOptions options_;
+    std::string id_;
+    std::string timestamp_utc_;
+    std::string directory_;
+    std::string frames_directory_;
+    std::string robot_poses_directory_;
+    std::string preview_directory_;
+    std::string current_stage_ = "created";
+    std::vector<CalibrationFrameAudit> frames_;
+    bool finalized_ = false;
+};
+
+#endif  // CALIBRATION_SESSION_HPP

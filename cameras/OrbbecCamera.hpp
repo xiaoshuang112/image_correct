@@ -26,6 +26,7 @@ public:
     cv::Mat captureOneFrame(int timeoutMs = 1000) override;
     int captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs = 2000) override;
     bool isOpened() const override { return m_isOpened; }
+    CameraDeviceAuditInfo getDeviceAuditInfo() const override;
 
     // 曝光控制接口实现
     bool setColorExposureTime(int exposureUs) override;

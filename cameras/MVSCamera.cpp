@@ -12,6 +12,12 @@ MVSCamera::~MVSCamera() {
     if (m_isOpened) close();
 }
 
+CameraDeviceAuditInfo MVSCamera::getDeviceAuditInfo() const {
+    return {m_deviceSerial.empty() ? m_config.cam_sn : m_deviceSerial,
+            m_deviceModel.empty() ? "MVS" : m_deviceModel,
+            m_deviceFirmware};
+}
+
 
 unsigned int ipToInt(const std::string& ip) {
     in_addr ip_addr;
@@ -78,6 +84,21 @@ bool MVSCamera::open() {
         return false;
     }
 
+    MV_CC_DEVICE_INFO* selectedInfo = stDeviceList.pDeviceInfo[nIndex];
+    if (selectedInfo) {
+        if (selectedInfo->nTLayerType == MV_USB_DEVICE) {
+            m_deviceSerial = reinterpret_cast<const char*>(
+                selectedInfo->SpecialInfo.stUsb3VInfo.chSerialNumber);
+            m_deviceModel = reinterpret_cast<const char*>(
+                selectedInfo->SpecialInfo.stUsb3VInfo.chModelName);
+        } else if (selectedInfo->nTLayerType == MV_GIGE_DEVICE) {
+            m_deviceSerial = reinterpret_cast<const char*>(
+                selectedInfo->SpecialInfo.stGigEInfo.chSerialNumber);
+            m_deviceModel = reinterpret_cast<const char*>(
+                selectedInfo->SpecialInfo.stGigEInfo.chModelName);
+        }
+    }
+
 
     nRet = MV_CC_CreateHandle(&m_handle, stDeviceList.pDeviceInfo[nIndex]);
     if (MV_OK != nRet) {
@@ -94,6 +115,9 @@ bool MVSCamera::open() {
         MV_CC_Finalize();
         return false;
     }
+    MVCC_STRINGVALUE firmwareValue{};
+    if (MV_OK == MV_CC_GetStringValue(m_handle, "DeviceFirmwareVersion", &firmwareValue))
+        m_deviceFirmware = firmwareValue.chCurValue;
 
     // 在取流前完成所有参数配置，取流后这些寄存器会变为只读
     MV_CC_SetEnumValue(m_handle, "TriggerMode", 0);

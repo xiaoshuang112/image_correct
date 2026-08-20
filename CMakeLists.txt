@@ -116,7 +116,7 @@ endif()
 
 
 SET(SRC_LISTS
-calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
+calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/calibration_session.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
     calibration.cpp utils/exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
@@ -164,6 +164,23 @@ add_executable(${PROJECT_NAME} ${SRC_LISTS})
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )
 
+# 标定审计报告需要记录构建身份。与 GUI 使用同一个生成脚本，并在每次
+# build 时刷新，避免复用 configure 阶段的旧 commit/dirty 状态。
+set(CALIBRATION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(CALIBRATION_BUILD_INFO_HEADER "${CALIBRATION_BUILD_INFO_DIR}/AppBuildInfo.hpp")
+add_custom_target(calibration_build_info ALL
+    COMMAND ${CMAKE_COMMAND}
+        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+        -DOUTPUT_FILE=${CALIBRATION_BUILD_INFO_HEADER}
+        -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui/GenerateBuildInfo.cmake
+    BYPRODUCTS ${CALIBRATION_BUILD_INFO_HEADER}
+    COMMENT "Refreshing calibration audit build metadata"
+    VERBATIM
+)
+add_dependencies(${PROJECT_NAME} calibration_build_info)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CALIBRATION_BUILD_INFO_DIR})
+
 # ============================================================
 #  反畸变工具
 # ============================================================
@@ -184,6 +201,7 @@ add_executable(offline_eye_in_hand
     calibration/charuco_detector.cpp
     calibration/camera_calibration.cpp
     calibration/calibration_utils.cpp
+    calibration/calibration_session.cpp
     calibration/semi_auto_eye_in_hand_calibration.cpp
     utils/calib_transform.cpp
     utils/robot_util.cpp
@@ -192,8 +210,10 @@ target_include_directories(offline_eye_in_hand PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/calibration
     ${CGX_SDK_DIR}/include
+    ${CALIBRATION_BUILD_INFO_DIR}
 )
 target_link_libraries(offline_eye_in_hand ${OpenCV_LIBS} ${CGX_SDK_LIBS})
+add_dependencies(offline_eye_in_hand calibration_build_info)
 
 # ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）

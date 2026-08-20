@@ -32,6 +32,7 @@
 #include "utils/calib_transform.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 #include "calibration_utils.hpp"
+#include "calibration_session.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
 
 using namespace calib_transform;
@@ -1135,16 +1136,56 @@ bool autoEyeInHandCharucoCalibration(
     CalibrationResult& result,
     const std::string& save_dir,
     const std::string& output_yaml,
-    AI_det_callback callback) {
+    AI_det_callback callback,
+    const std::string& intrinsic_source_file) {
 
-    g_save_dir = save_dir;
+    result = CalibrationResult{};
+    CalibrationSessionOptions session_options;
+    session_options.base_directory = save_dir;
+    session_options.mode = "online_auto_eye_in_hand";
+    session_options.source_data_directory = "live_capture";
+    session_options.board = board_config;
+    session_options.robot_endpoint = pchRobotIP ? pchRobotIP : "";
+    if (camera) {
+        const CONFIG& camera_config = camera->getConfig();
+        const CameraDeviceAuditInfo device_info = camera->getDeviceAuditInfo();
+        session_options.camera_serial = device_info.serial;
+        session_options.camera_model = device_info.model;
+        session_options.camera_firmware = device_info.firmware;
+        session_options.camera_endpoint = camera_config.cam_ip + ":" +
+            std::to_string(camera_config.cam_port);
+        session_options.image_width = camera_config.cam_width;
+        session_options.image_height = camera_config.cam_height;
+    }
+    const bool has_provided_intrinsics =
+        !camera_matrix.empty() && !dist_coeffs.empty();
+    session_options.intrinsic_source = has_provided_intrinsics
+        ? "provided_runtime" : "calibrated_from_collection";
+    session_options.intrinsic_source_file = intrinsic_source_file;
+    if (has_provided_intrinsics) {
+        session_options.camera_matrix = camera_matrix.getMat().clone();
+        session_options.dist_coeffs = dist_coeffs.getMat().clone();
+    }
+    std::string session_error;
+    std::unique_ptr<CalibrationSession> session =
+        CalibrationSession::create(session_options, session_error);
+    if (!session) {
+        result.message = "无法创建标定审计会话: " + session_error;
+        return false;
+    }
+    result.session_dir = session->directory();
+    auto failSession = [&](const std::string& stage,
+                           const std::string& reason) -> bool {
+        session->finalizeFailure(stage, reason, result.message);
+        return false;
+    };
+
+    g_save_dir = session->previewDirectory();
     g_callback = callback;
 
     std::cout << "\n========== 自动手眼标定开始 ==========" << std::endl;
 
     CharucoDetector detector(board_config);
-    const bool has_provided_intrinsics =
-        !camera_matrix.empty() && !dist_coeffs.empty();
     if (has_provided_intrinsics) {
         detector.setCameraParams(camera_matrix.getMat(), dist_coeffs.getMat());
         APP_LOG_EVENT_INFO("calibration",
@@ -1159,6 +1200,7 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- Phase 1b: 自动寻找最佳位姿 ----
+    session->setStage("prepare");
     if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
         result.message = "机器人水平姿态调整失败";
         APP_LOG_EVENT_ERROR("calibration",
@@ -1166,12 +1208,12 @@ bool autoEyeInHandCharucoCalibration(
                             "fail",
                             {{"reason", "initial_rotation_failed"},
                              {"stage", "prepare"}});
-        return false;
+        return failSession("prepare", "initial_rotation_failed");
     }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
     std::string best_pose_failure;
     if (!autoFindBestPose(robot_handle, camera, detector,
-                            save_dir, callback, &best_pose_failure)) {
+                            session->previewDirectory(), callback, &best_pose_failure)) {
         if (robotMotionCancellationRequested()) {
             result.message = "标定已取消";
         } else if (!best_pose_failure.empty()) {
@@ -1180,7 +1222,8 @@ bool autoEyeInHandCharucoCalibration(
             result.message = "自动寻找最佳位姿失败，请查看诊断日志确认运动、相机或检测原因";
         }
         std::cerr << "[autoCalib] 自动寻找最佳位姿失败" << std::endl;
-        return false;
+        return failSession("pose_search", robotMotionCancellationRequested()
+            ? "cancelled" : "best_pose_search_failed");
     }
 
     // ---- Phase 2: 计算动态 Z 值 ----
@@ -1195,7 +1238,7 @@ bool autoEyeInHandCharucoCalibration(
             // 当作绝对坐标继续传给机器人 SDK。
             result.message = "Z 值计算失败，已停止标定以避免不安全运动";
             std::cerr << "[autoCalib] " << result.message << std::endl;
-            return false;
+            return failSession("pose_generation", "z_value_estimation_failed");
         }
     }
 
@@ -1204,25 +1247,28 @@ bool autoEyeInHandCharucoCalibration(
     if (!generateCandidates(robot_handle, camera, z_values, candidates)) {
         result.message = "无 IK 可达位姿";
         std::cerr << "[autoCalib] " << result.message << std::endl;
-        return false;
+        return failSession("pose_generation", "no_reachable_pose");
     }
 
     // ---- Phase 4: 逐点运动 + 采集 ----
+    session->setStage("collection");
     if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
-                            candidates, save_dir, callback)) {
+                            candidates, session->framesDirectory(), callback,
+                            session.get(), session->robotPosesDirectory())) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;
-        return false;
+        return failSession("collection", robotMotionCancellationRequested()
+            ? "cancelled" : "collection_failed");
     }
 
     // ---- Phase 5: 标定（直接从磁盘读取） ----
     cv::Mat K, D;
     if (!has_provided_intrinsics) {
         std::cout << "[autoCalib] 相机内参未知，从磁盘标定..." << std::endl;
-        if (!calibrateCameraFromDisk(save_dir, detector, K, D)) {
+        if (!calibrateCameraFromDisk(session->framesDirectory(), detector, K, D)) {
             result.message = "相机内参标定失败";
             std::cerr << "[autoCalib] " << result.message << std::endl;
-            return false;
+            return failSession("intrinsic_calibration", "intrinsic_calibration_failed");
         }
         APP_LOG_EVENT_INFO("calibration",
                            "camera_intrinsics_source",
@@ -1238,8 +1284,11 @@ bool autoEyeInHandCharucoCalibration(
         dist_coeffs.getMat().copyTo(D);
         std::cout << "[autoCalib] 使用已有相机内参" << std::endl;
     }
+    session->setIntrinsics(K, D, has_provided_intrinsics
+        ? "provided_runtime" : "calibrated_from_collection");
 
-    if (!calibrateHandEyeFromDisk(save_dir, K, D, board_config, result, output_yaml))
+    if (!calibrateHandEyeFromDisk(session->framesDirectory(), K, D, board_config,
+                                  result, output_yaml, session.get()))
         return false;
 
     K.copyTo(camera_matrix);

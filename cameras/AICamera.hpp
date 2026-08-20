@@ -7,6 +7,12 @@
 #include <vector>
 #include "my_base.h"
 
+struct CameraDeviceAuditInfo {
+    std::string serial;
+    std::string model;
+    std::string firmware;
+};
+
 /**
  * @brief 相机抽象基类
  * 定义所有AI相机的通用接口
@@ -58,6 +64,11 @@ public:
      * @brief 获取相机配置
      */
     const CONFIG& getConfig() const { return m_config; }
+
+    // 设备实际身份。派生类在 SDK 能提供时覆盖；默认仅返回配置中的序列号。
+    virtual CameraDeviceAuditInfo getDeviceAuditInfo() const {
+        return {m_config.cam_sn, "", ""};
+    }
 
     // ========== 曝光控制接口 ==========
     

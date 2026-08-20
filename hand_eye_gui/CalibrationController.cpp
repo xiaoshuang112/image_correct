@@ -1199,7 +1199,8 @@ void CalibrationController::calibrationThreadFunc(
                 result,
                 m_calibrationPath,
                 m_paramPath + "hand_eye_result.yaml",
-                calibrationCallback);
+                calibrationCallback,
+                cam_file);
 
             APP_LOG_EVENT_INFO("calibration",
                                "calibration_pipeline",
@@ -1208,6 +1209,7 @@ void CalibrationController::calibrationThreadFunc(
                                 {"cancelled", m_cancelRequested.load() ? "true" : "false"},
                                 {"valid_frames", QString::number(result.valid_frames)},
                                 {"error_mm", QString::number(result.reproj_error * 1000.0, 'f', 6)},
+                                {"session_dir", QString::fromStdString(result.session_dir)},
                                 {"message", QString::fromStdString(result.message)}});
 
             if (m_cancelRequested) {
@@ -1240,10 +1242,12 @@ void CalibrationController::calibrationThreadFunc(
                 QString resText = QString(
                     "T_flange_camera:\n%1\n"
                     "平移一致性 RMS: %2 mm\n"
-                    "有效帧数: %3")
+                    "有效帧数: %3\n"
+                    "审计会话: %4")
                     .arg(QString::fromStdString(ss_in.str()))
                     .arg(result.reproj_error * 1000.0, 0, 'f', 4)
-                    .arg(result.valid_frames);
+                    .arg(result.valid_frames)
+                    .arg(QString::fromStdString(result.session_dir));
 
                 setResult(resText);
                 setStatus("眼在手内标定成功!");

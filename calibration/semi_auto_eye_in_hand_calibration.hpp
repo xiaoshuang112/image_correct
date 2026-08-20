@@ -14,6 +14,8 @@
 
 #include "det.h"
 
+class CalibrationSession;
+
 /**
  * @brief 半自动眼在手内 ChArUco 标定（在线）
  *
@@ -87,6 +89,8 @@ bool calibrateHandEyeFromDisk(
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
-    const std::string& output_yaml = "");
+    const std::string& output_yaml = "",
+    CalibrationSession* session = nullptr,
+    const std::string& intrinsic_source_file = "");
 
 #endif // SEMI_AUTO_EYE_IN_HAND_CALIBRATION_HPP

@@ -25,6 +25,23 @@ OrbbecCameraV2::~OrbbecCameraV2() {
     OrbbecCameraV2::close();
 }
 
+CameraDeviceAuditInfo OrbbecCameraV2::getDeviceAuditInfo() const {
+    CameraDeviceAuditInfo audit{m_config.cam_sn, "Orbbec", ""};
+    try {
+        if (m_device) {
+            auto info = m_device->getDeviceInfo();
+            if (info) {
+                audit.serial = info->serialNumber();
+                audit.model = info->name();
+                audit.firmware = info->firmwareVersion();
+            }
+        }
+    } catch (...) {
+        // 审计信息读取失败不应中断已打开相机的标定流程。
+    }
+    return audit;
+}
+
 bool OrbbecCameraV2::open() {
     if (m_isOpened) {
         APP_LOG_EVENT_INFO("orbbec",

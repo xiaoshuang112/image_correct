@@ -648,7 +648,9 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
         cameraToTcpEnd,
         result,
         g_calibrationPath,
-        g_paramPath + "hand_eye_result.yaml"
+        g_paramPath + "hand_eye_result.yaml",
+        nullptr,
+        cam_file
     );
 
     if (ok) {

@@ -26,6 +26,7 @@ struct CalibrationResult {
     // 字段名为兼容旧接口保留，不是像素重投影误差。
     double reproj_error = 0.0;
     std::string message;       // 状态/错误信息
+    std::string session_dir;   // 本次标定审计 Session 目录
 };
 
 /**
@@ -60,7 +61,8 @@ bool autoEyeInHandCharucoCalibration(
     CalibrationResult& result,
     const std::string& save_dir = "",
     const std::string& output_yaml = "",
-    AI_det_callback callback = nullptr
+    AI_det_callback callback = nullptr,
+    const std::string& intrinsic_source_file = ""
 );
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP

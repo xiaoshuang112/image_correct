@@ -12,6 +12,8 @@
 #include "det.h"
 #include "utils/calib_transform.hpp"
 
+class CalibrationSession;
+
 // 采集候选位姿
 struct PoseCandidate {
     double axis_angle[6];   // TCP 轴角位姿 (mm, deg)
@@ -32,7 +34,9 @@ bool executeCollection(int robot_handle,
                        CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,
                        const std::string& save_dir,
-                       AI_det_callback callback);
+                       AI_det_callback callback,
+                       CalibrationSession* session = nullptr,
+                       const std::string& robot_pose_dir = "");
 
 // ============================================================
 // 图像/视觉辅助函数

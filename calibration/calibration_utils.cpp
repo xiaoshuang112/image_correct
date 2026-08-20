@@ -1,4 +1,5 @@
 #include "calibration_utils.hpp"
+#include "calibration_session.hpp"
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -198,7 +199,9 @@ bool executeCollection(int robot_handle,
                        CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,
                        const std::string& save_dir,
-                       AI_det_callback callback) {
+                       AI_det_callback callback,
+                       CalibrationSession* session,
+                       const std::string& robot_pose_dir) {
     int total = (int)candidates.size();
     int captured = 0;
 
@@ -210,6 +213,8 @@ bool executeCollection(int robot_handle,
                         {"save_dir", QString::fromStdString(save_dir)}});
 
     if (save_dir.empty()) {
+        if (session)
+            session->appendEvent("collection", "fail", "save_directory_empty");
         std::cerr << "[autoCalib] 保存目录为空" << std::endl;
         return false;
     }
@@ -220,9 +225,16 @@ bool executeCollection(int robot_handle,
         if (fs::exists(save_dir))
             fs::remove_all(save_dir);
         fs::create_directories(save_dir);
+        if (!robot_pose_dir.empty()) {
+            if (fs::exists(robot_pose_dir))
+                fs::remove_all(robot_pose_dir);
+            fs::create_directories(robot_pose_dir);
+        }
     }
-    pos_file = save_dir + "/rob_pos.csv";
-    joint_file = save_dir + "/rob_joint.csv";
+    const std::string pose_output_dir = robot_pose_dir.empty()
+        ? save_dir : robot_pose_dir;
+    pos_file = pose_output_dir + "/rob_pos.csv";
+    joint_file = pose_output_dir + "/rob_joint.csv";
 
     for (int i = 0; i < total; i++) {
         std::cout << "\r[autoCalib] 采集进度: " << (i + 1) << "/" << total
@@ -243,6 +255,9 @@ bool executeCollection(int robot_handle,
         if(sucess != ret_move){
             if (ret_move == robot_motion_cancelled ||
                 robotMotionCancellationRequested()) {
+                if (session)
+                    session->appendEvent("collection_frame", "cancelled",
+                        "candidate=" + std::to_string(i));
                 APP_LOG_EVENT_WARNING("calibration.collection",
                                       "collection",
                                       "cancelled",
@@ -259,6 +274,10 @@ bool executeCollection(int robot_handle,
                                    {"index", QString::number(i)},
                                    {"total", QString::number(total)},
                                    {"error", QString::number(ret_move)}});
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=move_failed error=" +
+                    std::to_string(ret_move));
             if(operate_timeout == ret_move){
                 APP_LOG_EVENT_ERROR("calibration.collection",
                                     "collection",
@@ -269,6 +288,8 @@ bool executeCollection(int robot_handle,
                                      {"captured", QString::number(captured)}});
                 std::cerr << "\n[autoCalib] 机器人运动超时，终止本轮标定，请重新连接机器人"
                           << std::endl;
+                if (session)
+                    session->appendEvent("collection", "fail", "motion_timeout");
                 return false;
             }
             continue;
@@ -283,9 +304,14 @@ bool executeCollection(int robot_handle,
         int capture_attempts = 0;
         int empty_attempts = 0;
         int detection_failures = 0;
+        std::uint64_t image_timestamp_ns = 0;
         for (int attempt = 1; attempt <= kMaximumCaptureAttempts; ++attempt) {
             ++capture_attempts;
             cv::Mat candidate_frame = camera->captureOneFrame(1500);
+            const auto captured_at = std::chrono::system_clock::now();
+            const std::uint64_t candidate_timestamp_ns =
+                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    captured_at.time_since_epoch()).count());
             if (candidate_frame.empty()) {
                 ++empty_attempts;
                 continue;
@@ -302,12 +328,16 @@ bool executeCollection(int robot_handle,
                 frame = candidate_frame;
                 corners = std::move(candidate_corners);
                 ids = std::move(candidate_ids);
+                image_timestamp_ns = candidate_timestamp_ns;
             }
             if (detected && ids.size() >= 12)
                 break;
         }
 
         if (frame.empty()) {
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=capture_empty");
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
                                   "skip",
@@ -321,6 +351,9 @@ bool executeCollection(int robot_handle,
             continue;
         }
         if (ids.empty()) {
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=detection_failed");
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
                                   "skip",
@@ -334,6 +367,10 @@ bool executeCollection(int robot_handle,
             continue;
         }
         if(ids.size() < 12) {
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=insufficient_corners corners=" +
+                    std::to_string(ids.size()));
             APP_LOG_EVENT_WARNING("calibration.collection",
                                   "collection",
                                   "skip",
@@ -369,6 +406,9 @@ bool executeCollection(int robot_handle,
         double flange_pose[ROB_AXIS_NUM] = {};
         CRresult poseRet = cr_get_jointActualPos((RobotHandle)robot_handle, actual_joint);
         if (poseRet != sucess) {
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=joint_read_failed");
             APP_LOG_EVENT_ERROR("calibration.collection",
                                 "collection",
                                 "fail",
@@ -380,6 +420,9 @@ bool executeCollection(int robot_handle,
         }
         poseRet = cr_kineForward(robot_handle, actual_joint, flange_pose);
         if (poseRet != sucess) {
+            if (session)
+                session->appendEvent("collection_frame", "skip",
+                    "candidate=" + std::to_string(i) + " reason=forward_kinematics_failed");
             APP_LOG_EVENT_ERROR("calibration.collection",
                                 "collection",
                                 "fail",
@@ -389,6 +432,9 @@ bool executeCollection(int robot_handle,
                                  {"error", QString::number(poseRet)}});
             continue;
         }
+        const std::uint64_t robot_timestamp_ns =
+            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::system_clock::now().time_since_epoch()).count());
 
         // 保存到磁盘
         {
@@ -396,6 +442,9 @@ bool executeCollection(int robot_handle,
                 (captured < 10 ? "00" : captured < 100 ? "0" : "") +
                 std::to_string(captured) + ".jpg";
             if (!cv::imwrite(img_name, frame)) {
+                if (session)
+                    session->appendEvent("collection_frame", "skip",
+                        "candidate=" + std::to_string(i) + " reason=image_write_failed");
                 APP_LOG_EVENT_ERROR("calibration.collection",
                                     "collection",
                                     "fail",
@@ -417,6 +466,9 @@ bool executeCollection(int robot_handle,
                                            {"reason", "cancelled"},
                                            {"index", QString::number(i)},
                                            {"captured", QString::number(captured)}});
+                    if (session)
+                        session->appendEvent("collection_frame", "cancelled",
+                            "candidate=" + std::to_string(i));
                     return false;
                 }
             }
@@ -427,6 +479,20 @@ bool executeCollection(int robot_handle,
             f << std::fixed << std::setprecision(3);
             for (int j = 0; j < 6; j++)
                 f << flange_pose[j] << (j < 5 ? "," : "\n");
+            f.flush();
+            if (!f) {
+                APP_LOG_EVENT_ERROR("calibration.collection",
+                                    "collection",
+                                    "fail",
+                                    {{"phase", "pose_save"},
+                                     {"reason", "robot_pose_csv_write_failed"},
+                                     {"index", QString::number(i)},
+                                     {"path", QString::fromStdString(pos_file)}});
+                if (session)
+                    session->appendEvent("collection", "fail",
+                        "robot_pose_csv_write_failed");
+                return false;
+            }
         }
         // rob_joint.csv: 关节角 (deg)
         {
@@ -434,9 +500,47 @@ bool executeCollection(int robot_handle,
             f << std::fixed << std::setprecision(3);
             for (int j = 0; j < 6; j++)
                 f << actual_joint[j] << (j < 5 ? "," : "\n");
+            f.flush();
+            if (!f) {
+                APP_LOG_EVENT_ERROR("calibration.collection",
+                                    "collection",
+                                    "fail",
+                                    {{"phase", "pose_save"},
+                                     {"reason", "robot_joint_csv_write_failed"},
+                                     {"index", QString::number(i)},
+                                     {"path", QString::fromStdString(joint_file)}});
+                if (session)
+                    session->appendEvent("collection", "fail",
+                        "robot_joint_csv_write_failed");
+                return false;
+            }
+        }
+        if (session) {
+            std::string audit_error;
+            if (!session->writeRawRobotPose(captured, i, actual_joint, flange_pose,
+                                            image_timestamp_ns, robot_timestamp_ns,
+                                            audit_error)) {
+                APP_LOG_EVENT_ERROR("calibration.collection",
+                                    "collection_audit",
+                                    "fail",
+                                    {{"reason", "raw_pose_write_failed"},
+                                     {"index", QString::number(i)},
+                                     {"message", QString::fromStdString(audit_error)}});
+                std::cerr << "\n[autoCalib] 审计位姿写入失败: " << audit_error << std::endl;
+                return false;
+            }
         }
 
         captured++;
+        if (session)
+            session->appendEvent("collection_frame", "captured",
+                "frame=" + std::to_string(captured - 1) +
+                " candidate=" + std::to_string(i) +
+                " corners=" + std::to_string(ids.size()) +
+                " image_sha256=" + CalibrationSession::sha256File(
+                    save_dir + "/" +
+                    (captured - 1 < 10 ? "00" : captured - 1 < 100 ? "0" : "") +
+                    std::to_string(captured - 1) + ".jpg"));
         APP_LOG_EVENT_INFO("calibration.collection",
                            "collection",
                            "captured",
@@ -962,15 +1066,16 @@ bool saveCalibrationResult(const std::string& yaml_path,
                         {"transform_key", QString::fromStdString(transform_key)},
                         {"valid_frames", QString::number(valid_frames)},
                         {"error_mm", QString::number(reproj_error_mm, 'f', 6)}});
+    const std::string temporary_path = yaml_path + ".tmp.yaml";
     try {
-        cv::FileStorage out(yaml_path, cv::FileStorage::WRITE);
+        cv::FileStorage out(temporary_path, cv::FileStorage::WRITE);
         if (!out.isOpened()) {
             APP_LOG_EVENT_ERROR("calibration.output",
                                 "yaml_output",
                                 "fail",
-                                {{"path", QString::fromStdString(yaml_path)},
+                                {{"path", QString::fromStdString(temporary_path)},
                                  {"reason", "open_failed"}});
-            std::cerr << "[calibUtil] 无法写入 " << yaml_path << std::endl;
+            std::cerr << "[calibUtil] 无法写入 " << temporary_path << std::endl;
             return false;
         }
         out << transform_key.c_str() << transform;
@@ -980,6 +1085,8 @@ bool saveCalibrationResult(const std::string& yaml_path,
         out << "valid_frames" << valid_frames;
         out.release();
     } catch (const cv::Exception& e) {
+        std::error_code ignored;
+        std::filesystem::remove(temporary_path, ignored);
         APP_LOG_EVENT_ERROR("calibration.output",
                             "yaml_output",
                             "fail",
@@ -991,7 +1098,7 @@ bool saveCalibrationResult(const std::string& yaml_path,
     }
 
     std::error_code fileError;
-    const auto bytes = std::filesystem::file_size(yaml_path, fileError);
+    const auto bytes = std::filesystem::file_size(temporary_path, fileError);
     if (fileError || bytes == 0) {
         APP_LOG_EVENT_ERROR("calibration.output",
                             "yaml_output",
@@ -1000,6 +1107,18 @@ bool saveCalibrationResult(const std::string& yaml_path,
                              {"reason", "file_verification"},
                              {"error", QString::fromStdString(fileError.message())},
                              {"bytes", QString::number(fileError ? 0 : static_cast<qulonglong>(bytes))}});
+        return false;
+    }
+    std::filesystem::rename(temporary_path, yaml_path, fileError);
+    if (fileError) {
+        APP_LOG_EVENT_ERROR("calibration.output",
+                            "yaml_output",
+                            "fail",
+                            {{"path", QString::fromStdString(yaml_path)},
+                             {"reason", "atomic_publish_failed"},
+                             {"error", QString::fromStdString(fileError.message())}});
+        std::error_code ignored;
+        std::filesystem::remove(temporary_path, ignored);
         return false;
     }
     std::cout << "[calibUtil] 结果已保存到: " << yaml_path << std::endl;
