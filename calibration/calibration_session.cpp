@@ -841,6 +841,13 @@ void CalibrationSession::setFrames(const std::vector<CalibrationFrameAudit>& fra
     writeReport("running", "", "", empty, 0.0, 0, "", ignored);
 }
 
+void CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit) {
+    hand_eye_phase2_audit_ = audit;
+    appendEvent("solver_diagnostics", "updated",
+                "solvers=" + std::to_string(audit.solvers.size()) +
+                " pairs=" + std::to_string(audit.pairs.size()));
+}
+
 void CalibrationSession::appendEvent(const std::string& event,
                                      const std::string& result,
                                      const std::string& detail) {
@@ -1119,6 +1126,82 @@ bool CalibrationSession::writeReport(const std::string& status,
         out << "pnp_pass" << pnpFrames;
         out << "mad_inliers" << madInliers;
         out << "final_accepted" << acceptedFrames;
+        out << "}";
+        out << "hand_eye_solver_diagnostics" << "{";
+        out << "raw_results_are_unoptimized" << 1;
+        out << "relative_transform_definition" << "inverse(X_left)*X_right";
+        out << "medoid_metric"
+            << "sum(delta_translation/translation_limit+delta_rotation/rotation_limit)";
+        out << "refinement_policy" << "once_per_phase_selected_medoid_only";
+        out << "solvers" << "[";
+        for (const HandEyeSolverAuditRecord& solver : hand_eye_phase2_audit_.solvers) {
+            out << "{";
+            out << "phase" << solver.phase;
+            out << "method" << solver.method;
+            out << "success" << static_cast<int>(solver.success);
+            out << "failure_reason" << solver.failure_reason;
+            out << "raw_transform" << solver.raw_transform;
+            out << "raw_consistency" << "{";
+            out << "translation_rms_mm" << solver.raw_translation_rms_mm;
+            out << "translation_p95_mm" << solver.raw_translation_p95_mm;
+            out << "rotation_rms_deg" << solver.raw_rotation_rms_deg;
+            out << "rotation_p95_deg" << solver.raw_rotation_p95_deg;
+            out << "}";
+            out << "selected_medoid" << static_cast<int>(solver.selected_medoid);
+            out << "medoid_normalized_distance_sum"
+                << solver.medoid_normalized_distance_sum;
+            out << "}";
+        }
+        out << "]";
+        out << "pairwise_se3" << "[";
+        for (const HandEyeSolverPairAuditRecord& pair : hand_eye_phase2_audit_.pairs) {
+            out << "{";
+            out << "phase" << pair.phase;
+            out << "left_method" << pair.left_method;
+            out << "right_method" << pair.right_method;
+            out << "delta_translation_mm" << pair.delta_translation_mm;
+            out << "delta_rotation_deg" << pair.delta_rotation_deg;
+            out << "}";
+        }
+        out << "]";
+        out << "consensus" << "[";
+        for (const HandEyeConsensusAuditRecord& consensus :
+             hand_eye_phase2_audit_.consensus) {
+            out << "{";
+            out << "phase" << consensus.phase;
+            out << "successful_solvers" << consensus.successful_solvers;
+            out << "medoid_method" << consensus.medoid_method;
+            out << "max_pair_translation_mm" << consensus.max_pair_translation_mm;
+            out << "max_pair_rotation_deg" << consensus.max_pair_rotation_deg;
+            out << "translation_limit_mm" << consensus.translation_limit_mm;
+            out << "rotation_limit_deg" << consensus.rotation_limit_deg;
+            out << "passed" << static_cast<int>(consensus.passed);
+            out << "failure_reason" << consensus.failure_reason;
+            out << "}";
+        }
+        out << "]";
+        out << "optimizations" << "[";
+        for (const HandEyeOptimizationAuditRecord& optimization :
+             hand_eye_phase2_audit_.optimizations) {
+            out << "{";
+            out << "performed" << static_cast<int>(optimization.performed);
+            out << "phase" << optimization.phase;
+            out << "method" << optimization.method;
+            out << "initial_transform" << optimization.initial_transform;
+            out << "optimized_transform" << optimization.optimized_transform;
+            out << "delta_translation_mm" << optimization.delta_translation_mm;
+            out << "delta_rotation_deg" << optimization.delta_rotation_deg;
+            out << "before_translation_rms_mm"
+                << optimization.before_translation_rms_mm;
+            out << "after_translation_rms_mm"
+                << optimization.after_translation_rms_mm;
+            out << "before_rotation_rms_deg"
+                << optimization.before_rotation_rms_deg;
+            out << "after_rotation_rms_deg"
+                << optimization.after_rotation_rms_deg;
+            out << "}";
+        }
+        out << "]";
         out << "}";
         out << "frames" << "[";
         for (const CalibrationFrameAudit& frame : frames_) {

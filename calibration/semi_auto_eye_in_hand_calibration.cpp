@@ -464,6 +464,9 @@ constexpr double kMaxTranslationRmsMeters = 0.005;        // 5 mm
 constexpr double kMaxTranslationP95Meters = 0.008;        // 8 mm
 constexpr double kMaxRotationRmsDegrees = 1.0;
 constexpr double kMaxRotationP95Degrees = 2.0;
+constexpr int kMinimumConsensusSolvers = 3;
+constexpr double kMaxSolverPairTranslationMeters = 0.010;  // 10 mm
+constexpr double kMaxSolverPairRotationDegrees = 1.0;
 
 static double percentile(std::vector<double> values, double quantile) {
     if (values.empty())
@@ -581,12 +584,14 @@ struct HandEyeSolveAudit {
     double mad_threshold = std::numeric_limits<double>::quiet_NaN();
     std::string selected_method;
     bool quality_passed = false;
+    HandEyePhase2Audit phase2;
 };
 
 static std::vector<HandEyeMethodResult> solveHandEyeMethods(
     const std::vector<cv::Mat>& robot_poses,
     const std::vector<cv::Mat>& camera_poses,
-    const char* phase) {
+    const char* phase,
+    HandEyePhase2Audit* audit) {
     std::vector<cv::Mat> robot_rotations, robot_translations;
     std::vector<cv::Mat> camera_rotations, camera_translations;
     robot_rotations.reserve(robot_poses.size());
@@ -610,6 +615,9 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
 
     std::vector<HandEyeMethodResult> results;
     for (const auto& method : methods) {
+        HandEyeSolverAuditRecord auditRecord;
+        auditRecord.phase = phase;
+        auditRecord.method = method.first;
         cv::Mat rotation_camera_to_gripper, translation_camera_to_gripper;
         try {
             cv::calibrateHandEye(robot_rotations, robot_translations,
@@ -626,6 +634,9 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
                                    {"frames", QString::number(robot_poses.size())},
                                    {"reason", "opencv_exception"},
                                    {"message", QString::fromUtf8(exception.what())}});
+            auditRecord.failure_reason = "opencv_exception";
+            if (audit)
+                audit->solvers.push_back(std::move(auditRecord));
             continue;
         }
         if (rotation_camera_to_gripper.empty() || translation_camera_to_gripper.empty() ||
@@ -638,13 +649,15 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
                                    {"method", method.first},
                                    {"frames", QString::number(robot_poses.size())},
                                    {"reason", "non_finite_output"}});
+            auditRecord.failure_reason = "non_finite_output";
+            if (audit)
+                audit->solvers.push_back(std::move(auditRecord));
             continue;
         }
 
         cv::Mat transform = cv::Mat::eye(4, 4, CV_64F);
         rotation_camera_to_gripper.copyTo(transform(cv::Rect(0, 0, 3, 3)));
         translation_camera_to_gripper.copyTo(transform(cv::Rect(3, 0, 1, 3)));
-        transform = refineHandEyePoseConsistency(transform, robot_poses, camera_poses);
         HandEyeConsistencyStats stats =
             evaluateHandEyeConsistency(transform, robot_poses, camera_poses);
         if (!std::isfinite(stats.translation_rms) ||
@@ -656,20 +669,33 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
                                    {"method", method.first},
                                    {"frames", QString::number(robot_poses.size())},
                                    {"reason", "invalid_quality_metrics"}});
+            auditRecord.failure_reason = "invalid_quality_metrics";
+            if (audit)
+                audit->solvers.push_back(std::move(auditRecord));
             continue;
         }
+
+        auditRecord.success = true;
+        auditRecord.raw_transform = transform.clone();
+        auditRecord.raw_translation_rms_mm = stats.translation_rms * 1000.0;
+        auditRecord.raw_translation_p95_mm = stats.translation_p95 * 1000.0;
+        auditRecord.raw_rotation_rms_deg = stats.rotation_rms_degrees;
+        auditRecord.raw_rotation_p95_deg = stats.rotation_p95_degrees;
+        if (audit)
+            audit->solvers.push_back(auditRecord);
 
         APP_LOG_EVENT_INFO("calibration.hand_eye",
                            "hand_eye_method",
                            "success",
                            {{"phase", phase},
                             {"method", method.first},
+                            {"result_stage", "raw_unoptimized"},
                             {"frames", QString::number(robot_poses.size())},
                             {"translation_rms_mm", QString::number(stats.translation_rms * 1000.0, 'f', 6)},
                             {"translation_p95_mm", QString::number(stats.translation_p95 * 1000.0, 'f', 6)},
                             {"rotation_rms_deg", QString::number(stats.rotation_rms_degrees, 'f', 6)},
                             {"rotation_p95_deg", QString::number(stats.rotation_p95_degrees, 'f', 6)}});
-        std::cout << "[autoCalib] " << method.first
+        std::cout << "[autoCalib] " << method.first << " [raw]"
                   << " -> 平移一致性 RMS: " << stats.translation_rms * 1000.0
                   << " mm, P95: " << stats.translation_p95 * 1000.0
                   << " mm, 旋转 RMS: " << stats.rotation_rms_degrees << " deg" << std::endl;
@@ -678,13 +704,207 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
     return results;
 }
 
-static size_t bestMethodIndex(const std::vector<HandEyeMethodResult>& results) {
-    return static_cast<size_t>(std::distance(
-        results.begin(), std::min_element(
-            results.begin(), results.end(),
-            [](const HandEyeMethodResult& lhs, const HandEyeMethodResult& rhs) {
-                return lhs.stats.translation_rms < rhs.stats.translation_rms;
-            })));
+struct TransformDistance {
+    double translation_meters = std::numeric_limits<double>::quiet_NaN();
+    double rotation_degrees = std::numeric_limits<double>::quiet_NaN();
+};
+
+static TransformDistance measureTransformDistance(const cv::Mat& left,
+                                                  const cv::Mat& right) {
+    TransformDistance distance;
+    if (left.rows != 4 || left.cols != 4 || right.rows != 4 || right.cols != 4)
+        return distance;
+    const cv::Mat leftRotation = left(cv::Rect(0, 0, 3, 3));
+    const cv::Mat rightRotation = right(cv::Rect(0, 0, 3, 3));
+    const cv::Mat relativeRotation = leftRotation.t() * rightRotation;
+    const cv::Mat translationDifference =
+        right(cv::Rect(3, 0, 1, 3)) - left(cv::Rect(3, 0, 1, 3));
+    distance.translation_meters = cv::norm(leftRotation.t() * translationDifference);
+    const double cosine = std::clamp(
+        (cv::trace(relativeRotation)[0] - 1.0) * 0.5, -1.0, 1.0);
+    distance.rotation_degrees = std::acos(cosine) * 180.0 / CV_PI;
+    return distance;
+}
+
+struct SolverConsensusResult {
+    size_t medoid_index = 0;
+    double max_pair_translation_meters = 0.0;
+    double max_pair_rotation_degrees = 0.0;
+    bool passed = false;
+    std::string failure_reason;
+};
+
+static SolverConsensusResult evaluateSolverConsensus(
+    const std::vector<HandEyeMethodResult>& results,
+    const char* phase,
+    HandEyePhase2Audit* audit) {
+    SolverConsensusResult consensus;
+    std::vector<double> normalizedDistanceSums(results.size(), 0.0);
+    bool invalidDistance = false;
+    for (size_t left = 0; left < results.size(); ++left) {
+        for (size_t right = left + 1; right < results.size(); ++right) {
+            const TransformDistance distance = measureTransformDistance(
+                results[left].transform, results[right].transform);
+            if (!std::isfinite(distance.translation_meters) ||
+                !std::isfinite(distance.rotation_degrees)) {
+                invalidDistance = true;
+                continue;
+            }
+            consensus.max_pair_translation_meters = std::max(
+                consensus.max_pair_translation_meters, distance.translation_meters);
+            consensus.max_pair_rotation_degrees = std::max(
+                consensus.max_pair_rotation_degrees, distance.rotation_degrees);
+            const double normalized =
+                distance.translation_meters / kMaxSolverPairTranslationMeters +
+                distance.rotation_degrees / kMaxSolverPairRotationDegrees;
+            normalizedDistanceSums[left] += normalized;
+            normalizedDistanceSums[right] += normalized;
+
+            if (audit) {
+                HandEyeSolverPairAuditRecord pair;
+                pair.phase = phase;
+                pair.left_method = results[left].name;
+                pair.right_method = results[right].name;
+                pair.delta_translation_mm = distance.translation_meters * 1000.0;
+                pair.delta_rotation_deg = distance.rotation_degrees;
+                audit->pairs.push_back(std::move(pair));
+            }
+            APP_LOG_EVENT_INFO(
+                "calibration.hand_eye", "solver_consensus_pair", "measured",
+                {{"phase", phase},
+                 {"left_method", QString::fromStdString(results[left].name)},
+                 {"right_method", QString::fromStdString(results[right].name)},
+                 {"delta_translation_mm", QString::number(
+                      distance.translation_meters * 1000.0, 'f', 6)},
+                 {"delta_rotation_deg", QString::number(
+                      distance.rotation_degrees, 'f', 6)}});
+        }
+    }
+
+    if (!results.empty()) {
+        consensus.medoid_index = static_cast<size_t>(std::distance(
+            normalizedDistanceSums.begin(),
+            std::min_element(normalizedDistanceSums.begin(),
+                             normalizedDistanceSums.end())));
+    }
+    if (results.size() < static_cast<size_t>(kMinimumConsensusSolvers))
+        consensus.failure_reason = "insufficient_successful_solvers";
+    else if (invalidDistance)
+        consensus.failure_reason = "invalid_solver_distance";
+    else if (consensus.max_pair_translation_meters >
+             kMaxSolverPairTranslationMeters)
+        consensus.failure_reason = "solver_translation_disagreement";
+    else if (consensus.max_pair_rotation_degrees >
+             kMaxSolverPairRotationDegrees)
+        consensus.failure_reason = "solver_rotation_disagreement";
+    consensus.passed = consensus.failure_reason.empty();
+
+    if (audit) {
+        for (HandEyeSolverAuditRecord& record : audit->solvers) {
+            if (record.phase != phase || !record.success)
+                continue;
+            for (size_t index = 0; index < results.size(); ++index) {
+                if (record.method == results[index].name) {
+                    record.medoid_normalized_distance_sum = normalizedDistanceSums[index];
+                    record.selected_medoid = index == consensus.medoid_index;
+                    break;
+                }
+            }
+        }
+        HandEyeConsensusAuditRecord record;
+        record.phase = phase;
+        record.successful_solvers = static_cast<int>(results.size());
+        if (!results.empty())
+            record.medoid_method = results[consensus.medoid_index].name;
+        record.max_pair_translation_mm =
+            consensus.max_pair_translation_meters * 1000.0;
+        record.max_pair_rotation_deg = consensus.max_pair_rotation_degrees;
+        record.translation_limit_mm = kMaxSolverPairTranslationMeters * 1000.0;
+        record.rotation_limit_deg = kMaxSolverPairRotationDegrees;
+        record.passed = consensus.passed;
+        record.failure_reason = consensus.failure_reason;
+        audit->consensus.push_back(std::move(record));
+    }
+
+    const std::string medoid = results.empty()
+        ? "none" : results[consensus.medoid_index].name;
+    APP_LOG_EVENT(
+        Info, "calibration.hand_eye", "solver_consensus",
+        consensus.passed ? "success" : "fail",
+        {"phase", phase},
+        {"successful_solvers", QString::number(results.size())},
+        {"medoid_method", QString::fromStdString(medoid)},
+        {"max_pair_translation_mm", QString::number(
+             consensus.max_pair_translation_meters * 1000.0, 'f', 6)},
+        {"max_pair_rotation_deg", QString::number(
+             consensus.max_pair_rotation_degrees, 'f', 6)},
+        {"translation_limit_mm", QString::number(
+             kMaxSolverPairTranslationMeters * 1000.0, 'f', 3)},
+        {"rotation_limit_deg", QString::number(
+             kMaxSolverPairRotationDegrees, 'f', 3)},
+        {"failure_reason", QString::fromStdString(consensus.failure_reason)});
+    std::cout << "[autoCalib] Solver consensus [" << phase << "]: medoid="
+              << medoid << ", max Δt="
+              << consensus.max_pair_translation_meters * 1000.0
+              << " mm, max ΔR=" << consensus.max_pair_rotation_degrees
+              << " deg, gate=" << (consensus.passed ? "PASS" : "FAIL")
+              << std::endl;
+    return consensus;
+}
+
+struct OptimizedMedoidResult {
+    cv::Mat transform;
+    HandEyeConsistencyStats stats;
+};
+
+static OptimizedMedoidResult optimizeMedoidOnce(
+    const HandEyeMethodResult& medoid,
+    const std::vector<cv::Mat>& robot_poses,
+    const std::vector<cv::Mat>& camera_poses,
+    const char* phase,
+    HandEyePhase2Audit* audit) {
+    OptimizedMedoidResult optimized;
+    optimized.transform = refineHandEyePoseConsistency(
+        medoid.transform, robot_poses, camera_poses);
+    optimized.stats = evaluateHandEyeConsistency(
+        optimized.transform, robot_poses, camera_poses);
+    const TransformDistance delta = measureTransformDistance(
+        medoid.transform, optimized.transform);
+
+    HandEyeOptimizationAuditRecord record;
+    record.performed = true;
+    record.phase = phase;
+    record.method = medoid.name;
+    record.initial_transform = medoid.transform.clone();
+    record.optimized_transform = optimized.transform.clone();
+    record.delta_translation_mm = delta.translation_meters * 1000.0;
+    record.delta_rotation_deg = delta.rotation_degrees;
+    record.before_translation_rms_mm = medoid.stats.translation_rms * 1000.0;
+    record.after_translation_rms_mm = optimized.stats.translation_rms * 1000.0;
+    record.before_rotation_rms_deg = medoid.stats.rotation_rms_degrees;
+    record.after_rotation_rms_deg = optimized.stats.rotation_rms_degrees;
+    if (audit)
+        audit->optimizations.push_back(record);
+
+    APP_LOG_EVENT_INFO(
+        "calibration.hand_eye", "medoid_refinement", "complete",
+        {{"phase", phase},
+         {"method", QString::fromStdString(medoid.name)},
+         {"delta_translation_mm", QString::number(
+              delta.translation_meters * 1000.0, 'f', 6)},
+         {"delta_rotation_deg", QString::number(delta.rotation_degrees, 'f', 6)},
+         {"before_translation_rms_mm", QString::number(
+              medoid.stats.translation_rms * 1000.0, 'f', 6)},
+         {"after_translation_rms_mm", QString::number(
+              optimized.stats.translation_rms * 1000.0, 'f', 6)},
+         {"before_rotation_rms_deg", QString::number(
+              medoid.stats.rotation_rms_degrees, 'f', 6)},
+         {"after_rotation_rms_deg", QString::number(
+              optimized.stats.rotation_rms_degrees, 'f', 6)}});
+    std::cout << "[autoCalib] Medoid refinement [" << phase << "] "
+              << medoid.name << ": Δt=" << delta.translation_meters * 1000.0
+              << " mm, ΔR=" << delta.rotation_degrees << " deg" << std::endl;
+    return optimized;
 }
 
 static bool estimateHandEyeTrans(
@@ -725,7 +945,8 @@ static bool estimateHandEyeTrans(
     }
 
     std::vector<HandEyeMethodResult> method_results =
-        solveHandEyeMethods(robot_poses, camera_poses, "initial");
+        solveHandEyeMethods(robot_poses, camera_poses, "initial",
+                            audit ? &audit->phase2 : nullptr);
     if (method_results.empty()) {
         result.message = "所有手眼标定方法均失败";
         APP_LOG_EVENT_ERROR("calibration.hand_eye",
@@ -737,9 +958,22 @@ static bool estimateHandEyeTrans(
         return false;
     }
 
-    size_t best_index = bestMethodIndex(method_results);
+    SolverConsensusResult final_consensus = evaluateSolverConsensus(
+        method_results, "initial", audit ? &audit->phase2 : nullptr);
+    size_t medoid_index = final_consensus.medoid_index;
+    OptimizedMedoidResult final_optimized = optimizeMedoidOnce(
+        method_results[medoid_index], robot_poses, camera_poses, "initial",
+        audit ? &audit->phase2 : nullptr);
+    if (final_optimized.stats.translation_errors.size() != robot_poses.size() ||
+        !std::isfinite(final_optimized.stats.translation_rms)) {
+        result.message = "初始 medoid 精化结果无效";
+        APP_LOG_EVENT_ERROR("calibration.hand_eye", "medoid_refinement", "fail",
+                            {{"phase", "initial"},
+                             {"reason", "invalid_optimized_quality_metrics"}});
+        return false;
+    }
     const std::vector<double>& initial_errors =
-        method_results[best_index].stats.translation_errors;
+        final_optimized.stats.translation_errors;
     const double median_error = percentile(initial_errors, 0.5);
     std::vector<double> deviations;
     deviations.reserve(initial_errors.size());
@@ -804,7 +1038,8 @@ static bool estimateHandEyeTrans(
 
     if (filtered_count != initial_count) {
         method_results = solveHandEyeMethods(
-            filtered_robot_poses, filtered_camera_poses, "refit");
+            filtered_robot_poses, filtered_camera_poses, "refit",
+            audit ? &audit->phase2 : nullptr);
         if (method_results.empty()) {
             result.message = "离群过滤后所有手眼标定方法均失败";
             APP_LOG_EVENT_ERROR("calibration.hand_eye",
@@ -814,13 +1049,26 @@ static bool estimateHandEyeTrans(
                                  {"frames", QString::number(filtered_count)}});
             return false;
         }
-        best_index = bestMethodIndex(method_results);
+        final_consensus = evaluateSolverConsensus(
+            method_results, "refit", audit ? &audit->phase2 : nullptr);
+        medoid_index = final_consensus.medoid_index;
+        final_optimized = optimizeMedoidOnce(
+            method_results[medoid_index], filtered_robot_poses,
+            filtered_camera_poses, "refit",
+            audit ? &audit->phase2 : nullptr);
     }
 
-    const HandEyeMethodResult& best = method_results[best_index];
-    const HandEyeConsistencyStats& quality = best.stats;
+    const HandEyeMethodResult& medoid = method_results[medoid_index];
+    const cv::Mat& optimized_transform = final_optimized.transform;
+    const HandEyeConsistencyStats& quality = final_optimized.stats;
+
     std::string failure_reason;
-    if (quality.translation_rms > kMaxTranslationRmsMeters)
+    if (!std::isfinite(quality.translation_rms) ||
+        !std::isfinite(quality.rotation_rms_degrees))
+        failure_reason = "invalid_optimized_quality_metrics";
+    else if (!final_consensus.passed)
+        failure_reason = final_consensus.failure_reason;
+    else if (quality.translation_rms > kMaxTranslationRmsMeters)
         failure_reason = "translation_rms_exceeded";
     else if (quality.translation_p95 > kMaxTranslationP95Meters)
         failure_reason = "translation_p95_exceeded";
@@ -831,14 +1079,15 @@ static bool estimateHandEyeTrans(
 
     const bool quality_passed = failure_reason.empty();
     if (audit) {
-        audit->selected_method = best.name;
+        audit->selected_method = medoid.name;
         audit->quality_passed = quality_passed;
     }
     APP_LOG_EVENT(Info,
                   "calibration.hand_eye",
                   "hand_eye_quality",
                   quality_passed ? "success" : "fail",
-                  {"method", QString::fromStdString(best.name)},
+                  {"method", QString::fromStdString(medoid.name)},
+                  {"selection", "se3_medoid_then_single_refinement"},
                   {"input_frames", QString::number(initial_count)},
                   {"valid_frames", QString::number(filtered_count)},
                   {"translation_rms_mm", QString::number(quality.translation_rms * 1000.0, 'f', 6)},
@@ -853,6 +1102,11 @@ static bool estimateHandEyeTrans(
                   {"max_translation_p95_mm", QString::number(kMaxTranslationP95Meters * 1000.0, 'f', 3)},
                   {"max_rotation_rms_deg", QString::number(kMaxRotationRmsDegrees, 'f', 3)},
                   {"max_rotation_p95_deg", QString::number(kMaxRotationP95Degrees, 'f', 3)},
+                  {"consensus_passed", QString::number(final_consensus.passed)},
+                  {"consensus_max_translation_mm", QString::number(
+                       final_consensus.max_pair_translation_meters * 1000.0, 'f', 6)},
+                  {"consensus_max_rotation_deg", QString::number(
+                       final_consensus.max_pair_rotation_degrees, 'f', 6)},
                   {"failure_reason", QString::fromStdString(failure_reason)},
                   {"span_x_mm", QString::number(quality.translation_span_mm[0], 'f', 3)},
                   {"span_y_mm", QString::number(quality.translation_span_mm[1], 'f', 3)},
@@ -862,12 +1116,21 @@ static bool estimateHandEyeTrans(
                             "hand_eye_quality_gate",
                             "fail",
                             {{"reason", QString::fromStdString(failure_reason)},
-                             {"method", QString::fromStdString(best.name)},
+                             {"method", QString::fromStdString(medoid.name)},
                              {"valid_frames", QString::number(filtered_count)},
                              {"translation_rms_mm", QString::number(quality.translation_rms * 1000.0, 'f', 6)},
                              {"translation_p95_mm", QString::number(quality.translation_p95 * 1000.0, 'f', 6)},
                              {"rotation_rms_deg", QString::number(quality.rotation_rms_degrees, 'f', 6)},
-                             {"rotation_p95_deg", QString::number(quality.rotation_p95_degrees, 'f', 6)}});
+                             {"rotation_p95_deg", QString::number(quality.rotation_p95_degrees, 'f', 6)},
+                             {"consensus_max_translation_mm", QString::number(
+                                  final_consensus.max_pair_translation_meters * 1000.0,
+                                  'f', 6)},
+                             {"consensus_max_rotation_deg", QString::number(
+                                  final_consensus.max_pair_rotation_degrees, 'f', 6)},
+                             {"consensus_translation_limit_mm", QString::number(
+                                  kMaxSolverPairTranslationMeters * 1000.0, 'f', 3)},
+                             {"consensus_rotation_limit_deg", QString::number(
+                                  kMaxSolverPairRotationDegrees, 'f', 3)}});
         std::ostringstream message;
         message << "手眼标定质量未通过: " << failure_reason
                 << ", RMS=" << quality.translation_rms * 1000.0
@@ -880,7 +1143,7 @@ static bool estimateHandEyeTrans(
 
     robot_poses.swap(filtered_robot_poses);
     camera_poses.swap(filtered_camera_poses);
-    result.T_flange_camera = best.transform.clone();
+    result.T_flange_camera = optimized_transform.clone();
     result.camera_matrix = camera_matrix.clone();
     result.dist_coeffs = dist_coeffs.clone();
     result.reproj_error = quality.translation_rms;
@@ -891,7 +1154,7 @@ static bool estimateHandEyeTrans(
             << ", 平移 RMS: " << quality.translation_rms * 1000.0
             << " mm, P95: " << quality.translation_p95 * 1000.0
             << " mm, 旋转 RMS: " << quality.rotation_rms_degrees
-            << " deg (最优: " << best.name << ")";
+            << " deg (medoid: " << medoid.name << ")";
     result.message = message.str();
     std::cout << "[autoCalib] " << result.message << std::endl;
     std::cout << "[autoCalib] T_flange_camera:\n" << result.T_flange_camera << std::endl;
@@ -1175,9 +1438,11 @@ bool calibrateHandEyeFromDisk(
 
     session->setStage("solve_and_validate");
     HandEyeSolveAudit solve_audit;
-    if (!estimateHandEyeTrans(
-            camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
-            &solve_audit)) {
+    const bool solved = estimateHandEyeTrans(
+        camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
+        &solve_audit);
+    session->setHandEyePhase2Audit(solve_audit.phase2);
+    if (!solved) {
         for (size_t index = 0; index < frames.size(); ++index) {
             CalibrationFrameAudit& audit = frame_audits[frames[index].source_index];
             if (index < solve_audit.initial_consistency_errors.size())

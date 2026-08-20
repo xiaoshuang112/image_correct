@@ -36,6 +36,61 @@ struct CalibrationFrameAudit {
     cv::Mat T_camera_board;
 };
 
+struct HandEyeSolverAuditRecord {
+    std::string phase;
+    std::string method;
+    bool success = false;
+    std::string failure_reason;
+    cv::Mat raw_transform;
+    double raw_translation_rms_mm = 0.0;
+    double raw_translation_p95_mm = 0.0;
+    double raw_rotation_rms_deg = 0.0;
+    double raw_rotation_p95_deg = 0.0;
+    bool selected_medoid = false;
+    double medoid_normalized_distance_sum = 0.0;
+};
+
+struct HandEyeSolverPairAuditRecord {
+    std::string phase;
+    std::string left_method;
+    std::string right_method;
+    double delta_translation_mm = 0.0;
+    double delta_rotation_deg = 0.0;
+};
+
+struct HandEyeConsensusAuditRecord {
+    std::string phase;
+    int successful_solvers = 0;
+    std::string medoid_method;
+    double max_pair_translation_mm = 0.0;
+    double max_pair_rotation_deg = 0.0;
+    double translation_limit_mm = 0.0;
+    double rotation_limit_deg = 0.0;
+    bool passed = false;
+    std::string failure_reason;
+};
+
+struct HandEyeOptimizationAuditRecord {
+    bool performed = false;
+    std::string phase;
+    std::string method;
+    cv::Mat initial_transform;
+    cv::Mat optimized_transform;
+    double delta_translation_mm = 0.0;
+    double delta_rotation_deg = 0.0;
+    double before_translation_rms_mm = 0.0;
+    double after_translation_rms_mm = 0.0;
+    double before_rotation_rms_deg = 0.0;
+    double after_rotation_rms_deg = 0.0;
+};
+
+struct HandEyePhase2Audit {
+    std::vector<HandEyeSolverAuditRecord> solvers;
+    std::vector<HandEyeSolverPairAuditRecord> pairs;
+    std::vector<HandEyeConsensusAuditRecord> consensus;
+    std::vector<HandEyeOptimizationAuditRecord> optimizations;
+};
+
 struct CalibrationSessionOptions {
     std::string base_directory;
     std::string mode;
@@ -82,6 +137,7 @@ public:
                        const std::string& source);
     void setImageSize(int width, int height);
     void setFrames(const std::vector<CalibrationFrameAudit>& frames);
+    void setHandEyePhase2Audit(const HandEyePhase2Audit& audit);
     void appendEvent(const std::string& event,
                      const std::string& result,
                      const std::string& detail = "");
@@ -147,6 +203,7 @@ private:
     std::string preview_directory_;
     std::string current_stage_ = "created";
     std::vector<CalibrationFrameAudit> frames_;
+    HandEyePhase2Audit hand_eye_phase2_audit_;
     bool finalized_ = false;
     bool terminalization_attempted_ = false;
 };
