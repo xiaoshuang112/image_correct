@@ -33,6 +33,43 @@ bool recoverBeforeUse(const std::string& source) {
     return true;
 }
 
+bool pathContains(const fs::path& directory, const fs::path& candidate) {
+    auto directoryPart = directory.begin();
+    auto candidatePart = candidate.begin();
+    for (; directoryPart != directory.end(); ++directoryPart, ++candidatePart) {
+        if (candidatePart == candidate.end() || *directoryPart != *candidatePart)
+            return false;
+    }
+    return true;
+}
+
+bool resolveReplayOutputPath(const std::string& sessionDirectory,
+                             const std::string& requestedOutput,
+                             fs::path& resolvedOutput,
+                             std::string& error) {
+    std::error_code ec;
+    const fs::path sealedSession = fs::canonical(sessionDirectory, ec);
+    if (ec) {
+        error = "无法解析源 Session 路径: " + ec.message();
+        return false;
+    }
+    const fs::path absoluteOutput = fs::absolute(requestedOutput, ec);
+    if (ec) {
+        error = "无法解析输出路径: " + ec.message();
+        return false;
+    }
+    resolvedOutput = fs::weakly_canonical(absoluteOutput, ec);
+    if (ec) {
+        error = "无法解析输出路径: " + ec.message();
+        return false;
+    }
+    if (pathContains(sealedSession, resolvedOutput)) {
+        error = "输出文件不得位于源封存 Session 内";
+        return false;
+    }
+    return true;
+}
+
 bool loadIntrinsics(const std::string& path, cv::Mat& cameraMatrix,
                     cv::Mat& distortion) {
     cv::FileStorage storage(path, cv::FileStorage::READ);
@@ -98,6 +135,14 @@ int main(int argc, char** argv) {
                 std::cerr << "  " << problem << std::endl;
             return EXIT_FAILURE;
         }
+        fs::path replayOutput;
+        std::string outputPathError;
+        if (!resolveReplayOutputPath(sessionDirectory, argv[3],
+                                     replayOutput, outputPathError)) {
+            std::cerr << "[offlineEyeInHand] 拒绝复算：" << outputPathError
+                      << std::endl;
+            return EXIT_FAILURE;
+        }
         cv::Mat cameraMatrix;
         cv::Mat distortion;
         if (!loadIntrinsics(sessionDirectory + "/effective_config.yaml",
@@ -109,7 +154,7 @@ int main(int argc, char** argv) {
         loadBoardConfig(sessionDirectory, boardConfig);
         CalibrationResult result;
         if (!calibrateHandEyeFromDisk(sessionDirectory, cameraMatrix, distortion,
-                                      boardConfig, result, argv[3], nullptr,
+                                      boardConfig, result, replayOutput.string(), nullptr,
                                       sessionDirectory + "/effective_config.yaml")) {
             std::cerr << "[offlineEyeInHand] Session 复算失败: "
                       << result.message << std::endl;
@@ -119,7 +164,7 @@ int main(int argc, char** argv) {
                   << ", valid_frames=" << result.valid_frames
                   << ", translation_rms_mm=" << result.reproj_error * 1000.0
                   << ", session=" << result.session_dir
-                  << ", output=" << argv[3] << std::endl;
+                  << ", output=" << replayOutput.string() << std::endl;
         return EXIT_SUCCESS;
     }
     if (argc != 4) {
