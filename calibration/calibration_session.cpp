@@ -846,6 +846,13 @@ void CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit) 
     appendEvent("solver_diagnostics", "updated",
                 "solvers=" + std::to_string(audit.solvers.size()) +
                 " pairs=" + std::to_string(audit.pairs.size()));
+    std::string error;
+    cv::Mat empty;
+    if (writeReport("running", "", "", empty, 0.0, 0, "", error)) {
+        maybeInjectTestCrash("phase2_audit_after_persist");
+    } else {
+        appendEvent("solver_diagnostics", "persist_failed", error);
+    }
 }
 
 void CalibrationSession::appendEvent(const std::string& event,
