@@ -1441,7 +1441,13 @@ bool calibrateHandEyeFromDisk(
     const bool solved = estimateHandEyeTrans(
         camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
         &solve_audit);
-    session->setHandEyePhase2Audit(solve_audit.phase2);
+    std::string audit_error;
+    if (!session->setHandEyePhase2Audit(solve_audit.phase2, audit_error)) {
+        result.success = false;
+        result.message = "Phase 2 审计结果持久化失败: " + audit_error;
+        return failSession("solver_diagnostics",
+                           "phase2_audit_persist_failed");
+    }
     if (!solved) {
         for (size_t index = 0; index < frames.size(); ++index) {
             CalibrationFrameAudit& audit = frame_audits[frames[index].source_index];

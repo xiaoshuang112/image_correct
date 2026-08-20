@@ -841,18 +841,19 @@ void CalibrationSession::setFrames(const std::vector<CalibrationFrameAudit>& fra
     writeReport("running", "", "", empty, 0.0, 0, "", ignored);
 }
 
-void CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit) {
+bool CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit,
+                                               std::string& error) {
     hand_eye_phase2_audit_ = audit;
     appendEvent("solver_diagnostics", "updated",
                 "solvers=" + std::to_string(audit.solvers.size()) +
                 " pairs=" + std::to_string(audit.pairs.size()));
-    std::string error;
     cv::Mat empty;
-    if (writeReport("running", "", "", empty, 0.0, 0, "", error)) {
-        maybeInjectTestCrash("phase2_audit_after_persist");
-    } else {
+    if (!writeReport("running", "", "", empty, 0.0, 0, "", error)) {
         appendEvent("solver_diagnostics", "persist_failed", error);
+        return false;
     }
+    maybeInjectTestCrash("phase2_audit_after_persist");
+    return true;
 }
 
 void CalibrationSession::appendEvent(const std::string& event,
