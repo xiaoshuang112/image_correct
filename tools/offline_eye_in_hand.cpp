@@ -125,7 +125,14 @@ int main(int argc, char** argv) {
                   << argv[2] << std::endl;
         return EXIT_SUCCESS;
     }
-    if (argc == 4 && std::string(argv[1]) == "--replay-session") {
+    if ((argc == 4 || argc == 5) &&
+        std::string(argv[1]) == "--replay-session") {
+        const bool enableLooDiagnostics = argc == 5;
+        if (enableLooDiagnostics && std::string(argv[4]) != "--loo") {
+            std::cerr << "[offlineEyeInHand] 未知 Replay 选项: " << argv[4]
+                      << std::endl;
+            return EXIT_FAILURE;
+        }
         const std::string sessionDirectory = argv[2];
         std::vector<std::string> problems;
         if (!CalibrationSession::verifyManifest(sessionDirectory, problems)) {
@@ -155,7 +162,8 @@ int main(int argc, char** argv) {
         CalibrationResult result;
         if (!calibrateHandEyeFromDisk(sessionDirectory, cameraMatrix, distortion,
                                       boardConfig, result, replayOutput.string(), nullptr,
-                                      sessionDirectory + "/effective_config.yaml")) {
+                                      sessionDirectory + "/effective_config.yaml",
+                                      enableLooDiagnostics)) {
             std::cerr << "[offlineEyeInHand] Session 复算失败: "
                       << result.message << std::endl;
             return EXIT_FAILURE;
@@ -167,11 +175,20 @@ int main(int argc, char** argv) {
                   << ", output=" << replayOutput.string() << std::endl;
         return EXIT_SUCCESS;
     }
-    if (argc != 4) {
+    if (argc != 4 && argc != 5) {
         std::cerr << "Usage: " << argv[0]
                   << " <calibration_dir> <camera_params.yaml> <output.yaml>"
+                  << " [--loo]"
                   << "\n       " << argv[0] << " --verify-session <session_dir>"
                   << "\n       " << argv[0] << " --replay-session <session_dir> <output.yaml>"
+                  << "\n       " << argv[0]
+                  << " --replay-session <session_dir> <output.yaml> --loo"
+                  << std::endl;
+        return EXIT_FAILURE;
+    }
+    const bool enableLooDiagnostics = argc == 5;
+    if (enableLooDiagnostics && std::string(argv[4]) != "--loo") {
+        std::cerr << "[offlineEyeInHand] 未知离线标定选项: " << argv[4]
                   << std::endl;
         return EXIT_FAILURE;
     }
@@ -187,7 +204,8 @@ int main(int argc, char** argv) {
     CharucoBoardConfig boardConfig;
     CalibrationResult result;
     if (!calibrateHandEyeFromDisk(argv[1], cameraMatrix, distortion,
-                                  boardConfig, result, argv[3], nullptr, argv[2])) {
+                                  boardConfig, result, argv[3], nullptr, argv[2],
+                                  enableLooDiagnostics)) {
         std::cerr << "[offlineEyeInHand] 标定失败: " << result.message
                   << std::endl;
         return EXIT_FAILURE;

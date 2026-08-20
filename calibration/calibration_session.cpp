@@ -280,6 +280,15 @@ void writeStringSequence(cv::FileStorage& storage,
     storage << "]";
 }
 
+void writeIntSequence(cv::FileStorage& storage,
+                      const char* key,
+                      const std::vector<int>& values) {
+    storage << key << "[";
+    for (const int value : values)
+        storage << value;
+    storage << "]";
+}
+
 bool excludedFromManifest(const fs::path& path) {
     const std::string name = path.filename().string();
     return name == "manifest.sha256" || name == ".running" ||
@@ -856,6 +865,21 @@ bool CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit,
     return true;
 }
 
+bool CalibrationSession::setHandEyePhase3Audit(const HandEyePhase3Audit& audit,
+                                               std::string& error) {
+    hand_eye_phase3_audit_ = audit;
+    appendEvent("loo_stability", audit.status,
+                "trials=" + std::to_string(audit.trials.size()) +
+                " summaries=" + std::to_string(audit.summaries.size()));
+    cv::Mat empty;
+    if (!writeReport("running", "", "", empty, 0.0, 0, "", error)) {
+        appendEvent("loo_stability", "persist_failed", error);
+        return false;
+    }
+    maybeInjectTestCrash("phase3_audit_after_persist");
+    return true;
+}
+
 void CalibrationSession::appendEvent(const std::string& event,
                                      const std::string& result,
                                      const std::string& detail) {
@@ -1207,6 +1231,72 @@ bool CalibrationSession::writeReport(const std::string& status,
                 << optimization.before_rotation_rms_deg;
             out << "after_rotation_rms_deg"
                 << optimization.after_rotation_rms_deg;
+            out << "}";
+        }
+        out << "]";
+        out << "}";
+        out << "hand_eye_loo_diagnostics" << "{";
+        out << "enabled" << static_cast<int>(hand_eye_phase3_audit_.enabled);
+        out << "completed" << static_cast<int>(hand_eye_phase3_audit_.completed);
+        out << "status" << hand_eye_phase3_audit_.status;
+        out << "failure_reason" << hand_eye_phase3_audit_.failure_reason;
+        out << "full_selected_method"
+            << hand_eye_phase3_audit_.full_selected_method;
+        out << "worker_count" << hand_eye_phase3_audit_.worker_count;
+        out << "comparison_definition" << "inverse(X_full)*X_without_frame";
+        out << "fixed_inlier_policy"
+            << "remove_one_from_final_inliers_lock_full_solver_without_rerunning_mad";
+        out << "full_pipeline_policy"
+            << "remove_one_then_rerun_mad_consensus_medoid_refinement";
+        out << "full_transform" << hand_eye_phase3_audit_.full_transform;
+        writeIntSequence(out, "full_inlier_source_indices",
+                         hand_eye_phase3_audit_.full_inlier_source_indices);
+        out << "summaries" << "[";
+        for (const HandEyeLooSummaryAuditRecord& summary :
+             hand_eye_phase3_audit_.summaries) {
+            out << "{";
+            out << "mode" << summary.mode;
+            out << "attempted" << summary.attempted;
+            out << "successful" << summary.successful;
+            out << "failed" << summary.failed;
+            out << "translation" << "{";
+            out << "mean_mm" << summary.translation_mean_mm;
+            out << "p95_mm" << summary.translation_p95_mm;
+            out << "max_mm" << summary.translation_max_mm;
+            out << "max_frame_id" << summary.translation_max_frame_id;
+            out << "max_source_index" << summary.translation_max_source_index;
+            out << "}";
+            out << "rotation" << "{";
+            out << "mean_deg" << summary.rotation_mean_deg;
+            out << "p95_deg" << summary.rotation_p95_deg;
+            out << "max_deg" << summary.rotation_max_deg;
+            out << "max_frame_id" << summary.rotation_max_frame_id;
+            out << "max_source_index" << summary.rotation_max_source_index;
+            out << "}";
+            out << "trials_with_filter_set_changes"
+                << summary.trials_with_filter_set_changes;
+            out << "}";
+        }
+        out << "]";
+        out << "trials" << "[";
+        for (const HandEyeLooTrialAuditRecord& trial :
+             hand_eye_phase3_audit_.trials) {
+            out << "{";
+            out << "mode" << trial.mode;
+            out << "removed_frame_id" << trial.removed_frame_id;
+            out << "removed_source_index" << trial.removed_source_index;
+            out << "success" << static_cast<int>(trial.success);
+            out << "failure_reason" << trial.failure_reason;
+            out << "selected_method" << trial.selected_method;
+            out << "final_inliers" << trial.final_inliers;
+            out << "delta_translation_mm" << trial.delta_translation_mm;
+            out << "delta_rotation_deg" << trial.delta_rotation_deg;
+            out << "filter_set_evaluated"
+                << static_cast<int>(trial.filter_set_evaluated);
+            writeIntSequence(out, "filter_set_added_source_indices",
+                             trial.filter_set_added_source_indices);
+            writeIntSequence(out, "filter_set_removed_source_indices",
+                             trial.filter_set_removed_source_indices);
             out << "}";
         }
         out << "]";
