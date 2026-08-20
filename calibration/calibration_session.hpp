@@ -197,6 +197,9 @@ public:
                            int candidate_index,
                            const double actual_joint[6],
                            const double flange_pose[6],
+                           std::uint64_t motion_completed_timestamp_ns,
+                           int settling_requested_ms,
+                           int discarded_camera_frames,
                            std::uint64_t image_timestamp_ns,
                            std::uint64_t robot_timestamp_ns,
                            std::string& error);
