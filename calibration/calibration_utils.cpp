@@ -22,7 +22,7 @@
 
 namespace {
 
-constexpr int kPostMotionSettlingMs = 400;
+constexpr int kPostMotionSettlingMs = 1200;
 constexpr int kPostMotionDiscardFrames = 1;
 constexpr int kSettlingPollMs = 20;
 

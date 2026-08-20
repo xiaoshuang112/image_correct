@@ -958,7 +958,7 @@ static bool computeZValues_old(int robot_handle,
 }
 
 // ============================================================
-// Phase 3: 生成约 90 个高覆盖候选 + IK 过滤
+// Phase 3: 生成约 360 个高覆盖候选 + IK 过滤
 // ============================================================
 
 static double jointPathDistance(const double lhs[ROB_AXIS_NUM],
@@ -1058,10 +1058,10 @@ bool generateCandidates(int robot_handle,
     }
     int total = 0, ik_ok = 0;
 
-    // 每层 5 个 XY 覆盖点 × 6 个姿态，共 3 × 5 × 6 = 90 个候选。
+    // 每层 5 个 XY 覆盖点 × 24 个姿态，共 3 × 5 × 24 = 360 个候选。
     // 距离越远，标定板在画面中的边界余量越大，允许更大的 X/Y 倾角；
-    // 近距离层使用较小倾角保证标定板完整可见。这比原先的 5°/10°
-    // 提供更好的旋转激励，但不增加候选数和标定时间。
+    // 近距离层使用较小倾角保证标定板完整可见；同一 XY 点增加对称组合姿态，
+    // 用更高采样冗余换取批次稳定性。
     const std::array<double, 3> tiltByDistance{{18.0, 14.0, 10.0}};
     for (int zi = 0; zi < 3; ++zi) {
         const double z = z_values[zi];
@@ -1074,13 +1074,31 @@ bool generateCandidates(int robot_handle,
 
         for (size_t xyIndex = 0; xyIndex < xyOffsets.size(); ++xyIndex) {
             const double rz = ((zi + static_cast<int>(xyIndex)) % 2 == 0) ? 15.0 : -15.0;
-            const std::array<std::array<double, 3>, 6> attitudeOffsets{{
+            const std::array<std::array<double, 3>, 24> attitudeOffsets{{
                 {{0.0, 0.0, 0.0}},
                 {{tilt, 0.0, rz}},
                 {{-tilt, 0.0, -rz}},
                 {{0.0, tilt, -rz}},
                 {{0.0, -tilt, rz}},
-                {{tilt * 0.7, -tilt * 0.7, rz}}
+                {{tilt * 0.7, -tilt * 0.7, rz}},
+                {{-tilt * 0.7, tilt * 0.7, -rz}},
+                {{tilt * 0.7, tilt * 0.7, -rz}},
+                {{-tilt * 0.7, -tilt * 0.7, rz}},
+                {{tilt * 0.5, tilt * 0.5, 0.0}},
+                {{-tilt * 0.5, -tilt * 0.5, 0.0}},
+                {{tilt * 0.5, -tilt * 0.5, 0.0}},
+                {{-tilt * 0.5, tilt * 0.5, 0.0}},
+                {{tilt, tilt * 0.35, 0.0}},
+                {{-tilt, -tilt * 0.35, 0.0}},
+                {{tilt * 0.35, tilt, 0.0}},
+                {{-tilt * 0.35, -tilt, 0.0}},
+                {{0.0, 0.0, rz}},
+                {{0.0, 0.0, -rz}},
+                {{0.0, 0.0, 2.0 * rz}},
+                {{0.0, 0.0, -2.0 * rz}},
+                {{tilt * 0.75, 0.0, -rz}},
+                {{0.0, tilt * 0.75, rz}},
+                {{-tilt * 0.6, -tilt * 0.6, -rz}}
             }};
 
             for (const auto& attitude : attitudeOffsets) {
@@ -1103,13 +1121,13 @@ bool generateCandidates(int robot_handle,
     }
 
     orderCandidatesByNearestJoint(candidates, initialJoint);
-    std::cout << "[autoCalib] 90 candidates generated, IK reachable: "
+    std::cout << "[autoCalib] 360 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
     APP_LOG_EVENT_INFO("calibration.candidates",
                        "candidate_generation",
                        "success",
-                       {{"strategy", "coverage_3x5x6"},
-                        {"target", "90"},
+                       {{"strategy", "coverage_3x5x24"},
+                        {"target", "360"},
                         {"total", QString::number(total)},
                         {"reachable", QString::number(ik_ok)},
                         {"ordered", QString::number(candidates.size())},
