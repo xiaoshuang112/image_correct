@@ -137,7 +137,8 @@ public:
                        const std::string& source);
     void setImageSize(int width, int height);
     void setFrames(const std::vector<CalibrationFrameAudit>& frames);
-    void setHandEyePhase2Audit(const HandEyePhase2Audit& audit);
+    bool setHandEyePhase2Audit(const HandEyePhase2Audit& audit,
+                               std::string& error);
     void appendEvent(const std::string& event,
                      const std::string& result,
                      const std::string& detail = "");
