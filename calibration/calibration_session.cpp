@@ -958,6 +958,9 @@ bool CalibrationSession::writeRawRobotPose(int frame_id,
                                            int candidate_index,
                                            const double actual_joint[6],
                                            const double flange_pose[6],
+                                           std::uint64_t motion_completed_timestamp_ns,
+                                           int settling_requested_ms,
+                                           int discarded_camera_frames,
                                            std::uint64_t image_timestamp_ns,
                                            std::uint64_t robot_timestamp_ns,
                                            std::string& error) {
@@ -990,6 +993,10 @@ bool CalibrationSession::writeRawRobotPose(int frame_id,
         for (int axis = 0; axis < 6; ++axis) out << flange_pose[axis];
         out << "]" << "}";
         out << "timing" << "{";
+        out << "motion_completed_host_realtime_ns"
+            << std::to_string(motion_completed_timestamp_ns);
+        out << "settling_requested_ms" << settling_requested_ms;
+        out << "discarded_camera_frames" << discarded_camera_frames;
         out << "image_host_realtime_ns" << std::to_string(image_timestamp_ns);
         out << "robot_host_realtime_ns" << std::to_string(robot_timestamp_ns);
         out << "clock_domain" << "host_system_clock";
@@ -998,6 +1005,10 @@ bool CalibrationSession::writeRawRobotPose(int frame_id,
         const long long offset = static_cast<long long>(robot_timestamp_ns) -
                                  static_cast<long long>(image_timestamp_ns);
         out << "offset_estimate_ms" << static_cast<double>(offset) / 1.0e6;
+        const long long motion_to_image =
+            static_cast<long long>(image_timestamp_ns) -
+            static_cast<long long>(motion_completed_timestamp_ns);
+        out << "motion_to_image_ms" << static_cast<double>(motion_to_image) / 1.0e6;
         out << "}";
         out.release();
     } catch (const cv::Exception& exception) {

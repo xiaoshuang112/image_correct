@@ -22,6 +22,31 @@
 
 namespace {
 
+constexpr int kPostMotionSettlingMs = 400;
+constexpr int kPostMotionDiscardFrames = 1;
+constexpr int kSettlingPollMs = 20;
+
+std::uint64_t hostRealtimeNowNs()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+bool waitForMechanicalSettling(int& waited_ms)
+{
+    waited_ms = 0;
+    while (waited_ms < kPostMotionSettlingMs) {
+        if (robotMotionCancellationRequested())
+            return false;
+        const int slice_ms = std::min(kSettlingPollMs,
+                                      kPostMotionSettlingMs - waited_ms);
+        std::this_thread::sleep_for(std::chrono::milliseconds(slice_ms));
+        waited_ms += slice_ms;
+    }
+    return !robotMotionCancellationRequested();
+}
+
 bool parseDoubles(const std::string& line,
                   double* values,
                   size_t expectedCount)
@@ -295,6 +320,56 @@ bool executeCollection(int robot_handle,
             continue;
         }
 
+        // moveToJointPos() 已等待控制器连续报告停止，并保留了 100 ms 的短窗口。
+        // 标定采集还需要给机械结构额外的衰减时间，避免“控制器已停止但末端仍在微振”时
+        // 将旧图像与稍后的机器人反馈位姿配成一组。
+        const std::uint64_t motion_completed_timestamp_ns = hostRealtimeNowNs();
+        APP_LOG_EVENT_INFO("calibration.collection",
+                           "mechanical_settling",
+                           "start",
+                           {{"index", QString::number(i)},
+                            {"requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"discard_frames", QString::number(kPostMotionDiscardFrames)}});
+        int settling_waited_ms = 0;
+        if (!waitForMechanicalSettling(settling_waited_ms)) {
+            if (session)
+                session->appendEvent("collection_frame", "cancelled",
+                    "candidate=" + std::to_string(i) + " phase=mechanical_settling");
+            APP_LOG_EVENT_WARNING("calibration.collection",
+                                  "mechanical_settling",
+                                  "cancelled",
+                                  {{"index", QString::number(i)},
+                                   {"waited_ms", QString::number(settling_waited_ms)}});
+            return false;
+        }
+
+        int discarded_frames = 0;
+        int empty_discard_frames = 0;
+        for (int discard = 0; discard < kPostMotionDiscardFrames; ++discard) {
+            if (robotMotionCancellationRequested()) {
+                if (session)
+                    session->appendEvent("collection_frame", "cancelled",
+                        "candidate=" + std::to_string(i) + " phase=camera_flush");
+                APP_LOG_EVENT_WARNING("calibration.collection",
+                                      "mechanical_settling",
+                                      "cancelled",
+                                      {{"index", QString::number(i)},
+                                       {"phase", "camera_flush"}});
+                return false;
+            }
+            if (camera->captureOneFrame(500).empty())
+                ++empty_discard_frames;
+            else
+                ++discarded_frames;
+        }
+        APP_LOG_EVENT_INFO("calibration.collection",
+                           "mechanical_settling",
+                           "complete",
+                           {{"index", QString::number(i)},
+                            {"requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"discarded_frames", QString::number(discarded_frames)},
+                            {"empty_discard_frames", QString::number(empty_discard_frames)}});
+
         // 偶发的曝光或帧同步问题不应该直接浪费一个有价值的机器人姿态。
         // 首帧合格立即结束；只有首帧不合格时才最多重试两次。
         constexpr int kMaximumCaptureAttempts = 3;
@@ -308,10 +383,7 @@ bool executeCollection(int robot_handle,
         for (int attempt = 1; attempt <= kMaximumCaptureAttempts; ++attempt) {
             ++capture_attempts;
             cv::Mat candidate_frame = camera->captureOneFrame(1500);
-            const auto captured_at = std::chrono::system_clock::now();
-            const std::uint64_t candidate_timestamp_ns =
-                static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                    captured_at.time_since_epoch()).count());
+            const std::uint64_t candidate_timestamp_ns = hostRealtimeNowNs();
             if (candidate_frame.empty()) {
                 ++empty_attempts;
                 continue;
@@ -432,9 +504,7 @@ bool executeCollection(int robot_handle,
                                  {"error", QString::number(poseRet)}});
             continue;
         }
-        const std::uint64_t robot_timestamp_ns =
-            static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
-                std::chrono::system_clock::now().time_since_epoch()).count());
+        const std::uint64_t robot_timestamp_ns = hostRealtimeNowNs();
 
         // 保存到磁盘
         {
@@ -518,6 +588,9 @@ bool executeCollection(int robot_handle,
         if (session) {
             std::string audit_error;
             if (!session->writeRawRobotPose(captured, i, actual_joint, flange_pose,
+                                            motion_completed_timestamp_ns,
+                                            kPostMotionSettlingMs,
+                                            discarded_frames,
                                             image_timestamp_ns, robot_timestamp_ns,
                                             audit_error)) {
                 APP_LOG_EVENT_ERROR("calibration.collection",
@@ -549,7 +622,15 @@ bool executeCollection(int robot_handle,
                             {"captured", QString::number(captured)},
                             {"total", QString::number(total)},
                             {"corners", QString::number(ids.size())},
-                            {"capture_attempts", QString::number(capture_attempts)}});
+                            {"capture_attempts", QString::number(capture_attempts)},
+                            {"settling_requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"discarded_frames", QString::number(discarded_frames)},
+                            {"motion_to_image_ms", QString::number(
+                                static_cast<double>(image_timestamp_ns -
+                                    motion_completed_timestamp_ns) / 1.0e6, 'f', 3)},
+                            {"image_to_robot_ms", QString::number(
+                                static_cast<double>(robot_timestamp_ns -
+                                    image_timestamp_ns) / 1.0e6, 'f', 3)}});
     }
 
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
