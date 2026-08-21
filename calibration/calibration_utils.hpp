@@ -11,6 +11,7 @@
 #include "charuco_detector.hpp"
 #include "det.h"
 #include "utils/calib_transform.hpp"
+#include "calibration_runtime_status.hpp"
 
 class CalibrationSession;
 
@@ -36,7 +37,9 @@ bool executeCollection(int robot_handle,
                        const std::string& save_dir,
                        AI_det_callback callback,
                        CalibrationSession* session = nullptr,
-                       const std::string& robot_pose_dir = "");
+                       const std::string& robot_pose_dir = "",
+                       CalibrationRuntimeStatus* runtime_status = nullptr,
+                       const CalibrationRuntimeCallback& runtime_callback = {});
 
 // ============================================================
 // 图像/视觉辅助函数

@@ -226,9 +226,22 @@ bool executeCollection(int robot_handle,
                        const std::string& save_dir,
                        AI_det_callback callback,
                        CalibrationSession* session,
-                       const std::string& robot_pose_dir) {
+                       const std::string& robot_pose_dir,
+                       CalibrationRuntimeStatus* runtime_status,
+                       const CalibrationRuntimeCallback& runtime_callback) {
     int total = (int)candidates.size();
     int captured = 0;
+    int skipped = 0;
+
+    auto publishCollection = [&](const std::string& detail = {}) {
+        if (!runtime_status)
+            return;
+        runtime_status->captured_frames = captured;
+        runtime_status->skipped_frames = skipped;
+        runtime_status->candidate_processed = captured + skipped;
+        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                  CalibrationRuntimeStage::Collecting, detail);
+    };
 
     APP_LOG_EVENT_INFO("calibration.collection",
                        "collection",
@@ -236,6 +249,13 @@ bool executeCollection(int robot_handle,
                        {{"handle", QString::number(robot_handle)},
                         {"candidates", QString::number(total)},
                         {"save_dir", QString::fromStdString(save_dir)}});
+
+    if (runtime_status) {
+        runtime_status->candidate_reachable = total;
+        runtime_status->current_candidate_index = -1;
+        runtime_status->current_corner_count = 0;
+        publishCollection("collection_start");
+    }
 
     if (save_dir.empty()) {
         if (session)
@@ -266,6 +286,11 @@ bool executeCollection(int robot_handle,
                   << " (有效: " << captured << ")"
                   << std::flush;
 
+        if (runtime_status) {
+            runtime_status->current_candidate_index = i;
+            runtime_status->current_corner_count = 0;
+        }
+
         int progress = 0;
         {
             int bar_width = 60;
@@ -289,6 +314,11 @@ bool executeCollection(int robot_handle,
                                       {{"phase", "robot_move"},
                                        {"index", QString::number(i)},
                                        {"captured", QString::number(captured)}});
+                if (runtime_status) {
+                    publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                              CalibrationRuntimeStage::Cancelled,
+                                              "collection_cancelled");
+                }
                 return false;
             }
             APP_LOG_EVENT_WARNING("calibration.collection",
@@ -315,8 +345,15 @@ bool executeCollection(int robot_handle,
                           << std::endl;
                 if (session)
                     session->appendEvent("collection", "fail", "motion_timeout");
+                if (runtime_status) {
+                    publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                              CalibrationRuntimeStage::Failed,
+                                              "motion_timeout");
+                }
                 return false;
             }
+            ++skipped;
+            publishCollection("candidate_skip_move_failed");
             continue;
         }
 
@@ -340,6 +377,11 @@ bool executeCollection(int robot_handle,
                                   "cancelled",
                                   {{"index", QString::number(i)},
                                    {"waited_ms", QString::number(settling_waited_ms)}});
+            if (runtime_status) {
+                publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                          CalibrationRuntimeStage::Cancelled,
+                                          "mechanical_settling_cancelled");
+            }
             return false;
         }
 
@@ -355,6 +397,11 @@ bool executeCollection(int robot_handle,
                                       "cancelled",
                                       {{"index", QString::number(i)},
                                        {"phase", "camera_flush"}});
+                if (runtime_status) {
+                    publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                              CalibrationRuntimeStage::Cancelled,
+                                              "camera_flush_cancelled");
+                }
                 return false;
             }
             if (camera->captureOneFrame(500).empty())
@@ -420,6 +467,8 @@ bool executeCollection(int robot_handle,
                                    {"attempts", QString::number(capture_attempts)},
                                    {"empty_attempts", QString::number(empty_attempts)}});
             std::cerr << "\n[autoCalib] 采集图像失败 (pose " << i << ")" << std::endl;
+            ++skipped;
+            publishCollection("candidate_skip_capture_empty");
             continue;
         }
         if (ids.empty()) {
@@ -436,6 +485,10 @@ bool executeCollection(int robot_handle,
                                    {"image_h", QString::number(frame.rows)},
                                    {"attempts", QString::number(capture_attempts)},
                                    {"detection_failures", QString::number(detection_failures)}});
+            if (runtime_status)
+                runtime_status->current_corner_count = 0;
+            ++skipped;
+            publishCollection("candidate_skip_detection_failed");
             continue;
         }
         if(ids.size() < 12) {
@@ -452,6 +505,10 @@ bool executeCollection(int robot_handle,
                                    {"corners", QString::number(ids.size())},
                                    {"minimum", "12"},
                                    {"attempts", QString::number(capture_attempts)}});
+            if (runtime_status)
+                runtime_status->current_corner_count = static_cast<int>(ids.size());
+            ++skipped;
+            publishCollection("candidate_skip_insufficient_corners");
             continue;
         }
         if (capture_attempts > 1) {
@@ -488,6 +545,8 @@ bool executeCollection(int robot_handle,
                                  {"reason", "joint_read_failed"},
                                  {"index", QString::number(i)},
                                  {"error", QString::number(poseRet)}});
+            ++skipped;
+            publishCollection("candidate_skip_joint_read_failed");
             continue;
         }
         poseRet = cr_kineForward(robot_handle, actual_joint, flange_pose);
@@ -502,6 +561,8 @@ bool executeCollection(int robot_handle,
                                  {"reason", "forward_kinematics_failed"},
                                  {"index", QString::number(i)},
                                  {"error", QString::number(poseRet)}});
+            ++skipped;
+            publishCollection("candidate_skip_forward_kinematics_failed");
             continue;
         }
         const std::uint64_t robot_timestamp_ns = hostRealtimeNowNs();
@@ -522,6 +583,8 @@ bool executeCollection(int robot_handle,
                                      {"reason", "image_write_failed"},
                                      {"index", QString::number(i)},
                                      {"path", QString::fromStdString(img_name)}});
+                ++skipped;
+                publishCollection("candidate_skip_image_write_failed");
                 continue;
             }
             if (callback) {
@@ -539,6 +602,11 @@ bool executeCollection(int robot_handle,
                     if (session)
                         session->appendEvent("collection_frame", "cancelled",
                             "candidate=" + std::to_string(i));
+                    if (runtime_status) {
+                        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                                  CalibrationRuntimeStage::Cancelled,
+                                                  "user_cancelled");
+                    }
                     return false;
                 }
             }
@@ -605,6 +673,8 @@ bool executeCollection(int robot_handle,
         }
 
         captured++;
+        if (runtime_status)
+            runtime_status->current_corner_count = static_cast<int>(ids.size());
         if (session)
             session->appendEvent("collection_frame", "captured",
                 "frame=" + std::to_string(captured - 1) +
@@ -631,6 +701,7 @@ bool executeCollection(int robot_handle,
                             {"image_to_robot_ms", QString::number(
                                 static_cast<double>(robot_timestamp_ns -
                                     image_timestamp_ns) / 1.0e6, 'f', 3)}});
+        publishCollection("candidate_captured");
     }
 
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
@@ -642,6 +713,7 @@ bool executeCollection(int robot_handle,
                        {{"captured", QString::number(captured)},
                         {"total", QString::number(total)},
                         {"save_dir", QString::fromStdString(save_dir)}});
+    publishCollection("collection_complete");
     return captured > 0;
 }
 

@@ -1413,11 +1413,20 @@ static bool estimateHandEyeTrans(
     std::vector<cv::Mat>& robot_poses,
     std::vector<cv::Mat>& camera_poses,
     CalibrationResult& result,
-    HandEyeSolveAudit* audit) {
+    HandEyeSolveAudit* audit,
+    CalibrationRuntimeStatus* runtime_status = nullptr,
+    const CalibrationRuntimeCallback& runtime_callback = {}) {
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
     result.T_flange_camera.release();
+
+    auto publishSolve = [&](CalibrationRuntimeStage stage,
+                            const std::string& detail = {}) {
+        if (!runtime_status)
+            return;
+        publishCalibrationRuntime(runtime_callback, *runtime_status, stage, detail);
+    };
 
     if (robot_poses.size() != camera_poses.size()) {
         result.message = "机器人位姿与标定板位姿数量不匹配";
@@ -1455,8 +1464,11 @@ static bool estimateHandEyeTrans(
                             {{"reason", "all_methods_failed"},
                              {"frames", QString::number(initial_count)}});
         std::cerr << "[autoCalib] " << result.message << std::endl;
+        publishSolve(CalibrationRuntimeStage::Failed, "all_methods_failed");
         return false;
     }
+
+    publishSolve(CalibrationRuntimeStage::HandEyeInitial, "initial_solve");
 
     SolverConsensusResult final_consensus = evaluateSolverConsensus(
         method_results, "initial", audit ? &audit->phase2 : nullptr);
@@ -1470,6 +1482,8 @@ static bool estimateHandEyeTrans(
         APP_LOG_EVENT_ERROR("calibration.hand_eye", "medoid_refinement", "fail",
                             {{"phase", "initial"},
                              {"reason", "invalid_optimized_quality_metrics"}});
+        publishSolve(CalibrationRuntimeStage::Failed,
+                     "invalid_optimized_quality_metrics");
         return false;
     }
     const std::vector<double>& initial_errors =
@@ -1489,6 +1503,8 @@ static bool estimateHandEyeTrans(
         audit->mad_threshold = outlier_threshold;
     }
 
+    publishSolve(CalibrationRuntimeStage::MadFiltering, "mad_filtering");
+
     std::vector<cv::Mat> filtered_robot_poses;
     std::vector<cv::Mat> filtered_camera_poses;
     filtered_robot_poses.reserve(robot_poses.size());
@@ -1503,6 +1519,11 @@ static bool estimateHandEyeTrans(
     }
 
     const int filtered_count = static_cast<int>(filtered_robot_poses.size());
+    const int mad_rejected = initial_count - filtered_count;
+    if (runtime_status) {
+        runtime_status->mad_rejected_frames = mad_rejected;
+        runtime_status->final_inliers = filtered_count;
+    }
     const int minimum_inliers = std::max(
         kMinHandEyeFrames,
         static_cast<int>(std::ceil(initial_count * kMinimumInlierRatio)));
@@ -1511,15 +1532,16 @@ static bool estimateHandEyeTrans(
                        filtered_count >= minimum_inliers ? "success" : "fail",
                        {{"input_frames", QString::number(initial_count)},
                         {"kept_frames", QString::number(filtered_count)},
-                        {"removed_frames", QString::number(initial_count - filtered_count)},
+                        {"removed_frames", QString::number(mad_rejected)},
                         {"minimum_inliers", QString::number(minimum_inliers)},
                         {"median_mm", QString::number(median_error * 1000.0, 'f', 6)},
                         {"mad_mm", QString::number(mad * 1000.0, 'f', 6)},
                         {"threshold_mm", QString::number(outlier_threshold * 1000.0, 'f', 6)},
                         {"mad_scale", QString::number(kMadScale, 'f', 2)}});
-    std::cout << "[autoCalib] 鲁棒离群过滤: " << initial_count - filtered_count
+    std::cout << "[autoCalib] 鲁棒离群过滤: " << mad_rejected
               << " 帧, 阈值 " << outlier_threshold * 1000.0 << " mm, 剩余 "
               << filtered_count << "/" << initial_count << " 帧" << std::endl;
+    publishSolve(CalibrationRuntimeStage::MadFiltering, "mad_complete");
     if (filtered_count < minimum_inliers) {
         result.message = "离群过滤后有效帧数不足: " +
                          std::to_string(filtered_count) + " (need >=" +
@@ -1533,10 +1555,12 @@ static bool estimateHandEyeTrans(
                              {"minimum_inliers", QString::number(minimum_inliers)},
                              {"threshold_mm", QString::number(outlier_threshold * 1000.0, 'f', 6)}});
         std::cerr << "[autoCalib] " << result.message << std::endl;
+        publishSolve(CalibrationRuntimeStage::Failed, "insufficient_inliers");
         return false;
     }
 
     if (filtered_count != initial_count) {
+        publishSolve(CalibrationRuntimeStage::HandEyeRefit, "refit_start");
         method_results = solveHandEyeMethods(
             filtered_robot_poses, filtered_camera_poses, "refit",
             audit ? &audit->phase2 : nullptr);
@@ -1547,6 +1571,7 @@ static bool estimateHandEyeTrans(
                                 "fail",
                                 {{"reason", "refit_failed"},
                                  {"frames", QString::number(filtered_count)}});
+            publishSolve(CalibrationRuntimeStage::Failed, "refit_failed");
             return false;
         }
         final_consensus = evaluateSolverConsensus(
@@ -1556,6 +1581,7 @@ static bool estimateHandEyeTrans(
             method_results[medoid_index], filtered_robot_poses,
             filtered_camera_poses, "refit",
             audit ? &audit->phase2 : nullptr);
+        publishSolve(CalibrationRuntimeStage::HandEyeRefit, "refit_complete");
     }
 
     const HandEyeMethodResult& medoid = method_results[medoid_index];
@@ -1582,6 +1608,28 @@ static bool estimateHandEyeTrans(
         audit->selected_method = medoid.name;
         audit->quality_passed = quality_passed;
     }
+
+    if (runtime_status) {
+        runtime_status->selected_solver = medoid.name;
+        runtime_status->consensus_available = true;
+        runtime_status->consensus_passed = final_consensus.passed;
+        runtime_status->consensus_max_translation_mm =
+            final_consensus.max_pair_translation_meters * 1000.0;
+        runtime_status->consensus_max_rotation_deg =
+            final_consensus.max_pair_rotation_degrees;
+        runtime_status->final_inliers = filtered_count;
+        runtime_status->mad_rejected_frames = mad_rejected;
+        if (std::isfinite(quality.translation_rms)) {
+            runtime_status->translation_rms_mm = quality.translation_rms * 1000.0;
+            runtime_status->translation_p95_mm = quality.translation_p95 * 1000.0;
+            runtime_status->translation_max_mm = quality.translation_max * 1000.0;
+            runtime_status->rotation_rms_deg = quality.rotation_rms_degrees;
+            runtime_status->rotation_p95_deg = quality.rotation_p95_degrees;
+            runtime_status->rotation_max_deg = quality.rotation_max_degrees;
+        }
+    }
+    publishSolve(CalibrationRuntimeStage::QualityValidation,
+                 quality_passed ? "quality_pass" : failure_reason);
     APP_LOG_EVENT(Info,
                   "calibration.hand_eye",
                   "hand_eye_quality",
@@ -1638,6 +1686,7 @@ static bool estimateHandEyeTrans(
                 << "mm, rotation_RMS=" << quality.rotation_rms_degrees << "deg";
         result.message = message.str();
         std::cerr << "[autoCalib] " << result.message << std::endl;
+        publishSolve(CalibrationRuntimeStage::Failed, failure_reason);
         return false;
     }
 
@@ -1673,7 +1722,9 @@ bool calibrateHandEyeFromDisk(
     const std::string& output_yaml,
     CalibrationSession* session,
     const std::string& intrinsic_source_file,
-    bool enable_loo_diagnostics) {
+    bool enable_loo_diagnostics,
+    CalibrationRuntimeStatus* runtime_status,
+    const CalibrationRuntimeCallback& runtime_callback) {
 
     result.success = false;
     result.valid_frames = 0;
@@ -1720,11 +1771,27 @@ bool calibrateHandEyeFromDisk(
             session->setStage(stage);
             session->finalizeFailure(stage, reason, result.message);
         }
+        if (runtime_status) {
+            const CalibrationRuntimeStage terminal =
+                (reason == "cancelled")
+                    ? CalibrationRuntimeStage::Cancelled
+                    : CalibrationRuntimeStage::Failed;
+            if (runtime_status->publication_state == "publishing")
+                runtime_status->publication_state = "failed";
+            publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                      terminal, reason);
+        }
         return false;
     };
     session->setStage("hand_eye_input");
     session->setIntrinsics(camera_matrix, dist_coeffs,
                            owned_session ? "provided_offline" : "effective_runtime");
+    if (runtime_status) {
+        runtime_status->calibration_session_id = session->id();
+        runtime_status->calibration_session_dir = session->directory();
+        if (runtime_status->publication_state.empty())
+            runtime_status->publication_state = "not_started";
+    }
 
     if (camera_matrix.rows != 3 || camera_matrix.cols != 3 ||
         dist_coeffs.empty() || !cv::checkRange(camera_matrix) ||
@@ -1911,6 +1978,11 @@ bool calibrateHandEyeFromDisk(
     const double mean_reprojection_error = detected_frames > 0
         ? reprojection_error_sum / detected_frames
         : std::numeric_limits<double>::quiet_NaN();
+    if (runtime_status) {
+        runtime_status->pnp_valid_frames = static_cast<int>(detected_frames);
+        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                  CalibrationRuntimeStage::PnP, "pnp_complete");
+    }
     APP_LOG_EVENT_INFO("calibration.hand_eye",
                        "hand_eye_input",
                        detected_frames >= static_cast<size_t>(kMinHandEyeFrames) ? "success" : "fail",
@@ -1947,7 +2019,7 @@ bool calibrateHandEyeFromDisk(
     HandEyeSolveAudit solve_audit;
     const bool solved = estimateHandEyeTrans(
         camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
-        &solve_audit);
+        &solve_audit, runtime_status, runtime_callback);
     std::string audit_error;
     if (!session->setHandEyePhase2Audit(solve_audit.phase2, audit_error)) {
         result.success = false;
@@ -2016,13 +2088,32 @@ bool calibrateHandEyeFromDisk(
     }
 
     std::string finalize_error;
+    if (runtime_status) {
+        runtime_status->publication_state =
+            output_yaml.empty() ? "not_published" : "publishing";
+        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                  CalibrationRuntimeStage::Publishing,
+                                  output_yaml.empty()
+                                      ? "skip_production_publish"
+                                      : "publishing_start");
+    }
     if (!session->finalizeSuccess(result.T_flange_camera, result.camera_matrix,
                                   result.dist_coeffs, result.reproj_error * 1000.0,
                                   result.valid_frames, result.message, output_yaml,
                                   finalize_error)) {
         result.success = false;
         result.message = "标定结果发布或审计会话封存失败: " + finalize_error;
+        if (runtime_status)
+            runtime_status->publication_state = "failed";
         return failSession("output", "session_seal_or_atomic_publish_failed");
+    }
+
+    if (runtime_status) {
+        runtime_status->publication_state =
+            output_yaml.empty() ? "not_published" : "published";
+        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                  CalibrationRuntimeStage::Completed,
+                                  "calibration_complete");
     }
 
     std::cout << "\n========== 标定结果 ==========" << std::endl;

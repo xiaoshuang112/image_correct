@@ -1024,7 +1024,8 @@ static void orderCandidatesByNearestJoint(std::vector<PoseCandidate>& candidates
 bool generateCandidates(int robot_handle,
                         std::shared_ptr<AICamera>& camera,
                         const double z_values[3],
-                        std::vector<PoseCandidate>& candidates) {
+                        std::vector<PoseCandidate>& candidates,
+                        int* planned_count = nullptr) {
     double euler[ROB_AXIS_NUM] = {};
     double tcp_aa[ROB_AXIS_NUM] = {};
     double flangeEulePos[ROB_AXIS_NUM] = {};
@@ -1123,6 +1124,8 @@ bool generateCandidates(int robot_handle,
     orderCandidatesByNearestJoint(candidates, initialJoint);
     std::cout << "[autoCalib] 360 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
+    if (planned_count)
+        *planned_count = total;
     APP_LOG_EVENT_INFO("calibration.candidates",
                        "candidate_generation",
                        "success",
@@ -1155,9 +1158,15 @@ bool autoEyeInHandCharucoCalibration(
     const std::string& save_dir,
     const std::string& output_yaml,
     AI_det_callback callback,
-    const std::string& intrinsic_source_file) {
+    const std::string& intrinsic_source_file,
+    CalibrationRuntimeCallback runtime_callback) {
 
     result = CalibrationResult{};
+    CalibrationRuntimeStatus runtime_status = makeEmptyCalibrationRuntimeStatus();
+    auto publish = [&](CalibrationRuntimeStage stage,
+                       const std::string& detail = {}) {
+        publishCalibrationRuntime(runtime_callback, runtime_status, stage, detail);
+    };
     CalibrationSessionOptions session_options;
     session_options.base_directory = save_dir;
     session_options.mode = "online_auto_eye_in_hand";
@@ -1185,15 +1194,25 @@ bool autoEyeInHandCharucoCalibration(
         session_options.dist_coeffs = dist_coeffs.getMat().clone();
     }
     std::string session_error;
+    publish(CalibrationRuntimeStage::Preparing, "create_session");
     std::unique_ptr<CalibrationSession> session =
         CalibrationSession::create(session_options, session_error);
     if (!session) {
         result.message = "无法创建标定审计会话: " + session_error;
+        publish(CalibrationRuntimeStage::Failed, "session_create_failed");
         return false;
     }
     result.session_dir = session->directory();
+    runtime_status.calibration_session_id = session->id();
+    runtime_status.calibration_session_dir = session->directory();
+    runtime_status.publication_state = "not_started";
     auto failSession = [&](const std::string& stage,
                            const std::string& reason) -> bool {
+        const CalibrationRuntimeStage terminal =
+            (reason == "cancelled")
+                ? CalibrationRuntimeStage::Cancelled
+                : CalibrationRuntimeStage::Failed;
+        publish(terminal, reason);
         session->finalizeFailure(stage, reason, result.message);
         return false;
     };
@@ -1219,6 +1238,7 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 1b: 自动寻找最佳位姿 ----
     session->setStage("prepare");
+    publish(CalibrationRuntimeStage::Preparing, "prepare");
     if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
         result.message = "机器人水平姿态调整失败";
         APP_LOG_EVENT_ERROR("calibration",
@@ -1229,6 +1249,7 @@ bool autoEyeInHandCharucoCalibration(
         return failSession("prepare", "initial_rotation_failed");
     }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
+    publish(CalibrationRuntimeStage::PoseSearch, "pose_search");
     std::string best_pose_failure;
     if (!autoFindBestPose(robot_handle, camera, detector,
                             session->previewDirectory(), callback, &best_pose_failure)) {
@@ -1261,18 +1282,25 @@ bool autoEyeInHandCharucoCalibration(
     }
 
     // ---- Phase 3: 生成候选 + IK 过滤 ----
+    publish(CalibrationRuntimeStage::CandidateGeneration, "candidate_generation");
     std::vector<PoseCandidate> candidates;
-    if (!generateCandidates(robot_handle, camera, z_values, candidates)) {
+    int planned_count = 0;
+    if (!generateCandidates(robot_handle, camera, z_values, candidates, &planned_count)) {
         result.message = "无 IK 可达位姿";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return failSession("pose_generation", "no_reachable_pose");
     }
+    runtime_status.candidate_planned = planned_count;
+    runtime_status.candidate_reachable = static_cast<int>(candidates.size());
+    runtime_status.candidate_processed = 0;
+    publish(CalibrationRuntimeStage::CandidateGeneration, "candidates_ready");
 
     // ---- Phase 4: 逐点运动 + 采集 ----
     session->setStage("collection");
     if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
                             candidates, session->framesDirectory(), callback,
-                            session.get(), session->robotPosesDirectory())) {
+                            session.get(), session->robotPosesDirectory(),
+                            &runtime_status, runtime_callback)) {
         result.message = "未采集到有效数据";
         std::cerr << "[autoCalib] " << result.message << std::endl;
         return failSession("collection", robotMotionCancellationRequested()
@@ -1306,7 +1334,9 @@ bool autoEyeInHandCharucoCalibration(
         ? "provided_runtime" : "calibrated_from_collection");
 
     if (!calibrateHandEyeFromDisk(session->framesDirectory(), K, D, board_config,
-                                  result, output_yaml, session.get()))
+                                  result, output_yaml, session.get(),
+                                  intrinsic_source_file, false,
+                                  &runtime_status, runtime_callback))
         return false;
 
     K.copyTo(camera_matrix);

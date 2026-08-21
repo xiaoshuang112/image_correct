@@ -31,6 +31,14 @@ ApplicationWindow {
     readonly property color textPrimary: "#e6edf3"
     readonly property color textDim:   "#8b949e"
 
+    function fmtMetric(v) {
+        if (v === undefined || v === null)
+            return "--"
+        if (typeof v === "number" && (isNaN(v) || !isFinite(v)))
+            return "--"
+        return Number(v).toFixed(3)
+    }
+
     // =================================================================
     //  与 C++ 控制器的连接
     // =================================================================
@@ -482,11 +490,95 @@ ApplicationWindow {
                     anchors.margins: 12
                     spacing: 6
 
+                    // ---- 运行状态（结构化，不解析 logText） ----
+                    Label {
+                        text: "运行状态"
+                        color: textPrimary
+                        font.pixelSize: 28
+                        font.bold: true
+                    }
+
+                    Rectangle {
+                        Layout.fillWidth: true
+                        height: 1
+                        color: borderColor
+                    }
+
+                    ColumnLayout {
+                        Layout.fillWidth: true
+                        spacing: 4
+
+                        Label {
+                            text: "阶段: " + (calibrationController.calibrationStageText || "空闲")
+                            color: textPrimary
+                            font.pixelSize: 20
+                            font.bold: true
+                        }
+                        Label {
+                            text: "候选姿态: " +
+                                  calibrationController.candidateProcessed + " / " +
+                                  calibrationController.candidateReachable +
+                                  "  (planned " + calibrationController.candidatePlanned + ")"
+                            color: textDim
+                            font.pixelSize: 18
+                        }
+                        Label {
+                            text: "成功采集: " + calibrationController.capturedFrames +
+                                  "    跳过: " + calibrationController.skippedFrames
+                            color: textDim
+                            font.pixelSize: 18
+                        }
+                        Label {
+                            text: "PnP有效: " + calibrationController.pnpValidFrames +
+                                  "    MAD剔除: " + calibrationController.madRejectedFrames +
+                                  "    最终内点: " + calibrationController.finalInliers
+                            color: textDim
+                            font.pixelSize: 18
+                        }
+                        Label {
+                            visible: calibrationController.consensusAvailable ||
+                                     !isNaN(calibrationController.translationRmsMm)
+                            text: "平移 RMS/P95/MAX: " +
+                                  root.fmtMetric(calibrationController.translationRmsMm) + " / " +
+                                  root.fmtMetric(calibrationController.translationP95Mm) + " / " +
+                                  root.fmtMetric(calibrationController.translationMaxMm) + " mm"
+                            color: textDim
+                            font.pixelSize: 17
+                        }
+                        Label {
+                            visible: calibrationController.consensusAvailable ||
+                                     !isNaN(calibrationController.rotationRmsDeg)
+                            text: "旋转 RMS/P95/MAX: " +
+                                  root.fmtMetric(calibrationController.rotationRmsDeg) + " / " +
+                                  root.fmtMetric(calibrationController.rotationP95Deg) + " / " +
+                                  root.fmtMetric(calibrationController.rotationMaxDeg) + " deg"
+                            color: textDim
+                            font.pixelSize: 17
+                        }
+                        Label {
+                            visible: calibrationController.selectedSolver.length > 0 ||
+                                     calibrationController.consensusAvailable
+                            text: "Solver: " + (calibrationController.selectedSolver || "--") +
+                                  "  共识: " + (calibrationController.consensusAvailable
+                                      ? (calibrationController.consensusPassed ? "PASS" : "FAIL")
+                                      : "--")
+                            color: textDim
+                            font.pixelSize: 17
+                        }
+                        Label {
+                            visible: calibrationController.publicationState !== "not_started" ||
+                                     calibrationController.calibrationSessionId.length > 0
+                            text: "发布: " + (calibrationController.publicationState || "not_started")
+                            color: textDim
+                            font.pixelSize: 17
+                        }
+                    }
+
                     // ---- 标定结果（紧凑） ----
                     Label {
                         text: "标定结果"
                         color: textPrimary
-                        font.pixelSize: 30
+                        font.pixelSize: 28
                         font.bold: true
                     }
 

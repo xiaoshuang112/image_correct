@@ -12,6 +12,7 @@
 #include "my_base.h"
 #include "cameras/AICamera.hpp"
 #include "calibration/charuco_detector.hpp"
+#include "calibration/calibration_runtime_status.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
 
@@ -47,6 +48,32 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
 
+    // 结构化运行时状态（与 logText 解耦）
+    Q_PROPERTY(int     calibrationStage READ calibrationStage NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString calibrationStageText READ calibrationStageText NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     candidatePlanned READ candidatePlanned NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     candidateReachable READ candidateReachable NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     candidateProcessed READ candidateProcessed NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     capturedFrames READ capturedFrames NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     skippedFrames READ skippedFrames NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     pnpValidFrames READ pnpValidFrames NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     madRejectedFrames READ madRejectedFrames NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(int     finalInliers READ finalInliers NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  translationRmsMm READ translationRmsMm NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  translationP95Mm READ translationP95Mm NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  translationMaxMm READ translationMaxMm NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  rotationRmsDeg READ rotationRmsDeg NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  rotationP95Deg READ rotationP95Deg NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  rotationMaxDeg READ rotationMaxDeg NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString selectedSolver READ selectedSolver NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(bool    consensusAvailable READ consensusAvailable NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(bool    consensusPassed READ consensusPassed NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  consensusMaxTranslationMm READ consensusMaxTranslationMm NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(double  consensusMaxRotationDeg READ consensusMaxRotationDeg NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString calibrationSessionId READ calibrationSessionId NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString calibrationSessionDir READ calibrationSessionDir NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString publicationState READ publicationState NOTIFY calibrationRuntimeChanged)
+
 public:
     explicit CalibrationController(QObject* parent = nullptr);
     ~CalibrationController() override;
@@ -73,6 +100,31 @@ public:
     QString resultText() const      { return m_resultText; }
     QString logText() const         { return m_logText; }
     QString diagnosticLogPath() const;
+
+    int     calibrationStage() const { return static_cast<int>(m_runtimeStatus.stage); }
+    QString calibrationStageText() const;
+    int     candidatePlanned() const { return m_runtimeStatus.candidate_planned; }
+    int     candidateReachable() const { return m_runtimeStatus.candidate_reachable; }
+    int     candidateProcessed() const { return m_runtimeStatus.candidate_processed; }
+    int     capturedFrames() const { return m_runtimeStatus.captured_frames; }
+    int     skippedFrames() const { return m_runtimeStatus.skipped_frames; }
+    int     pnpValidFrames() const { return m_runtimeStatus.pnp_valid_frames; }
+    int     madRejectedFrames() const { return m_runtimeStatus.mad_rejected_frames; }
+    int     finalInliers() const { return m_runtimeStatus.final_inliers; }
+    double  translationRmsMm() const { return m_runtimeStatus.translation_rms_mm; }
+    double  translationP95Mm() const { return m_runtimeStatus.translation_p95_mm; }
+    double  translationMaxMm() const { return m_runtimeStatus.translation_max_mm; }
+    double  rotationRmsDeg() const { return m_runtimeStatus.rotation_rms_deg; }
+    double  rotationP95Deg() const { return m_runtimeStatus.rotation_p95_deg; }
+    double  rotationMaxDeg() const { return m_runtimeStatus.rotation_max_deg; }
+    QString selectedSolver() const { return QString::fromStdString(m_runtimeStatus.selected_solver); }
+    bool    consensusAvailable() const { return m_runtimeStatus.consensus_available; }
+    bool    consensusPassed() const { return m_runtimeStatus.consensus_passed; }
+    double  consensusMaxTranslationMm() const { return m_runtimeStatus.consensus_max_translation_mm; }
+    double  consensusMaxRotationDeg() const { return m_runtimeStatus.consensus_max_rotation_deg; }
+    QString calibrationSessionId() const { return QString::fromStdString(m_runtimeStatus.calibration_session_id); }
+    QString calibrationSessionDir() const { return QString::fromStdString(m_runtimeStatus.calibration_session_dir); }
+    QString publicationState() const { return QString::fromStdString(m_runtimeStatus.publication_state); }
 
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
@@ -119,6 +171,7 @@ signals:
     void statusMessageChanged();
     void resultTextChanged();
     void logTextChanged();
+    void calibrationRuntimeChanged();
     void frameUpdated();
 
     /// 标定结束信号
@@ -152,6 +205,10 @@ private:
     /// 追加日志（线程安全）
     void appendLog(const QString& line);
 
+    /// 接收核心标定线程发布的结构化运行状态（切回 Controller 线程后更新）
+    void applyRuntimeStatus(const CalibrationRuntimeStatus& status);
+    void resetRuntimeStatus();
+
     // ---- 静态回调（供 C 风格 AI_det_callback） ----
     static int calibrationCallback(char* msg, int msg_len, int flag);
     static bool robotMotionCancellationRequested();
@@ -179,6 +236,7 @@ private:
     QString  m_statusMessage  = "就绪";
     QString  m_resultText;
     QString  m_logText;
+    CalibrationRuntimeStatus m_runtimeStatus = makeEmptyCalibrationRuntimeStatus();
 
     // 硬件句柄
     RobotHandle m_robotHandle = 0;

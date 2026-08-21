@@ -11,6 +11,7 @@
 
 #include "eye_to_hand_calibration.hpp"           // PoseGenerationConfig
 #include "auto_eye_in_hand_charuco_calibration.hpp"  // CalibrationResult
+#include "calibration_runtime_status.hpp"
 
 #include "det.h"
 
@@ -93,6 +94,8 @@ bool calibrateHandEyeFromDisk(
     const std::string& output_yaml = "",
     CalibrationSession* session = nullptr,
     const std::string& intrinsic_source_file = "",
-    bool enable_loo_diagnostics = false);
+    bool enable_loo_diagnostics = false,
+    CalibrationRuntimeStatus* runtime_status = nullptr,
+    const CalibrationRuntimeCallback& runtime_callback = {});
 
 #endif // SEMI_AUTO_EYE_IN_HAND_CALIBRATION_HPP

@@ -406,6 +406,52 @@ QString CalibrationController::diagnosticLogPath() const
     return DiagnosticLogger::instance().logFilePath();
 }
 
+QString CalibrationController::calibrationStageText() const
+{
+    switch (m_runtimeStatus.stage) {
+    case CalibrationRuntimeStage::Idle: return QStringLiteral("空闲");
+    case CalibrationRuntimeStage::Preparing: return QStringLiteral("准备");
+    case CalibrationRuntimeStage::PoseSearch: return QStringLiteral("搜索观察位");
+    case CalibrationRuntimeStage::CandidateGeneration: return QStringLiteral("生成姿态");
+    case CalibrationRuntimeStage::Collecting: return QStringLiteral("采集数据");
+    case CalibrationRuntimeStage::PnP: return QStringLiteral("PnP");
+    case CalibrationRuntimeStage::HandEyeInitial: return QStringLiteral("初次手眼求解");
+    case CalibrationRuntimeStage::MadFiltering: return QStringLiteral("MAD过滤");
+    case CalibrationRuntimeStage::HandEyeRefit: return QStringLiteral("重新拟合");
+    case CalibrationRuntimeStage::QualityValidation: return QStringLiteral("质量检查");
+    case CalibrationRuntimeStage::Publishing: return QStringLiteral("发布");
+    case CalibrationRuntimeStage::Completed: return QStringLiteral("完成");
+    case CalibrationRuntimeStage::Failed: return QStringLiteral("失败");
+    case CalibrationRuntimeStage::Cancelled: return QStringLiteral("已取消");
+    }
+    return QStringLiteral("未知");
+}
+
+void CalibrationController::resetRuntimeStatus()
+{
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this]() {
+            resetRuntimeStatus();
+        }, Qt::QueuedConnection);
+        return;
+    }
+    m_runtimeStatus = makeEmptyCalibrationRuntimeStatus();
+    emit calibrationRuntimeChanged();
+}
+
+void CalibrationController::applyRuntimeStatus(const CalibrationRuntimeStatus& status)
+{
+    if (QThread::currentThread() != thread()) {
+        CalibrationRuntimeStatus copy = status;
+        QMetaObject::invokeMethod(this, [this, copy]() {
+            applyRuntimeStatus(copy);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    m_runtimeStatus = status;
+    emit calibrationRuntimeChanged();
+}
+
 // ===================================================================
 //  机器人连接
 // ===================================================================
@@ -1075,6 +1121,7 @@ void CalibrationController::startCalibration()
     m_lastLoggedProgress = -1;
     m_progress = 0;
     setResult("");
+    resetRuntimeStatus();
     emit runningChanged();
     emit progressChanged();
 
@@ -1208,6 +1255,12 @@ void CalibrationController::calibrationThreadFunc(
             CalibrationResult result;
 
             QByteArray ip = robotIp.toLocal8Bit();
+            QPointer<CalibrationController> guard(this);
+            auto runtime_cb = [guard](const CalibrationRuntimeStatus& status) {
+                if (!guard)
+                    return;
+                guard->applyRuntimeStatus(status);
+            };
             bool ok = autoEyeInHandCharucoCalibration(
                 m_robotHandle,
                 ip.data(),
@@ -1220,7 +1273,8 @@ void CalibrationController::calibrationThreadFunc(
                 m_calibrationPath,
                 m_paramPath + "hand_eye_result.yaml",
                 calibrationCallback,
-                cam_file);
+                cam_file,
+                runtime_cb);
 
             APP_LOG_EVENT_INFO("calibration",
                                "calibration_pipeline",

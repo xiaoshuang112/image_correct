@@ -14,6 +14,7 @@
 #include "utils/robot_util.hpp"
 
 #include "det.h"
+#include "calibration_runtime_status.hpp"
 
 // 自动眼在手 ChArUco 标定结果
 struct CalibrationResult {
@@ -48,6 +49,7 @@ struct CalibrationResult {
  *                        - 000.jpg, 001.jpg, ... 采集图像
  *                        - rob_pos.csv 法兰轴角位姿 (mm,deg)
  *                        - rob_joint.csv 关节角 (deg)
+ * @param runtime_callback 可选实时结构化状态回调（与日志解耦；为空则不发布）
  * @return true/false
  */
 bool autoEyeInHandCharucoCalibration(
@@ -62,7 +64,8 @@ bool autoEyeInHandCharucoCalibration(
     const std::string& save_dir = "",
     const std::string& output_yaml = "",
     AI_det_callback callback = nullptr,
-    const std::string& intrinsic_source_file = ""
+    const std::string& intrinsic_source_file = "",
+    CalibrationRuntimeCallback runtime_callback = {}
 );
 
 #endif // AUTO_EYE_IN_HAND_CHARUCO_CALIBRATION_HPP
