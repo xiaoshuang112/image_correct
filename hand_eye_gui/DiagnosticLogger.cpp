@@ -520,7 +520,7 @@ void DiagnosticLogger::log(Level level,
         std::lock_guard<std::mutex> lock(m_sinkMutex);
         sink = m_uiSink;
     }
-    if (sink)
+    if (sink && level != Level::Debug)
         sink(formatted + '\n');
 }
 

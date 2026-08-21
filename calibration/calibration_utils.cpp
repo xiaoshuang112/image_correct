@@ -361,7 +361,7 @@ bool executeCollection(int robot_handle,
         // 标定采集还需要给机械结构额外的衰减时间，避免“控制器已停止但末端仍在微振”时
         // 将旧图像与稍后的机器人反馈位姿配成一组。
         const std::uint64_t motion_completed_timestamp_ns = hostRealtimeNowNs();
-        APP_LOG_EVENT_INFO("calibration.collection",
+        APP_LOG_EVENT_DEBUG("calibration.collection",
                            "mechanical_settling",
                            "start",
                            {{"index", QString::number(i)},
@@ -409,7 +409,7 @@ bool executeCollection(int robot_handle,
             else
                 ++discarded_frames;
         }
-        APP_LOG_EVENT_INFO("calibration.collection",
+        APP_LOG_EVENT_DEBUG("calibration.collection",
                            "mechanical_settling",
                            "complete",
                            {{"index", QString::number(i)},
@@ -512,7 +512,7 @@ bool executeCollection(int robot_handle,
             continue;
         }
         if (capture_attempts > 1) {
-            APP_LOG_EVENT_INFO("calibration.collection",
+            APP_LOG_EVENT_WARNING("calibration.collection",
                                "collection_capture_retry",
                                "recovered",
                                {{"index", QString::number(i)},
@@ -684,7 +684,7 @@ bool executeCollection(int robot_handle,
                     save_dir + "/" +
                     (captured - 1 < 10 ? "00" : captured - 1 < 100 ? "0" : "") +
                     std::to_string(captured - 1) + ".jpg"));
-        APP_LOG_EVENT_INFO("calibration.collection",
+        APP_LOG_EVENT_DEBUG("calibration.collection",
                            "collection",
                            "captured",
                            {{"phase", "save"},

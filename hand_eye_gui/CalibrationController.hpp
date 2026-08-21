@@ -75,6 +75,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString publicationState READ publicationState NOTIFY calibrationRuntimeChanged)
     Q_PROPERTY(QString handEyeMatrixText READ handEyeMatrixText NOTIFY resultTextChanged)
     Q_PROPERTY(QString calibrationOutcome READ calibrationOutcome NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(bool    logAutoScroll READ logAutoScroll WRITE setLogAutoScroll NOTIFY logAutoScrollChanged)
 
 public:
     explicit CalibrationController(QObject* parent = nullptr);
@@ -129,6 +130,8 @@ public:
     QString publicationState() const { return QString::fromStdString(m_runtimeStatus.publication_state); }
     QString handEyeMatrixText() const { return m_handEyeMatrixText; }
     QString calibrationOutcome() const;
+    bool    logAutoScroll() const { return m_logAutoScroll; }
+    void    setLogAutoScroll(bool enabled);
 
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
@@ -176,6 +179,7 @@ signals:
     void resultTextChanged();
     void logTextChanged();
     void calibrationRuntimeChanged();
+    void logAutoScrollChanged();
     void frameUpdated();
 
     /// 标定结束信号
@@ -206,8 +210,9 @@ private:
     /// 将 cv::Mat (BGR) 转为 QImage (RGB)，线程安全发送到 ImageProvider
     void publishFrame(const cv::Mat& bgr);
 
-    /// 追加日志（线程安全）
+    /// 追加日志（线程安全）；UI 侧批量刷新，避免每条触发完整重排
     void appendLog(const QString& line);
+    void flushPendingLogs();
 
     /// 接收核心标定线程发布的结构化运行状态（切回 Controller 线程后更新）
     void applyRuntimeStatus(const CalibrationRuntimeStatus& status);
@@ -241,6 +246,9 @@ private:
     QString  m_resultText;
     QString  m_logText;
     QString  m_handEyeMatrixText;
+    QStringList m_pendingLogLines;
+    QTimer*  m_logFlushTimer = nullptr;
+    bool     m_logAutoScroll = true;
     CalibrationRuntimeStatus m_runtimeStatus = makeEmptyCalibrationRuntimeStatus();
 
     // 硬件句柄

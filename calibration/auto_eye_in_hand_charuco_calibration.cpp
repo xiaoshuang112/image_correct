@@ -204,7 +204,7 @@ static double tryCandidatePoses(int robot_handle,
 
         double s; int n; cv::Point2f bc;
         std::tie(s, n, bc) = evaluatePose(camera, detector, use_center);
-        APP_LOG_EVENT_INFO("calibration.pose_search",
+        APP_LOG_EVENT_DEBUG("calibration.pose_search",
                            "candidate_evaluation",
                            "sampled",
                            {{"phase", search_phase ? search_phase : "unknown"},

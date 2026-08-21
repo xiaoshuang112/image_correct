@@ -401,7 +401,7 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                 ? 100
                 : std::clamp(static_cast<int>(std::lround(
                       (1.0 - remainingError / initialError) * 100.0)), 0, 99);
-            APP_LOG_EVENT_INFO("robot.motion",
+            APP_LOG_EVENT_DEBUG("robot.motion",
                                "joint_move",
                                "progress",
                                {{"elapsed_ms", QString::number(elapsedMs)},

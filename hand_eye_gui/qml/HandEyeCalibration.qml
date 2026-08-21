@@ -820,21 +820,37 @@ ApplicationWindow {
                         ColumnLayout {
                             spacing: 6
 
-                            TextField {
+                            RowLayout {
                                 Layout.fillWidth: true
-                                readOnly: true
-                                selectByMouse: true
-                                text: calibrationController.diagnosticLogPath
-                                color: textDim
-                                font.pixelSize: 14
-                                font.family: "monospace"
-                                background: Rectangle {
-                                    radius: 4
-                                    color: "#161b22"
-                                    border.color: borderColor
+                                TextField {
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    selectByMouse: true
+                                    text: calibrationController.diagnosticLogPath
+                                    color: textDim
+                                    font.pixelSize: 14
+                                    font.family: "monospace"
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: "#161b22"
+                                        border.color: borderColor
+                                    }
+                                    ToolTip.visible: hovered
+                                    ToolTip.text: "远程分析时请提供该文件及 .1～.5 归档"
                                 }
-                                ToolTip.visible: hovered
-                                ToolTip.text: "远程分析时请提供该文件及 .1～.5 归档"
+                                CheckBox {
+                                    text: "自动滚动"
+                                    checked: calibrationController.logAutoScroll
+                                    font.pixelSize: 16
+                                    onCheckedChanged: calibrationController.logAutoScroll = checked
+                                    contentItem: Text {
+                                        text: parent.text
+                                        color: textDim
+                                        font: parent.font
+                                        leftPadding: parent.indicator.width + parent.spacing
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
                             }
 
                             Flickable {
@@ -846,9 +862,21 @@ ApplicationWindow {
                                 contentHeight: logTextArea.paintedHeight
                                 boundsBehavior: Flickable.StopAtBounds
 
+                                property bool userBrowsing: false
+
                                 function scrollToBottom() {
+                                    if (!calibrationController.logAutoScroll || userBrowsing)
+                                        return
                                     var maxY = contentHeight - height
                                     if (maxY > 0) contentY = maxY
+                                }
+
+                                onMovementStarted: {
+                                    // 用户上翻查看历史时暂停自动滚底
+                                    var nearBottom = (contentHeight - height - contentY) < 40
+                                    userBrowsing = !nearBottom
+                                    if (userBrowsing)
+                                        calibrationController.logAutoScroll = false
                                 }
 
                                 TextArea {
@@ -872,7 +900,14 @@ ApplicationWindow {
                             Connections {
                                 target: calibrationController
                                 function onLogTextChanged() {
-                                    Qt.callLater(function() { logFlickable.scrollToBottom() })
+                                    if (calibrationController.logAutoScroll)
+                                        Qt.callLater(function() { logFlickable.scrollToBottom() })
+                                }
+                                function onLogAutoScrollChanged() {
+                                    if (calibrationController.logAutoScroll) {
+                                        logFlickable.userBrowsing = false
+                                        Qt.callLater(function() { logFlickable.scrollToBottom() })
+                                    }
                                 }
                             }
                         }

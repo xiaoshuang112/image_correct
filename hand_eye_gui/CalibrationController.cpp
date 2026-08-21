@@ -74,6 +74,13 @@ CalibrationController::CalibrationController(QObject* parent)
     m_previewTimer->setInterval(66);  // ~15 fps
     connect(m_previewTimer, &QTimer::timeout,
             this, &CalibrationController::onPreviewTick);
+
+    m_logFlushTimer = new QTimer(this);
+    m_logFlushTimer->setSingleShot(true);
+    m_logFlushTimer->setInterval(75);
+    connect(m_logFlushTimer, &QTimer::timeout,
+            this, &CalibrationController::flushPendingLogs);
+
     APP_LOG_EVENT_INFO("controller",
                        "ui_controller",
                        "lifecycle",
@@ -94,6 +101,7 @@ CalibrationController::~CalibrationController()
                         {"robot_connected", QString::number(m_robotConnected)}});
     stopCalibration();
     waitForCalibrationThread();
+    flushPendingLogs();
 
     // 事件循环退出后，工作线程投递的完成事件可能还未执行。
     // 此时线程已经 join，可以安全地直接复位，保证硬件资源能够释放。
@@ -1655,6 +1663,14 @@ bool CalibrationController::robotMotionCancellationRequested()
     return s_instance && s_instance->m_cancelRequested.load();
 }
 
+void CalibrationController::setLogAutoScroll(bool enabled)
+{
+    if (m_logAutoScroll == enabled)
+        return;
+    m_logAutoScroll = enabled;
+    emit logAutoScrollChanged();
+}
+
 void CalibrationController::appendLog(const QString& line)
 {
     if (QThread::currentThread() != thread()) {
@@ -1664,11 +1680,34 @@ void CalibrationController::appendLog(const QString& line)
         return;
     }
 
-    // 仅保留最近 500 行，避免内存无限增长
-    m_logText += line;
-    if (m_logText.count('\n') > 500) {
-        int idx = m_logText.indexOf('\n');
+    m_pendingLogLines.append(line);
+    if (m_logFlushTimer && !m_logFlushTimer->isActive())
+        m_logFlushTimer->start();
+}
+
+void CalibrationController::flushPendingLogs()
+{
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this]() {
+            flushPendingLogs();
+        }, Qt::QueuedConnection);
+        return;
+    }
+    if (m_pendingLogLines.isEmpty())
+        return;
+
+    m_logText += m_pendingLogLines.join(QString());
+    m_pendingLogLines.clear();
+
+    // 仅保留最近约 800 行，避免内存无限增长
+    constexpr int kMaxUiLogLines = 800;
+    int newlineCount = m_logText.count('\n');
+    while (newlineCount > kMaxUiLogLines) {
+        const int idx = m_logText.indexOf('\n');
+        if (idx < 0)
+            break;
         m_logText = m_logText.mid(idx + 1);
+        --newlineCount;
     }
     emit logTextChanged();
 }
