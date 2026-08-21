@@ -475,7 +475,42 @@ void CalibrationController::applyRuntimeStatus(const CalibrationRuntimeStatus& s
         return;
     }
     m_runtimeStatus = status;
+    updateProgressFromRuntime();
     emit calibrationRuntimeChanged();
+}
+
+void CalibrationController::setRuntimeStage(CalibrationRuntimeStage stage,
+                                            const std::string& detail)
+{
+    if (QThread::currentThread() != thread()) {
+        QMetaObject::invokeMethod(this, [this, stage, detail]() {
+            setRuntimeStage(stage, detail);
+        }, Qt::QueuedConnection);
+        return;
+    }
+    m_runtimeStatus.stage = stage;
+    if (!detail.empty())
+        m_runtimeStatus.detail = detail;
+    emit calibrationRuntimeChanged();
+}
+
+void CalibrationController::updateProgressFromRuntime()
+{
+    if (!m_useRuntimeProgress.load())
+        return;
+    if (m_runtimeStatus.candidate_reachable <= 0 ||
+        m_runtimeStatus.candidate_processed < 0)
+        return;
+    int p = m_runtimeStatus.candidate_processed * 100 /
+            m_runtimeStatus.candidate_reachable;
+    if (p < 0)
+        p = 0;
+    if (p > 100)
+        p = 100;
+    if (m_progress == p)
+        return;
+    m_progress = p;
+    emit progressChanged();
 }
 
 // ===================================================================
@@ -1146,8 +1181,10 @@ void CalibrationController::startCalibration()
     setRobotMotionCancelCheck(&CalibrationController::robotMotionCancellationRequested);
     m_lastLoggedProgress = -1;
     m_progress = 0;
+    m_useRuntimeProgress = (m_calibrationType == "eye_in_hand");
     setResult("");
     resetRuntimeStatus();
+    setRuntimeStage(CalibrationRuntimeStage::Preparing, "controller_prepare");
     emit runningChanged();
     emit progressChanged();
 
@@ -1179,6 +1216,7 @@ void CalibrationController::startCalibration()
                             {{"type", "std"},
                              {"message", QString::fromLocal8Bit(e.what())}});
         setStatus(message);
+        setRuntimeStage(CalibrationRuntimeStage::Failed, "thread_start_failed");
         emit runningChanged();
         emit calibrationFinished(false, message);
     }
@@ -1269,6 +1307,8 @@ void CalibrationController::calibrationThreadFunc(
                                 {{"type", "eye_in_hand"},
                                  {"reason", "robot_prepare_failed"}});
             setStatus("机器人上电使能失败");
+            setRuntimeStage(CalibrationRuntimeStage::Failed, "robot_prepare_failed");
+            emit calibrationFinished(false, "机器人上电使能失败");
             goto done;
         }
 
@@ -1615,8 +1655,10 @@ int CalibrationController::calibrationCallback(char* msg, int msg_len, int flag)
         return -1;
     }
 
-    // flag 为进度百分比 (0-100) 或有图时为 1
-    if (flag > 0 && flag <= 100) {
+    // flag 为进度百分比 (0-100) 或有图时为 1。
+    // Eye-in-Hand 主进度由 Runtime Status 的 processed/reachable 驱动；
+    // 本 callback 仅继续负责图片通知，以及 Eye-to-Hand 兼容进度。
+    if (flag > 0 && flag <= 100 && !s_instance->m_useRuntimeProgress.load()) {
         s_instance->setProgress(flag);
         int previous = s_instance->m_lastLoggedProgress.load();
         const bool shouldLog = previous < 0 || flag == 100 || flag / 10 > previous / 10;

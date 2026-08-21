@@ -217,6 +217,9 @@ private:
     /// 接收核心标定线程发布的结构化运行状态（切回 Controller 线程后更新）
     void applyRuntimeStatus(const CalibrationRuntimeStatus& status);
     void resetRuntimeStatus();
+    /// 仅更新 stage/detail，不覆盖已产生的指标（用于进入核心前的 Controller 侧失败）
+    void setRuntimeStage(CalibrationRuntimeStage stage, const std::string& detail);
+    void updateProgressFromRuntime();
 
     // ---- 静态回调（供 C 风格 AI_det_callback） ----
     static int calibrationCallback(char* msg, int msg_len, int flag);
@@ -268,6 +271,7 @@ private:
     std::thread        m_calibThread;
     std::atomic<bool>  m_cancelRequested{false};
     std::atomic<int>   m_lastLoggedProgress{-1};
+    std::atomic<bool>  m_useRuntimeProgress{false};
 
     // 路径
     std::string m_appPath;

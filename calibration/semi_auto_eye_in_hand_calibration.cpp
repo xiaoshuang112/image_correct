@@ -1453,6 +1453,8 @@ static bool estimateHandEyeTrans(
         return false;
     }
 
+    publishSolve(CalibrationRuntimeStage::HandEyeInitial, "initial_solve_start");
+
     std::vector<HandEyeMethodResult> method_results =
         solveHandEyeMethods(robot_poses, camera_poses, "initial",
                             audit ? &audit->phase2 : nullptr);
@@ -1467,8 +1469,6 @@ static bool estimateHandEyeTrans(
         publishSolve(CalibrationRuntimeStage::Failed, "all_methods_failed");
         return false;
     }
-
-    publishSolve(CalibrationRuntimeStage::HandEyeInitial, "initial_solve");
 
     SolverConsensusResult final_consensus = evaluateSolverConsensus(
         method_results, "initial", audit ? &audit->phase2 : nullptr);
@@ -1863,6 +1863,11 @@ bool calibrateHandEyeFromDisk(
     size_t pose_detection_failures = 0;
     size_t invalid_correspondences = 0;
     double reprojection_error_sum = 0.0;
+
+    if (runtime_status) {
+        publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                  CalibrationRuntimeStage::PnP, "pnp_start");
+    }
 
     for (size_t i = 0; i < n; i++) {
         CalibrationFrameAudit& audit = frame_audits[i];

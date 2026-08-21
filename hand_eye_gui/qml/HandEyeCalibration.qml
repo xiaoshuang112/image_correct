@@ -39,6 +39,14 @@ ApplicationWindow {
         return Number(v).toFixed(3)
     }
 
+    function fmtCount(v) {
+        if (v === undefined || v === null)
+            return "--"
+        if (typeof v !== "number" || !isFinite(v) || v < 0)
+            return "--"
+        return v
+    }
+
     // =================================================================
     //  与 C++ 控制器的连接
     // =================================================================
@@ -553,22 +561,22 @@ ApplicationWindow {
                                 }
                                 Label {
                                     text: "候选姿态: " +
-                                          calibrationController.candidateProcessed + " / " +
-                                          calibrationController.candidateReachable +
-                                          "  (planned " + calibrationController.candidatePlanned + ")"
+                                          root.fmtCount(calibrationController.candidateProcessed) + " / " +
+                                          root.fmtCount(calibrationController.candidateReachable) +
+                                          "  (planned " + root.fmtCount(calibrationController.candidatePlanned) + ")"
                                     color: textDim
                                     font.pixelSize: 18
                                 }
                                 Label {
-                                    text: "成功采集: " + calibrationController.capturedFrames +
-                                          "    跳过: " + calibrationController.skippedFrames
+                                    text: "成功采集: " + root.fmtCount(calibrationController.capturedFrames) +
+                                          "    跳过: " + root.fmtCount(calibrationController.skippedFrames)
                                     color: textDim
                                     font.pixelSize: 18
                                 }
                                 Label {
-                                    text: "PnP有效: " + calibrationController.pnpValidFrames +
-                                          "    MAD剔除: " + calibrationController.madRejectedFrames +
-                                          "    最终内点: " + calibrationController.finalInliers
+                                    text: "PnP有效: " + root.fmtCount(calibrationController.pnpValidFrames) +
+                                          "    MAD剔除: " + root.fmtCount(calibrationController.madRejectedFrames) +
+                                          "    最终内点: " + root.fmtCount(calibrationController.finalInliers)
                                     color: textDim
                                     font.pixelSize: 18
                                 }
@@ -666,20 +674,20 @@ ApplicationWindow {
                                 Label { text: "数据质量"; color: textPrimary; font.pixelSize: 20; font.bold: true }
                                 Label {
                                     text: "候选 planned / reachable: " +
-                                          calibrationController.candidatePlanned + " / " +
-                                          calibrationController.candidateReachable
+                                          root.fmtCount(calibrationController.candidatePlanned) + " / " +
+                                          root.fmtCount(calibrationController.candidateReachable)
                                     color: textDim; font.pixelSize: 17
                                 }
                                 Label {
-                                    text: "PnP有效: " + calibrationController.pnpValidFrames
+                                    text: "PnP有效: " + root.fmtCount(calibrationController.pnpValidFrames)
                                     color: textDim; font.pixelSize: 17
                                 }
                                 Label {
-                                    text: "MAD剔除: " + calibrationController.madRejectedFrames
+                                    text: "MAD剔除: " + root.fmtCount(calibrationController.madRejectedFrames)
                                     color: textDim; font.pixelSize: 17
                                 }
                                 Label {
-                                    text: "最终内点: " + calibrationController.finalInliers
+                                    text: "最终内点: " + root.fmtCount(calibrationController.finalInliers)
                                     color: textDim; font.pixelSize: 17
                                 }
 

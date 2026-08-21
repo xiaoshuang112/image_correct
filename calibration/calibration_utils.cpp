@@ -253,7 +253,7 @@ bool executeCollection(int robot_handle,
     if (runtime_status) {
         runtime_status->candidate_reachable = total;
         runtime_status->current_candidate_index = -1;
-        runtime_status->current_corner_count = 0;
+        runtime_status->current_corner_count = -1;
         publishCollection("collection_start");
     }
 
@@ -282,9 +282,11 @@ bool executeCollection(int robot_handle,
     joint_file = pose_output_dir + "/rob_joint.csv";
 
     for (int i = 0; i < total; i++) {
+#ifndef QT_GUI
         std::cout << "\r[autoCalib] 采集进度: " << (i + 1) << "/" << total
                   << " (有效: " << captured << ")"
                   << std::flush;
+#endif
 
         if (runtime_status) {
             runtime_status->current_candidate_index = i;
@@ -293,13 +295,15 @@ bool executeCollection(int robot_handle,
 
         int progress = 0;
         {
+            progress = (i + 1) * 100 / total;
+#ifndef QT_GUI
             int bar_width = 60;
             int filled = (i + 1) * bar_width / total;
             std::cout << "\n[";
             for (int k = 0; k < bar_width; k++)
                 std::cout << (k < filled ? '#' : ' ');
-            progress = (i + 1) * 100 / total;
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
+#endif
         }        
         CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
         if(sucess != ret_move){
