@@ -1510,6 +1510,8 @@ void CalibrationController::calibrationThreadFunc(
                                       "cancelled",
                                       {{"type", "eye_to_hand"}});
                 setStatus("标定已取消");
+                setRuntimeStage(CalibrationRuntimeStage::Cancelled,
+                                "eye_to_hand_cancelled");
                 goto done;
             }
 
@@ -1556,6 +1558,8 @@ void CalibrationController::calibrationThreadFunc(
 
                 setResult(resText);
                 setStatus("眼在手外标定成功!");
+                setRuntimeStage(CalibrationRuntimeStage::Completed,
+                                "eye_to_hand_complete");
                 APP_LOG_EVENT_INFO("calibration",
                                    "calibration_pipeline",
                                    "success",
@@ -1569,6 +1573,8 @@ void CalibrationController::calibrationThreadFunc(
                                      {"message", QString::fromStdString(result.message)}});
                 setStatus(QString("标定失败: %1").arg(
                               QString::fromStdString(result.message)));
+                setRuntimeStage(CalibrationRuntimeStage::Failed,
+                                "eye_to_hand_failed");
                 emit calibrationFinished(false,
                     QString::fromStdString(result.message));
             }

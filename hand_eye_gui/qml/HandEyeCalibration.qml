@@ -436,7 +436,7 @@ ApplicationWindow {
                     }
                     Text {
                         anchors.centerIn: parent
-                        text: calibrationController.progress + "%"
+                        text: "采集进度 " + calibrationController.progress + "%"
                         color: textPrimary
                         font.pixelSize: 24
                     }
