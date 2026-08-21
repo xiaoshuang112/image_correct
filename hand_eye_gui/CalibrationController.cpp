@@ -1593,6 +1593,8 @@ void CalibrationController::calibrationThreadFunc(
                                     .arg(QString::fromUtf8(e.what()));
         setStatus(message);
         setResult(message);
+        setRuntimeStage(CalibrationRuntimeStage::Failed,
+                        "controller_opencv_exception");
         emit calibrationFinished(false, message);
     } catch (const std::exception& e) {
         APP_LOG_EVENT_ERROR("calibration",
@@ -1604,6 +1606,8 @@ void CalibrationController::calibrationThreadFunc(
                                     .arg(QString::fromUtf8(e.what()));
         setStatus(message);
         setResult(message);
+        setRuntimeStage(CalibrationRuntimeStage::Failed,
+                        "controller_std_exception");
         emit calibrationFinished(false, message);
     } catch (...) {
         APP_LOG_EVENT_ERROR("calibration",
@@ -1613,6 +1617,8 @@ void CalibrationController::calibrationThreadFunc(
         const QString message = "标定发生未知异常";
         setStatus(message);
         setResult(message);
+        setRuntimeStage(CalibrationRuntimeStage::Failed,
+                        "controller_unknown_exception");
         emit calibrationFinished(false, message);
     }
 
