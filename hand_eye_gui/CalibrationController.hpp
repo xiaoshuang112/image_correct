@@ -73,6 +73,8 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString calibrationSessionId READ calibrationSessionId NOTIFY calibrationRuntimeChanged)
     Q_PROPERTY(QString calibrationSessionDir READ calibrationSessionDir NOTIFY calibrationRuntimeChanged)
     Q_PROPERTY(QString publicationState READ publicationState NOTIFY calibrationRuntimeChanged)
+    Q_PROPERTY(QString handEyeMatrixText READ handEyeMatrixText NOTIFY resultTextChanged)
+    Q_PROPERTY(QString calibrationOutcome READ calibrationOutcome NOTIFY calibrationRuntimeChanged)
 
 public:
     explicit CalibrationController(QObject* parent = nullptr);
@@ -125,6 +127,8 @@ public:
     QString calibrationSessionId() const { return QString::fromStdString(m_runtimeStatus.calibration_session_id); }
     QString calibrationSessionDir() const { return QString::fromStdString(m_runtimeStatus.calibration_session_dir); }
     QString publicationState() const { return QString::fromStdString(m_runtimeStatus.publication_state); }
+    QString handEyeMatrixText() const { return m_handEyeMatrixText; }
+    QString calibrationOutcome() const;
 
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
@@ -236,6 +240,7 @@ private:
     QString  m_statusMessage  = "就绪";
     QString  m_resultText;
     QString  m_logText;
+    QString  m_handEyeMatrixText;
     CalibrationRuntimeStatus m_runtimeStatus = makeEmptyCalibrationRuntimeStatus();
 
     // 硬件句柄

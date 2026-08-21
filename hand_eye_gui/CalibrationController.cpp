@@ -427,6 +427,22 @@ QString CalibrationController::calibrationStageText() const
     return QStringLiteral("未知");
 }
 
+QString CalibrationController::calibrationOutcome() const
+{
+    switch (m_runtimeStatus.stage) {
+    case CalibrationRuntimeStage::Completed:
+        return QStringLiteral("PASS");
+    case CalibrationRuntimeStage::Failed:
+        return QStringLiteral("FAIL");
+    case CalibrationRuntimeStage::Cancelled:
+        return QStringLiteral("CANCELLED");
+    case CalibrationRuntimeStage::Idle:
+        return QStringLiteral("IDLE");
+    default:
+        return QStringLiteral("RUNNING");
+    }
+}
+
 void CalibrationController::resetRuntimeStatus()
 {
     if (QThread::currentThread() != thread()) {
@@ -436,7 +452,9 @@ void CalibrationController::resetRuntimeStatus()
         return;
     }
     m_runtimeStatus = makeEmptyCalibrationRuntimeStatus();
+    m_handEyeMatrixText.clear();
     emit calibrationRuntimeChanged();
+    emit resultTextChanged();
 }
 
 void CalibrationController::applyRuntimeStatus(const CalibrationRuntimeStatus& status)
@@ -1313,16 +1331,21 @@ void CalibrationController::calibrationThreadFunc(
 
                 std::stringstream ss_in;
                 ss_in << result.T_flange_camera;
+                const QString matrixText = QString::fromStdString(ss_in.str());
                 QString resText = QString(
                     "T_flange_camera:\n%1\n"
                     "平移一致性 RMS: %2 mm\n"
                     "有效帧数: %3\n"
                     "审计会话: %4")
-                    .arg(QString::fromStdString(ss_in.str()))
+                    .arg(matrixText)
                     .arg(result.reproj_error * 1000.0, 0, 'f', 4)
                     .arg(result.valid_frames)
                     .arg(QString::fromStdString(result.session_dir));
 
+                QMetaObject::invokeMethod(this, [this, matrixText]() {
+                    m_handEyeMatrixText = matrixText;
+                    emit resultTextChanged();
+                }, Qt::QueuedConnection);
                 setResult(resText);
                 setStatus("眼在手内标定成功!");
                 APP_LOG_EVENT_INFO("calibration",
@@ -1337,6 +1360,15 @@ void CalibrationController::calibrationThreadFunc(
                                     "fail",
                                     {{"type", "eye_in_hand"},
                                      {"message", QString::fromStdString(result.message)}});
+                if (!result.T_flange_camera.empty()) {
+                    std::stringstream ss_in;
+                    ss_in << result.T_flange_camera;
+                    const QString matrixText = QString::fromStdString(ss_in.str());
+                    QMetaObject::invokeMethod(this, [this, matrixText]() {
+                        m_handEyeMatrixText = matrixText;
+                        emit resultTextChanged();
+                    }, Qt::QueuedConnection);
+                }
                 setStatus(QString("标定失败: %1").arg(
                               QString::fromStdString(result.message)));
                 emit calibrationFinished(false,

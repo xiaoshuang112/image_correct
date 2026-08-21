@@ -487,218 +487,394 @@ ApplicationWindow {
 
                 ColumnLayout {
                     anchors.fill: parent
-                    anchors.margins: 12
+                    anchors.margins: 8
                     spacing: 6
 
-                    // ---- 运行状态（结构化，不解析 logText） ----
-                    Label {
-                        text: "运行状态"
-                        color: textPrimary
-                        font.pixelSize: 28
-                        font.bold: true
-                    }
-
-                    Rectangle {
+                    TabBar {
+                        id: rightTabs
                         Layout.fillWidth: true
-                        height: 1
-                        color: borderColor
-                    }
 
-                    ColumnLayout {
-                        Layout.fillWidth: true
-                        spacing: 4
-
-                        Label {
-                            text: "阶段: " + (calibrationController.calibrationStageText || "空闲")
-                            color: textPrimary
-                            font.pixelSize: 20
-                            font.bold: true
-                        }
-                        Label {
-                            text: "候选姿态: " +
-                                  calibrationController.candidateProcessed + " / " +
-                                  calibrationController.candidateReachable +
-                                  "  (planned " + calibrationController.candidatePlanned + ")"
-                            color: textDim
+                        TabButton {
+                            text: "运行状态"
                             font.pixelSize: 18
+                            width: implicitWidth
                         }
-                        Label {
-                            text: "成功采集: " + calibrationController.capturedFrames +
-                                  "    跳过: " + calibrationController.skippedFrames
-                            color: textDim
+                        TabButton {
+                            text: "标定结果"
                             font.pixelSize: 18
+                            width: implicitWidth
                         }
-                        Label {
-                            text: "PnP有效: " + calibrationController.pnpValidFrames +
-                                  "    MAD剔除: " + calibrationController.madRejectedFrames +
-                                  "    最终内点: " + calibrationController.finalInliers
-                            color: textDim
+                        TabButton {
+                            text: "诊断日志"
                             font.pixelSize: 18
-                        }
-                        Label {
-                            visible: calibrationController.consensusAvailable ||
-                                     !isNaN(calibrationController.translationRmsMm)
-                            text: "平移 RMS/P95/MAX: " +
-                                  root.fmtMetric(calibrationController.translationRmsMm) + " / " +
-                                  root.fmtMetric(calibrationController.translationP95Mm) + " / " +
-                                  root.fmtMetric(calibrationController.translationMaxMm) + " mm"
-                            color: textDim
-                            font.pixelSize: 17
-                        }
-                        Label {
-                            visible: calibrationController.consensusAvailable ||
-                                     !isNaN(calibrationController.rotationRmsDeg)
-                            text: "旋转 RMS/P95/MAX: " +
-                                  root.fmtMetric(calibrationController.rotationRmsDeg) + " / " +
-                                  root.fmtMetric(calibrationController.rotationP95Deg) + " / " +
-                                  root.fmtMetric(calibrationController.rotationMaxDeg) + " deg"
-                            color: textDim
-                            font.pixelSize: 17
-                        }
-                        Label {
-                            visible: calibrationController.selectedSolver.length > 0 ||
-                                     calibrationController.consensusAvailable
-                            text: "Solver: " + (calibrationController.selectedSolver || "--") +
-                                  "  共识: " + (calibrationController.consensusAvailable
-                                      ? (calibrationController.consensusPassed ? "PASS" : "FAIL")
-                                      : "--")
-                            color: textDim
-                            font.pixelSize: 17
-                        }
-                        Label {
-                            visible: calibrationController.publicationState !== "not_started" ||
-                                     calibrationController.calibrationSessionId.length > 0
-                            text: "发布: " + (calibrationController.publicationState || "not_started")
-                            color: textDim
-                            font.pixelSize: 17
+                            width: implicitWidth
                         }
                     }
 
-                    // ---- 标定结果（紧凑） ----
-                    Label {
-                        text: "标定结果"
-                        color: textPrimary
-                        font.pixelSize: 28
-                        font.bold: true
-                    }
-
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 1
-                        color: borderColor
-                    }
-
-                    // TCP 偏移（仅眼在手内模式）
-                    RowLayout {
-                        visible: calibrationController.calibrationType === "eye_in_hand"
-                        spacing: 8
-                        Label {
-                            text: "TCP 偏移 (mm):"
-                            color: textDim
-                            font.pixelSize: 21
-                        }
-                        TextField {
-                            id: tcpOffsetField
-                            enabled: !calibrationController.running
-                            text: calibrationController.cameraToTcpEnd
-                            font.pixelSize: 21
-                            color: textPrimary
-                            Layout.preferredWidth: 60
-                            background: Rectangle {
-                                radius: 4; color: "#161b22"; border.color: borderColor
-                            }
-                            onEditingFinished: {
-                                var v = parseInt(text)
-                                if (!isNaN(v)) calibrationController.cameraToTcpEnd = v
-                            }
-                        }
-                    }
-
-                    Flickable {
-                        Layout.fillWidth: true
-                        Layout.preferredHeight: 60
-                        clip: true
-                        contentWidth: resultText.paintedWidth
-                        contentHeight: resultText.paintedHeight
-                        TextArea {
-                            id: resultText
-                            readOnly: true
-                            text: calibrationController.resultText || "等待标定完成..."
-                            color: textDim
-                            font.pixelSize: 18
-                            font.family: "monospace"
-                            background: null
-                            wrapMode: TextArea.NoWrap
-                            selectByMouse: true
-                        }
-                    }
-
-                    // ---- 分隔 ----
-                    Rectangle {
-                        Layout.fillWidth: true
-                        height: 1
-                        color: borderColor
-                    }
-
-                    // ---- 持久化诊断日志 ----
-                    Label {
-                        text: "诊断日志"
-                        color: textPrimary
-                        font.pixelSize: 24
-                        font.bold: true
-                    }
-
-                    TextField {
-                        Layout.fillWidth: true
-                        readOnly: true
-                        selectByMouse: true
-                        text: calibrationController.diagnosticLogPath
-                        color: textDim
-                        font.pixelSize: 14
-                        font.family: "monospace"
-                        background: Rectangle {
-                            radius: 4
-                            color: "#161b22"
-                            border.color: borderColor
-                        }
-                        ToolTip.visible: hovered
-                        ToolTip.text: "远程分析时请提供该文件及 .1～.5 归档"
-                    }
-
-                    Flickable {
-                        id: logFlickable
-                        Layout.fillWidth: true
-                        Layout.fillHeight: true
-                        clip: true
-                        contentWidth: logTextArea.paintedWidth
-                        contentHeight: logTextArea.paintedHeight
-                        boundsBehavior: Flickable.StopAtBounds
-
-                        function scrollToBottom() {
-                            var maxY = contentHeight - height
-                            if (maxY > 0) contentY = maxY
-                        }
-
-                        TextArea {
-                            id: logTextArea
-                            readOnly: true
-                            text: calibrationController.logText
-                            color: "#c9d1d9"
-                            font.pixelSize: 18
-                            font.family: "monospace"
-                            background: null
-                            wrapMode: TextArea.Wrap
-                            selectByMouse: true
-                            onPaintedHeightChanged: { logFlickable.contentHeight = paintedHeight; logFlickable.scrollToBottom() }
-                            onPaintedWidthChanged:  { logFlickable.contentWidth = paintedWidth }
-                        }
-                    }
-
-                    // 当日志文本变化时，延迟一帧滚动（确保布局完成）
+                    // 运行中自动看“运行状态”，结束后自动切到“标定结果”
                     Connections {
                         target: calibrationController
-                        function onLogTextChanged() {
-                            Qt.callLater(function() { logFlickable.scrollToBottom() })
+                        function onRunningChanged() {
+                            if (calibrationController.running)
+                                rightTabs.currentIndex = 0
+                        }
+                        function onCalibrationRuntimeChanged() {
+                            var outcome = calibrationController.calibrationOutcome
+                            if (outcome === "PASS" || outcome === "FAIL" || outcome === "CANCELLED")
+                                rightTabs.currentIndex = 1
+                        }
+                        function onCalibrationFinished(success, message) {
+                            rightTabs.currentIndex = 1
+                        }
+                    }
+
+                    StackLayout {
+                        Layout.fillWidth: true
+                        Layout.fillHeight: true
+                        currentIndex: rightTabs.currentIndex
+
+                        // -------- Tab 0: 运行状态 --------
+                        Flickable {
+                            clip: true
+                            contentWidth: width
+                            contentHeight: runtimeCol.implicitHeight
+                            boundsBehavior: Flickable.StopAtBounds
+
+                            ColumnLayout {
+                                id: runtimeCol
+                                width: parent.width
+                                spacing: 6
+
+                                Label {
+                                    text: "阶段: " + (calibrationController.calibrationStageText || "空闲")
+                                    color: textPrimary
+                                    font.pixelSize: 22
+                                    font.bold: true
+                                }
+                                Label {
+                                    text: "候选姿态: " +
+                                          calibrationController.candidateProcessed + " / " +
+                                          calibrationController.candidateReachable +
+                                          "  (planned " + calibrationController.candidatePlanned + ")"
+                                    color: textDim
+                                    font.pixelSize: 18
+                                }
+                                Label {
+                                    text: "成功采集: " + calibrationController.capturedFrames +
+                                          "    跳过: " + calibrationController.skippedFrames
+                                    color: textDim
+                                    font.pixelSize: 18
+                                }
+                                Label {
+                                    text: "PnP有效: " + calibrationController.pnpValidFrames +
+                                          "    MAD剔除: " + calibrationController.madRejectedFrames +
+                                          "    最终内点: " + calibrationController.finalInliers
+                                    color: textDim
+                                    font.pixelSize: 18
+                                }
+                                Label {
+                                    text: "平移 RMS/P95/MAX: " +
+                                          root.fmtMetric(calibrationController.translationRmsMm) + " / " +
+                                          root.fmtMetric(calibrationController.translationP95Mm) + " / " +
+                                          root.fmtMetric(calibrationController.translationMaxMm) + " mm"
+                                    color: textDim
+                                    font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "旋转 RMS/P95/MAX: " +
+                                          root.fmtMetric(calibrationController.rotationRmsDeg) + " / " +
+                                          root.fmtMetric(calibrationController.rotationP95Deg) + " / " +
+                                          root.fmtMetric(calibrationController.rotationMaxDeg) + " deg"
+                                    color: textDim
+                                    font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "Solver: " + (calibrationController.selectedSolver || "--") +
+                                          "  共识: " + (calibrationController.consensusAvailable
+                                              ? (calibrationController.consensusPassed ? "PASS" : "FAIL")
+                                              : "--")
+                                    color: textDim
+                                    font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "发布: " + (calibrationController.publicationState || "not_started")
+                                    color: textDim
+                                    font.pixelSize: 17
+                                }
+                            }
+                        }
+
+                        // -------- Tab 1: 标定结果 --------
+                        Flickable {
+                            clip: true
+                            contentWidth: width
+                            contentHeight: resultCol.implicitHeight
+                            boundsBehavior: Flickable.StopAtBounds
+                            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                            ColumnLayout {
+                                id: resultCol
+                                width: parent.width
+                                spacing: 10
+
+                                Label {
+                                    Layout.fillWidth: true
+                                    horizontalAlignment: Text.AlignHCenter
+                                    text: {
+                                        var o = calibrationController.calibrationOutcome
+                                        if (o === "PASS" || o === "FAIL" || o === "CANCELLED")
+                                            return o
+                                        return calibrationController.running ? "RUNNING" : "—"
+                                    }
+                                    color: {
+                                        var o = calibrationController.calibrationOutcome
+                                        if (o === "PASS") return "#3fb950"
+                                        if (o === "FAIL") return accentRed
+                                        if (o === "CANCELLED") return "#d2991d"
+                                        return textDim
+                                    }
+                                    font.pixelSize: 36
+                                    font.bold: true
+                                }
+
+                                // TCP 偏移
+                                RowLayout {
+                                    visible: calibrationController.calibrationType === "eye_in_hand"
+                                    spacing: 8
+                                    Label {
+                                        text: "TCP 偏移 (mm):"
+                                        color: textDim
+                                        font.pixelSize: 18
+                                    }
+                                    TextField {
+                                        enabled: !calibrationController.running
+                                        text: calibrationController.cameraToTcpEnd
+                                        font.pixelSize: 18
+                                        color: textPrimary
+                                        Layout.preferredWidth: 60
+                                        background: Rectangle {
+                                            radius: 4; color: "#161b22"; border.color: borderColor
+                                        }
+                                        onEditingFinished: {
+                                            var v = parseInt(text)
+                                            if (!isNaN(v)) calibrationController.cameraToTcpEnd = v
+                                        }
+                                    }
+                                }
+
+                                // A. 数据质量
+                                Label { text: "数据质量"; color: textPrimary; font.pixelSize: 20; font.bold: true }
+                                Label {
+                                    text: "候选 planned / reachable: " +
+                                          calibrationController.candidatePlanned + " / " +
+                                          calibrationController.candidateReachable
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "PnP有效: " + calibrationController.pnpValidFrames
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "MAD剔除: " + calibrationController.madRejectedFrames
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "最终内点: " + calibrationController.finalInliers
+                                    color: textDim; font.pixelSize: 17
+                                }
+
+                                Rectangle { Layout.fillWidth: true; height: 1; color: borderColor }
+
+                                // B. 平移一致性
+                                Label { text: "平移一致性 (mm)"; color: textPrimary; font.pixelSize: 20; font.bold: true }
+                                Label {
+                                    text: "RMS: " + root.fmtMetric(calibrationController.translationRmsMm)
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "P95: " + root.fmtMetric(calibrationController.translationP95Mm)
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "MAX: " + root.fmtMetric(calibrationController.translationMaxMm)
+                                    color: textDim; font.pixelSize: 17
+                                }
+
+                                Rectangle { Layout.fillWidth: true; height: 1; color: borderColor }
+
+                                // C. 旋转一致性
+                                Label { text: "旋转一致性 (deg)"; color: textPrimary; font.pixelSize: 20; font.bold: true }
+                                Label {
+                                    text: "RMS: " + root.fmtMetric(calibrationController.rotationRmsDeg)
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "P95: " + root.fmtMetric(calibrationController.rotationP95Deg)
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "MAX: " + root.fmtMetric(calibrationController.rotationMaxDeg)
+                                    color: textDim; font.pixelSize: 17
+                                }
+
+                                Rectangle { Layout.fillWidth: true; height: 1; color: borderColor }
+
+                                // D. Solver 共识
+                                Label { text: "Solver 共识"; color: textPrimary; font.pixelSize: 20; font.bold: true }
+                                Label {
+                                    text: "Medoid: " + (calibrationController.selectedSolver || "--")
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "Max Δt: " + root.fmtMetric(calibrationController.consensusMaxTranslationMm) + " mm"
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "Max ΔR: " + root.fmtMetric(calibrationController.consensusMaxRotationDeg) + " deg"
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "Consensus: " + (calibrationController.consensusAvailable
+                                          ? (calibrationController.consensusPassed ? "PASS" : "FAIL")
+                                          : "--")
+                                    color: calibrationController.consensusAvailable
+                                           ? (calibrationController.consensusPassed ? "#3fb950" : accentRed)
+                                           : textDim
+                                    font.pixelSize: 17
+                                    font.bold: true
+                                }
+
+                                Rectangle { Layout.fillWidth: true; height: 1; color: borderColor }
+
+                                // E. 生产发布
+                                Label { text: "生产发布"; color: textPrimary; font.pixelSize: 20; font.bold: true }
+                                Label {
+                                    text: "production handeye.yaml: " + (
+                                        calibrationController.publicationState === "published" ? "已发布" :
+                                        calibrationController.publicationState === "publishing" ? "发布中" :
+                                        calibrationController.publicationState === "failed" ? "发布失败" :
+                                        calibrationController.publicationState === "not_published" ? "未发布" :
+                                        "未开始")
+                                    color: textDim; font.pixelSize: 17
+                                }
+                                Label {
+                                    text: "Session ID: " + (calibrationController.calibrationSessionId || "--")
+                                    color: textDim; font.pixelSize: 15
+                                    wrapMode: Text.WrapAnywhere
+                                    Layout.fillWidth: true
+                                }
+                                Label {
+                                    text: "Session目录: " + (calibrationController.calibrationSessionDir || "--")
+                                    color: textDim; font.pixelSize: 15
+                                    wrapMode: Text.WrapAnywhere
+                                    Layout.fillWidth: true
+                                }
+
+                                Rectangle { Layout.fillWidth: true; height: 1; color: borderColor }
+
+                                // 矩阵：可展开
+                                Button {
+                                    id: matrixToggle
+                                    text: matrixExpanded.checked ? "收起手眼矩阵" : "查看手眼矩阵"
+                                    font.pixelSize: 18
+                                    checkable: false
+                                    onClicked: matrixExpanded.checked = !matrixExpanded.checked
+                                    background: Rectangle {
+                                        radius: 4
+                                        color: parent.down ? "#30363d" : "#21262d"
+                                        border.color: borderColor
+                                    }
+                                    contentItem: Text {
+                                        text: parent.text; color: textPrimary; font: parent.font
+                                        horizontalAlignment: Text.AlignHCenter
+                                        verticalAlignment: Text.AlignVCenter
+                                    }
+                                }
+                                CheckBox {
+                                    id: matrixExpanded
+                                    visible: false
+                                    checked: false
+                                }
+                                TextArea {
+                                    visible: matrixExpanded.checked
+                                    Layout.fillWidth: true
+                                    readOnly: true
+                                    selectByMouse: true
+                                    wrapMode: TextArea.NoWrap
+                                    text: calibrationController.handEyeMatrixText ||
+                                          calibrationController.resultText ||
+                                          "尚无矩阵"
+                                    color: textDim
+                                    font.pixelSize: 15
+                                    font.family: "monospace"
+                                    background: Rectangle {
+                                        color: "#161b22"
+                                        border.color: borderColor
+                                        radius: 4
+                                    }
+                                }
+                            }
+                        }
+
+                        // -------- Tab 2: 诊断日志 --------
+                        ColumnLayout {
+                            spacing: 6
+
+                            TextField {
+                                Layout.fillWidth: true
+                                readOnly: true
+                                selectByMouse: true
+                                text: calibrationController.diagnosticLogPath
+                                color: textDim
+                                font.pixelSize: 14
+                                font.family: "monospace"
+                                background: Rectangle {
+                                    radius: 4
+                                    color: "#161b22"
+                                    border.color: borderColor
+                                }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "远程分析时请提供该文件及 .1～.5 归档"
+                            }
+
+                            Flickable {
+                                id: logFlickable
+                                Layout.fillWidth: true
+                                Layout.fillHeight: true
+                                clip: true
+                                contentWidth: logTextArea.paintedWidth
+                                contentHeight: logTextArea.paintedHeight
+                                boundsBehavior: Flickable.StopAtBounds
+
+                                function scrollToBottom() {
+                                    var maxY = contentHeight - height
+                                    if (maxY > 0) contentY = maxY
+                                }
+
+                                TextArea {
+                                    id: logTextArea
+                                    readOnly: true
+                                    text: calibrationController.logText
+                                    color: "#c9d1d9"
+                                    font.pixelSize: 18
+                                    font.family: "monospace"
+                                    background: null
+                                    wrapMode: TextArea.Wrap
+                                    selectByMouse: true
+                                    onPaintedHeightChanged: {
+                                        logFlickable.contentHeight = paintedHeight
+                                        logFlickable.scrollToBottom()
+                                    }
+                                    onPaintedWidthChanged: logFlickable.contentWidth = paintedWidth
+                                }
+                            }
+
+                            Connections {
+                                target: calibrationController
+                                function onLogTextChanged() {
+                                    Qt.callLater(function() { logFlickable.scrollToBottom() })
+                                }
+                            }
                         }
                     }
                 }
