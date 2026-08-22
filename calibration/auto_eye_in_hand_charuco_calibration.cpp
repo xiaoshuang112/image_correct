@@ -33,6 +33,7 @@
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 #include "calibration_utils.hpp"
 #include "calibration_session.hpp"
+#include "intrinsic_identity.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
 
 using namespace calib_transform;
@@ -1203,8 +1204,7 @@ bool autoEyeInHandCharucoCalibration(
     if (has_provided_intrinsics) {
         session_options.camera_matrix = camera_matrix.getMat().clone();
         session_options.dist_coeffs = dist_coeffs.getMat().clone();
-    }
-    std::string session_error;
+    }    std::string session_error;
     publish(CalibrationRuntimeStage::Preparing, "create_session");
     std::unique_ptr<CalibrationSession> session =
         CalibrationSession::create(session_options, session_error);
@@ -1227,6 +1227,92 @@ bool autoEyeInHandCharucoCalibration(
         session->finalizeFailure(stage, reason, result.message);
         return false;
     };
+
+    // ---- MVS 内参安全门禁（在任何机器人运动之前） ----
+    // MVS SDK 不提供镜头内参：必须加载外部 camera_params.yaml，
+    // 校验 K/D 形状与焦距合理性，并校验内参绑定的序列号/分辨率
+    // 与当前相机一致。禁止静默进入 360 帧全量内参重算。
+    std::string mvsIntrinsicSource;
+    if (camera && camera->backendName() == "mvs") {
+        const CameraDeviceAuditInfo gateInfo = camera->getDeviceAuditInfo();
+        const CONFIG& gateCfg = camera->getConfig();
+        std::string gateReason;
+
+        if (!has_provided_intrinsics) {
+            result.message =
+                "MVS 相机缺少外部内参 param/camera_params.yaml，已阻断标定；"
+                "禁止在内参缺失时静默全量重算。请先用独立的相机内参标定流程"
+                "生成内参并绑定相机身份（camera_serial/image_width/image_height）。";
+            APP_LOG_EVENT_ERROR("calibration",
+                                "intrinsic_gate",
+                                "blocked",
+                                {{"reason", "mvs_intrinsics_missing"},
+                                 {"file", QString::fromStdString(intrinsic_source_file)}});
+            return failSession("intrinsic_validation", "mvs_intrinsics_missing");
+        }
+        if (!intrinsic_gate::validateIntrinsicsShape(
+                camera_matrix.getMat(), dist_coeffs.getMat(),
+                gateInfo.actual_width, gateInfo.actual_height, gateReason)) {
+            result.message = "MVS 内参形状校验失败: " + gateReason;
+            APP_LOG_EVENT_ERROR("calibration",
+                                "intrinsic_gate",
+                                "blocked",
+                                {{"reason", "mvs_intrinsics_invalid"},
+                                 {"detail", QString::fromStdString(gateReason)}});
+            return failSession("intrinsic_validation", "mvs_intrinsics_invalid");
+        }
+
+        intrinsic_gate::IntrinsicIdentity identity;
+        {
+            cv::Mat fileK, fileD;
+            std::string loadError;
+            if (!intrinsic_gate::loadCameraParamsWithIdentity(
+                    intrinsic_source_file, fileK, fileD, identity, loadError)) {
+                // 文件不可读但运行时内参已提供：按未绑定身份处理
+                identity = intrinsic_gate::IntrinsicIdentity{};
+                APP_LOG_EVENT_WARNING("calibration",
+                                      "intrinsic_gate",
+                                      "identity_unreadable",
+                                      {{"file", QString::fromStdString(intrinsic_source_file)},
+                                       {"error", QString::fromStdString(loadError)}});
+            }
+        }
+        std::string bindReason;
+        if (!intrinsic_gate::checkIntrinsicBinding(
+                identity, gateInfo.serial,
+                gateInfo.actual_width, gateInfo.actual_height,
+                gateCfg.allow_legacy_intrinsics, bindReason)) {
+            result.message = "MVS 内参身份校验失败: " + bindReason;
+            APP_LOG_EVENT_ERROR("calibration",
+                                "intrinsic_gate",
+                                "blocked",
+                                {{"reason", "mvs_intrinsic_identity_mismatch"},
+                                 {"device_serial", QString::fromStdString(gateInfo.serial)},
+                                 {"intrinsic_serial", QString::fromStdString(identity.serial)},
+                                 {"actual_resolution", QString("%1x%2").arg(gateInfo.actual_width).arg(gateInfo.actual_height)},
+                                 {"intrinsic_resolution", QString("%1x%2").arg(identity.width).arg(identity.height)}});
+            return failSession("intrinsic_validation",
+                               "mvs_intrinsic_identity_mismatch");
+        }
+        if (!bindReason.empty()) {
+            APP_LOG_EVENT_WARNING("calibration",
+                                  "intrinsic_gate",
+                                  "legacy_pass",
+                                  {{"detail", QString::fromStdString(bindReason)}});
+        }
+        mvsIntrinsicSource = identity.hasAny()
+            ? "external_file_validated" : "external_file_legacy_unbound";
+        session_options.intrinsic_source = mvsIntrinsicSource;
+        session->setIntrinsics(camera_matrix.getMat(), dist_coeffs.getMat(),
+                               mvsIntrinsicSource);
+        APP_LOG_EVENT_INFO("calibration",
+                           "intrinsic_gate",
+                           "passed",
+                           {{"source", QString::fromStdString(mvsIntrinsicSource)},
+                            {"device_serial", QString::fromStdString(gateInfo.serial)},
+                            {"intrinsic_serial", QString::fromStdString(identity.serial)},
+                            {"actual_resolution", QString("%1x%2").arg(gateInfo.actual_width).arg(gateInfo.actual_height)}});
+    }
 
     g_save_dir = session->previewDirectory();
     g_callback = callback;
@@ -1341,8 +1427,10 @@ bool autoEyeInHandCharucoCalibration(
         dist_coeffs.getMat().copyTo(D);
         std::cout << "[autoCalib] 使用已有相机内参" << std::endl;
     }
-    session->setIntrinsics(K, D, has_provided_intrinsics
-        ? "provided_runtime" : "calibrated_from_collection");
+    session->setIntrinsics(K, D, !mvsIntrinsicSource.empty()
+        ? mvsIntrinsicSource
+        : (has_provided_intrinsics
+            ? "provided_runtime" : "calibrated_from_collection"));
 
     if (!calibrateHandEyeFromDisk(session->framesDirectory(), K, D, board_config,
                                   result, output_yaml, session.get(),

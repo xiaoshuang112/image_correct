@@ -29,6 +29,10 @@ struct CONFIG {
     int grid_num_shu = 9;  // # 棋盘格 竖向格子数
     float grid_size = 0.015f;  // 15mm
 
+    // 内参兼容开关：默认关闭。仅当 camera_params.yaml 为旧版
+    // 仅含 K/D（未绑定相机身份）时，显式置 true 才允许继续标定。
+    bool allow_legacy_intrinsics = false;
+
     CONFIG() = default;
 };
 
@@ -52,6 +56,9 @@ struct CONFIG {
     int grid_num_heng = 9; // # 棋盘格 横向格子数
     int grid_num_shu = 9;  // # 棋盘格 竖向格子数
     float grid_size = 0.015f;  // 15mm
+
+    // MVS 专用；ORB 链路保留此字段仅为结构一致，不参与逻辑
+    bool allow_legacy_intrinsics = false;
 
     CONFIG() = default;
 };

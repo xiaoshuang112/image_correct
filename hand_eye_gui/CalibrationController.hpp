@@ -260,6 +260,8 @@ private:
     int      m_cameraPort   = 8090;
     QString  m_cameraSn;                        // 可选；配置后优先于 IP
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
+    // 内参兼容开关（config.yaml: allow_legacy_intrinsics: 1），默认关闭
+    bool     m_allowLegacyIntrinsics = false;
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;
 
