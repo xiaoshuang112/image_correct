@@ -151,7 +151,11 @@ list(REMOVE_ITEM TOP_SRCS "${CMAKE_SOURCE_DIR}/calibration.cpp")
 
 # 相机源文件：ORB / MVS 互斥
 if(useMVS_QT)
-    list(APPEND TOP_SRCS ${CMAKE_SOURCE_DIR}/cameras/MVSCamera.cpp)
+    list(APPEND TOP_SRCS
+        ${CMAKE_SOURCE_DIR}/cameras/MVSCamera.cpp
+        ${CMAKE_SOURCE_DIR}/cameras/mvs_device_selector.cpp
+        ${CMAKE_SOURCE_DIR}/cameras/mvs_error.cpp
+    )
 elseif(useORB_QT)
     list(APPEND TOP_SRCS ${CMAKE_SOURCE_DIR}/cameras/OrbbecCamera.cpp)
 endif()

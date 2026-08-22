@@ -200,6 +200,8 @@ if(useMVS)
     list(APPEND CAITU_COMPILE_DEFINITIONS useMVS)
     list(APPEND SRC_LISTS
         cameras/MVSCamera.cpp
+        cameras/mvs_device_selector.cpp
+        cameras/mvs_error.cpp
     )
     list(APPEND SRC_LIBS
         MvCameraControl

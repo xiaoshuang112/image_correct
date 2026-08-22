@@ -11,6 +11,24 @@ struct CameraDeviceAuditInfo {
     std::string serial;
     std::string model;
     std::string firmware;
+    // 以下为生产审计扩展字段；SDK 提供不了的派生类保持默认空值即可。
+    std::string transport;      // gige / usb / eth(orb) 等
+    std::string current_ip;     // 设备当前 IP（无 IP 的设备为空）
+    int actual_width = 0;       // 打开后回读的实际流分辨率
+    int actual_height = 0;
+    std::string pixel_format;   // 输出给上层的像素格式（如 BGR8）
+    int exposure_us = -1;       // 打开后回读的实际曝光（微秒）
+    float gain = -1.0f;         // 打开后回读的实际增益
+    std::string trigger_mode;   // off / on
+    std::string sdk_version;    // 相机 SDK 运行时版本
+};
+
+// Qt 无关的相机错误详情：Controller 与审计日志通过它获取失败阶段和 SDK 错误码。
+struct CameraErrorDetail {
+    std::string stage;          // initialize / enumerate / select / create_handle / ...
+    unsigned int sdk_code = 0;  // SDK 原始错误码（无 SDK 语义时为 0）
+    std::string message;        // 人类可读诊断
+    bool hasError() const { return !stage.empty(); }
 };
 
 /**
@@ -69,6 +87,12 @@ public:
     virtual CameraDeviceAuditInfo getDeviceAuditInfo() const {
         return {m_config.cam_sn, "", ""};
     }
+
+    // 相机后端名（orbbec / mvs / oak ...），用于内参安全门禁与审计。
+    virtual std::string backendName() const { return "unknown"; }
+
+    // 最近一次失败的阶段与 SDK 错误码；无错误时返回默认空值。
+    virtual CameraErrorDetail lastError() const { return CameraErrorDetail{}; }
 
     // ========== 曝光控制接口 ==========
     
