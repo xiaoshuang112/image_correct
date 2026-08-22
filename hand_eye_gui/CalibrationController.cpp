@@ -211,27 +211,74 @@ void CalibrationController::loadConfigYaml()
                              {"using_defaults", "true"}});
         return;
     }
-    // 读取相机配置
-    std::string cam_ip;
-    int cam_port = 0, cam_w = 0, cam_h = 0;
-    fs["cam_ip"] >> cam_ip;
-    fs["cam_port"] >> cam_port;
-    fs["cam_width"] >> cam_w;
-    fs["cam_height"] >> cam_h;
-    fs.release();
 
-    if (!cam_ip.empty())  m_cameraIp  = QString::fromStdString(cam_ip);
-    if (cam_port > 0)     m_cameraPort = cam_port;
-    if (cam_w > 0)        m_previewWidth  = cam_w;
-    if (cam_h > 0)        m_previewHeight = cam_h;
+    // 配置兼容顺序（逐键回退）：
+    //   1. 当前平铺键 cam_ip/cam_port/cam_width/cam_height/cam_sn
+    //   2. camera_profile 显式选择的嵌套节（如 camera_mvs_130/camera_mvs_500）
+    //   3. 编译期默认值
+    // 禁止根据枚举顺序猜型号——嵌套节必须由 camera_profile 显式指定。
+    std::string profile;
+    fs["camera_profile"] >> profile;
+    m_cameraProfile = QString::fromStdString(profile);
+
+    cv::FileNode profileNode;
+    if (!profile.empty()) {
+        profileNode = fs[profile];
+        if (profileNode.empty() || !profileNode.isMap()) {
+            APP_LOG_EVENT_WARNING("config",
+                                  "config_load",
+                                  "profile_missing",
+                                  {{"profile", QString::fromStdString(profile)},
+                                   {"path", QString::fromStdString(cfg_file)}});
+            profileNode = cv::FileNode();
+        }
+    }
+
+    QStringList sources;
+    auto resolveString = [&](const char* key, QString& target) {
+        std::string value;
+        fs[key] >> value;
+        std::string source = "flat";
+        if (value.empty() && !profileNode.empty()) {
+            profileNode[key] >> value;
+            source = "profile:" + profile;
+        }
+        if (!value.empty()) {
+            target = QString::fromStdString(value);
+            sources << QString("%1=%2(%3)").arg(key, target, QString::fromStdString(source));
+        }
+    };
+    auto resolveInt = [&](const char* key, int& target) {
+        int value = 0;
+        if (!fs[key].empty()) fs[key] >> value;
+        std::string source = "flat";
+        if (value <= 0 && !profileNode.empty() && !profileNode[key].empty()) {
+            profileNode[key] >> value;
+            source = "profile:" + profile;
+        }
+        if (value > 0) {
+            target = value;
+            sources << QString("%1=%2(%3)").arg(key).arg(value).arg(QString::fromStdString(source));
+        }
+    };
+
+    resolveString("cam_ip", m_cameraIp);
+    resolveInt("cam_port", m_cameraPort);
+    resolveInt("cam_width", m_previewWidth);
+    resolveInt("cam_height", m_previewHeight);
+    resolveString("cam_sn", m_cameraSn);
+    fs.release();
 
     APP_LOG_EVENT_INFO("config",
                        "config_load",
                        "success",
                        {{"path", QString::fromStdString(cfg_file)},
                         {"camera", m_cameraIp + ":" + QString::number(m_cameraPort)},
+                        {"camera_sn", m_cameraSn},
+                        {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
-                        {"resolution_h", QString::number(m_previewHeight)}});
+                        {"resolution_h", QString::number(m_previewHeight)},
+                        {"resolved", sources.join(", ")}});
 }
 
 // ===================================================================
@@ -370,6 +417,26 @@ void CalibrationController::setCameraPort(int v) {
         m_cameraPort = v; emit cameraPortChanged();
     }
 }
+void CalibrationController::setCameraSn(const QString& v) {
+    if (m_running) {
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "camera_sn"},
+                               {"reason", "calibration_running"}});
+        return;
+    }
+    const QString trimmed = v.trimmed();
+    if (m_cameraSn != trimmed) {
+        APP_LOG_EVENT_INFO("config",
+                           "config_update",
+                           "success",
+                           {{"field", "camera_sn"},
+                            {"from", m_cameraSn},
+                            {"to", trimmed}});
+        m_cameraSn = trimmed; emit cameraSnChanged();
+    }
+}
 void CalibrationController::setPreviewWidth(int v) {
     if (m_running) {
         APP_LOG_EVENT_WARNING("config",
@@ -412,6 +479,27 @@ void CalibrationController::setPreviewHeight(int v) {
 QString CalibrationController::diagnosticLogPath() const
 {
     return DiagnosticLogger::instance().logFilePath();
+}
+
+QString CalibrationController::cameraBackend() const
+{
+#ifdef useORB
+    return QStringLiteral("orbbec");
+#elif defined(useMVS)
+    return QStringLiteral("mvs");
+#else
+    return QStringLiteral("unknown");
+#endif
+}
+
+bool CalibrationController::cameraPortRelevant() const
+{
+    // MVS GigE 相机通过 IP/序列号寻址，cam_port 仅对 Orbbec 有效
+#ifdef useMVS
+    return false;
+#else
+    return true;
+#endif
 }
 
 QString CalibrationController::calibrationStageText() const
@@ -788,6 +876,7 @@ void CalibrationController::openCamera()
     CONFIG cfg;
     cfg.cam_ip   = m_cameraIp.toStdString();
     cfg.cam_port = static_cast<uint16_t>(m_cameraPort);
+    cfg.cam_sn   = m_cameraSn.toStdString();
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
 
@@ -795,6 +884,7 @@ void CalibrationController::openCamera()
                        "camera_open",
                        "instance_create",
                        {{"endpoint", QString("%1:%2").arg(QString::fromStdString(cfg.cam_ip)).arg(cfg.cam_port)},
+                        {"cam_sn", QString::fromStdString(cfg.cam_sn)},
                         {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)}});
 
 #ifdef useORB
@@ -805,10 +895,18 @@ void CalibrationController::openCamera()
 
     setStatus("正在打开相机...");
     if (!m_camera->open()) {
+        // 打开失败日志必须包含：选择条件、枚举设备数、候选设备、
+        // 失败阶段和 SDK 错误码（由相机实现通过 lastError 提供）
+        const CameraErrorDetail camErr = m_camera->lastError();
         APP_LOG_EVENT_ERROR("camera",
                             "camera_open",
                             "fail",
                             {{"reason", "open_failed"},
+                             {"stage", QString::fromStdString(camErr.stage)},
+                             {"sdk_code", QString("0x%1").arg(camErr.sdk_code, 0, 16)},
+                             {"detail", QString::fromStdString(camErr.message)},
+                             {"configured_ip", m_cameraIp},
+                             {"configured_sn", m_cameraSn},
                              {"elapsed_ms", QString::number(timer.elapsed())}});
         setStatus("打开相机失败");
         emit cameraOpenedChanged();
@@ -818,7 +916,37 @@ void CalibrationController::openCamera()
     m_cameraOpened = true;
     emit cameraOpenedChanged();
 
-    // 读取并保存相机内参
+    // 刷新只读设备审计信息（实际值，非请求值）
+    {
+        const CameraDeviceAuditInfo audit = m_camera->getDeviceAuditInfo();
+        m_camDeviceModel = QString::fromStdString(audit.model);
+        m_camDeviceSerial = QString::fromStdString(audit.serial);
+        m_camDeviceFirmware = QString::fromStdString(audit.firmware);
+        m_camDeviceTransport = QString::fromStdString(audit.transport);
+        m_camActualWidth = audit.actual_width;
+        m_camActualHeight = audit.actual_height;
+        emit cameraDeviceInfoChanged();
+        APP_LOG_EVENT_INFO("camera",
+                           "camera_open",
+                           "device_identity",
+                           {{"backend", cameraBackend()},
+                            {"model", m_camDeviceModel},
+                            {"serial", m_camDeviceSerial},
+                            {"firmware", m_camDeviceFirmware},
+                            {"transport", m_camDeviceTransport},
+                            {"current_ip", QString::fromStdString(audit.current_ip)},
+                            {"actual_resolution", QString("%1x%2").arg(audit.actual_width).arg(audit.actual_height)},
+                            {"pixel_format", QString::fromStdString(audit.pixel_format)},
+                            {"exposure_us", QString::number(audit.exposure_us)},
+                            {"gain", QString::number(audit.gain, 'f', 2)},
+                            {"trigger_mode", QString::fromStdString(audit.trigger_mode)},
+                            {"sdk_version", QString::fromStdString(audit.sdk_version)}});
+    }
+
+#ifndef useMVS
+    // 读取并保存相机内参（仅 Orbbec：SDK 能提供镜头内参。
+    // MVS 不提供内参，禁止在打开相机时覆盖已有 camera_params.yaml，
+    // 内参必须由外部文件提供并通过身份校验，见内参安全门禁。）
     auto intrinsics = m_camera->getCameraIntrinsics(m_previewWidth, m_previewHeight);
     const bool validIntrinsics =
         intrinsics.size() >= 4 &&
@@ -859,6 +987,13 @@ void CalibrationController::openCamera()
                               {{"reason", "invalid_intrinsics"},
                                {"outer_size", QString::number(intrinsics.size())}});
     }
+#else
+    APP_LOG_EVENT_INFO("camera",
+                       "camera_intrinsics",
+                       "skip",
+                       {{"reason", "mvs_external_intrinsics_required"},
+                         {"note", "MVS 不提供镜头内参，不写入 camera_params.yaml"}});
+#endif
 
     setStatus("相机已打开");
     APP_LOG_EVENT_INFO("camera",

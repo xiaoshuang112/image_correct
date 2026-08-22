@@ -146,6 +146,14 @@ struct CalibrationSessionOptions {
     std::string camera_firmware;
     std::string camera_endpoint;
     std::string camera_stream = "color";
+    // 生产审计扩展：后端、传输层与打开后回读的实际值（非请求值）
+    std::string camera_backend;        // orbbec / mvs
+    std::string camera_transport;      // gige / usb / eth
+    std::string camera_pixel_format;   // 输出给上层的实际像素格式
+    int camera_exposure_us = -1;       // 回读的实际曝光
+    float camera_gain = -1.0f;         // 回读的实际增益
+    std::string camera_trigger_mode;   // off / on
+    std::string camera_sdk_version;    // 相机 SDK 运行时版本
     int image_width = 0;
     int image_height = 0;
     std::string intrinsic_source;

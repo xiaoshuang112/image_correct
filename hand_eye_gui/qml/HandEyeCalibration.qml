@@ -210,8 +210,13 @@ ApplicationWindow {
                         onEditingFinished: calibrationController.cameraIp = text
                     }
 
-                    Label { text: ":"; color: textDim; font.pixelSize: 22 }
+                    // MVS 通过 IP/序列号寻址，端口仅 Orbbec 使用
+                    Label {
+                        text: ":"; color: textDim; font.pixelSize: 22
+                        visible: calibrationController.cameraPortRelevant
+                    }
                     TextField {
+                        visible: calibrationController.cameraPortRelevant
                         text: calibrationController.cameraPort
                         font.pixelSize: 22; color: textPrimary
                         Layout.preferredWidth: 65
@@ -220,6 +225,16 @@ ApplicationWindow {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.cameraPort = v
                         }
+                    }
+
+                    Label { text: "序列号:"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        text: calibrationController.cameraSn
+                        placeholderText: "可选,配置后优先"
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 170
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
+                        onEditingFinished: calibrationController.cameraSn = text
                     }
 
                     Label { text: "分辨率:"; color: textDim; font.pixelSize: 22 }
@@ -243,6 +258,41 @@ ApplicationWindow {
                             var v = parseInt(text)
                             if (!isNaN(v)) calibrationController.previewHeight = v
                         }
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+
+                // ---- 第 3 行：实际设备信息（只读审计，打开相机后刷新） ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    visible: calibrationController.cameraOpened
+
+                    Label {
+                        text: "后端: " + calibrationController.cameraBackend
+                        color: textDim; font.pixelSize: 20
+                    }
+                    Label {
+                        text: "型号: " + (calibrationController.cameraModel || "-")
+                        color: textDim; font.pixelSize: 20
+                    }
+                    Label {
+                        text: "序列号: " + (calibrationController.cameraSerial || "-")
+                        color: textDim; font.pixelSize: 20
+                    }
+                    Label {
+                        text: "固件: " + (calibrationController.cameraFirmware || "-")
+                        color: textDim; font.pixelSize: 20
+                    }
+                    Label {
+                        text: "链路: " + (calibrationController.cameraTransport || "-")
+                        color: textDim; font.pixelSize: 20
+                    }
+                    Label {
+                        text: "实际分辨率: " + calibrationController.cameraActualWidth
+                              + "×" + calibrationController.cameraActualHeight
+                        color: textDim; font.pixelSize: 20
                     }
 
                     Item { Layout.fillWidth: true }

@@ -1176,13 +1176,24 @@ bool autoEyeInHandCharucoCalibration(
     if (camera) {
         const CONFIG& camera_config = camera->getConfig();
         const CameraDeviceAuditInfo device_info = camera->getDeviceAuditInfo();
+        session_options.camera_backend = camera->backendName();
         session_options.camera_serial = device_info.serial;
         session_options.camera_model = device_info.model;
         session_options.camera_firmware = device_info.firmware;
-        session_options.camera_endpoint = camera_config.cam_ip + ":" +
-            std::to_string(camera_config.cam_port);
-        session_options.image_width = camera_config.cam_width;
-        session_options.image_height = camera_config.cam_height;
+        session_options.camera_transport = device_info.transport;
+        session_options.camera_endpoint = !device_info.current_ip.empty()
+            ? device_info.current_ip
+            : camera_config.cam_ip + ":" + std::to_string(camera_config.cam_port);
+        // Session 记录打开后回读的实际流分辨率，而不是请求值
+        session_options.image_width = device_info.actual_width > 0
+            ? device_info.actual_width : camera_config.cam_width;
+        session_options.image_height = device_info.actual_height > 0
+            ? device_info.actual_height : camera_config.cam_height;
+        session_options.camera_pixel_format = device_info.pixel_format;
+        session_options.camera_exposure_us = device_info.exposure_us;
+        session_options.camera_gain = device_info.gain;
+        session_options.camera_trigger_mode = device_info.trigger_mode;
+        session_options.camera_sdk_version = device_info.sdk_version;
     }
     const bool has_provided_intrinsics =
         !camera_matrix.empty() && !dist_coeffs.empty();

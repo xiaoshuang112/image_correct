@@ -36,8 +36,18 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString calibrationType READ calibrationType WRITE setCalibrationType NOTIFY calibrationTypeChanged)
     Q_PROPERTY(QString cameraIp       READ cameraIp       WRITE setCameraIp       NOTIFY cameraIpChanged)
     Q_PROPERTY(int     cameraPort     READ cameraPort     WRITE setCameraPort     NOTIFY cameraPortChanged)
+    Q_PROPERTY(QString cameraSn       READ cameraSn       WRITE setCameraSn       NOTIFY cameraSnChanged)
     Q_PROPERTY(int     previewWidth   READ previewWidth   WRITE setPreviewWidth   NOTIFY previewWidthChanged)
     Q_PROPERTY(int     previewHeight  READ previewHeight  WRITE setPreviewHeight  NOTIFY previewHeightChanged)
+    // 相机后端与实际设备信息（只读审计，打开相机后刷新）
+    Q_PROPERTY(QString cameraBackend     READ cameraBackend     CONSTANT)
+    Q_PROPERTY(bool    cameraPortRelevant READ cameraPortRelevant CONSTANT)
+    Q_PROPERTY(QString cameraModel       READ cameraModel       NOTIFY cameraDeviceInfoChanged)
+    Q_PROPERTY(QString cameraSerial      READ cameraSerial      NOTIFY cameraDeviceInfoChanged)
+    Q_PROPERTY(QString cameraFirmware    READ cameraFirmware    NOTIFY cameraDeviceInfoChanged)
+    Q_PROPERTY(QString cameraTransport   READ cameraTransport   NOTIFY cameraDeviceInfoChanged)
+    Q_PROPERTY(int     cameraActualWidth  READ cameraActualWidth  NOTIFY cameraDeviceInfoChanged)
+    Q_PROPERTY(int     cameraActualHeight READ cameraActualHeight NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(bool    robotConnected READ robotConnected NOTIFY robotConnectedChanged)
     Q_PROPERTY(bool    cameraOpened   READ cameraOpened   NOTIFY cameraOpenedChanged)
     Q_PROPERTY(bool    previewActive  READ previewActive  NOTIFY previewActiveChanged)
@@ -92,8 +102,17 @@ public:
     QString calibrationType() const { return m_calibrationType; }
     QString cameraIp() const        { return m_cameraIp; }
     int     cameraPort() const      { return m_cameraPort; }
+    QString cameraSn() const        { return m_cameraSn; }
     int     previewWidth() const    { return m_previewWidth; }
     int     previewHeight() const   { return m_previewHeight; }
+    QString cameraBackend() const;
+    bool    cameraPortRelevant() const;
+    QString cameraModel() const     { return m_camDeviceModel; }
+    QString cameraSerial() const    { return m_camDeviceSerial; }
+    QString cameraFirmware() const  { return m_camDeviceFirmware; }
+    QString cameraTransport() const { return m_camDeviceTransport; }
+    int     cameraActualWidth() const  { return m_camActualWidth; }
+    int     cameraActualHeight() const { return m_camActualHeight; }
     bool    robotConnected() const  { return m_robotConnected; }
     bool    cameraOpened() const    { return m_cameraOpened; }
     bool    previewActive() const   { return m_previewActive; }
@@ -140,6 +159,7 @@ public:
     void setCalibrationType(const QString& v);
     void setCameraIp(const QString& v);
     void setCameraPort(int v);
+    void setCameraSn(const QString& v);
     void setPreviewWidth(int v);
     void setPreviewHeight(int v);
 
@@ -168,6 +188,8 @@ signals:
     void calibrationTypeChanged();
     void cameraIpChanged();
     void cameraPortChanged();
+    void cameraSnChanged();
+    void cameraDeviceInfoChanged();
     void previewWidthChanged();
     void previewHeightChanged();
     void robotConnectedChanged();
@@ -236,8 +258,18 @@ private:
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
     QString  m_cameraIp     = "192.168.3.10";
     int      m_cameraPort   = 8090;
+    QString  m_cameraSn;                        // 可选；配置后优先于 IP
+    QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;
+
+    // 打开相机后回读的实际设备信息（只读审计）
+    QString  m_camDeviceModel;
+    QString  m_camDeviceSerial;
+    QString  m_camDeviceFirmware;
+    QString  m_camDeviceTransport;
+    int      m_camActualWidth  = 0;
+    int      m_camActualHeight = 0;
 
     // 状态
     bool     m_robotConnected = false;

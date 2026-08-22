@@ -1030,6 +1030,13 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
         out << "firmware" << orUnknown(options_.camera_firmware);
         out << "endpoint" << orUnknown(options_.camera_endpoint);
         out << "stream" << options_.camera_stream;
+        out << "backend" << orUnknown(options_.camera_backend);
+        out << "transport" << orUnknown(options_.camera_transport);
+        out << "pixel_format" << orUnknown(options_.camera_pixel_format);
+        out << "exposure_us" << options_.camera_exposure_us;
+        out << "gain" << options_.camera_gain;
+        out << "trigger_mode" << orUnknown(options_.camera_trigger_mode);
+        out << "sdk_version" << orUnknown(options_.camera_sdk_version);
         out << "resolution" << "{" << "width" << options_.image_width
             << "height" << options_.image_height << "}";
         out << "roi" << "{" << "x" << 0 << "y" << 0
@@ -1109,6 +1116,7 @@ bool CalibrationSession::writeSessionYaml(const std::string& lifecycle_status,
         out << "build_timestamp" << APP_BUILD_TIMESTAMP;
         out << "git_commit" << APP_GIT_COMMIT;
         out << "git_worktree_state" << APP_GIT_WORKTREE_STATE;
+        out << "camera_backend" << APP_CAMERA_BACKEND;
         out << "opencv_version" << CV_VERSION;
         out << "executable" << executable;
         out << "executable_sha256" << sha256File(executable);
