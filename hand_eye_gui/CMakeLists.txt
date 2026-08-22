@@ -54,12 +54,25 @@ elseif(ARCH_TYPE STREQUAL "ARM64")
 endif()
 
 # ============================================================
-#  相机 SDK 检测（ORB 和 MVS 互斥）
+#  相机后端检测（ORB 和 MVS 互斥）
+#  父目录已解析 CAMERA_BACKEND 缓存变量；这里兼容独立的
+#  -DUSE_ORB=ON/OFF 旧入口。SDK 不完整时配置直接失败，
+#  不允许生成名为 MVS、实际无相机支持的二进制。
 # ============================================================
 
-option(USE_ORB "Build with Orbbec camera (disable MVS)" ON)
+if(DEFINED USE_ORB AND NOT DEFINED CAMERA_BACKEND)
+    if(USE_ORB)
+        set(CAMERA_BACKEND "ORB" CACHE STRING "Camera backend: ORB or MVS" FORCE)
+    else()
+        set(CAMERA_BACKEND "MVS" CACHE STRING "Camera backend: ORB or MVS" FORCE)
+    endif()
+endif()
+if(NOT DEFINED CAMERA_BACKEND OR CAMERA_BACKEND STREQUAL "")
+    set(CAMERA_BACKEND "ORB" CACHE STRING "Camera backend: ORB or MVS" FORCE)
+endif()
+string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
 
-if(USE_ORB)
+if(CAMERA_BACKEND STREQUAL "ORB")
     # ---- ORB 模式 ----
     if(EXISTS /usr/local/include/libobsensor)
         set(useORB_QT TRUE)
@@ -69,22 +82,37 @@ if(USE_ORB)
         add_definitions(-DuseORB -DDEFAULT_CAM_WIDTH=1280 -DDEFAULT_CAM_HEIGHT=800)
         message("-- [${PROJECT_NAME}] 相机: Orbbec (1280×800)")
     else()
-        message(FATAL_ERROR "-- [${PROJECT_NAME}] USE_ORB=ON 但未找到 Orbbec SDK (/usr/local/include/libobsensor)")
+        message(FATAL_ERROR "-- [${PROJECT_NAME}] CAMERA_BACKEND=ORB 但未找到 Orbbec SDK (/usr/local/include/libobsensor)")
     endif()
-else()
-    # ---- MVS 模式（显式 USE_ORB=OFF） ----
-    set(useORB_QT FALSE)
-    if(EXISTS /opt/MVS/include)
-        set(useMVS_QT TRUE)
-        set(CAM_SUFFIX "mvs")
-        add_definitions(-DuseMVS -DDEFAULT_CAM_WIDTH=2448 -DDEFAULT_CAM_HEIGHT=2048)
-        message("-- [${PROJECT_NAME}] 相机: MVS (2448×2048)")
+elseif(CAMERA_BACKEND STREQUAL "MVS")
+    # ---- MVS 模式 ----
+    if(NOT DEFINED MVS_SDK_DIR)
+        set(MVS_SDK_DIR "/opt/MVS")
+    endif()
+    if(ARCH_TYPE STREQUAL "x86_64")
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/64")
+    elseif(ARCH_TYPE STREQUAL "ARM64")
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/aarch64")
     else()
-        set(useMVS_QT FALSE)
-        set(CAM_SUFFIX "nocam")
-        add_definitions(-DDEFAULT_CAM_WIDTH=1280 -DDEFAULT_CAM_HEIGHT=800)
-        message(WARNING "-- [${PROJECT_NAME}] MVS SDK 未找到，无相机支持")
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/32")
     endif()
+    if(NOT EXISTS "${MVS_SDK_DIR}/include/MvCameraControl.h")
+        message(FATAL_ERROR
+            "-- [${PROJECT_NAME}] CAMERA_BACKEND=MVS 但未找到 MVS SDK 头文件: "
+            "${MVS_SDK_DIR}/include/MvCameraControl.h")
+    endif()
+    if(NOT EXISTS "${MVS_LIB_DIR}/libMvCameraControl.so")
+        message(FATAL_ERROR
+            "-- [${PROJECT_NAME}] CAMERA_BACKEND=MVS 但未找到 ${ARCH_TYPE} 架构的 MVS 运行库: "
+            "${MVS_LIB_DIR}/libMvCameraControl.so")
+    endif()
+    set(useORB_QT FALSE)
+    set(useMVS_QT TRUE)
+    set(CAM_SUFFIX "mvs")
+    add_definitions(-DuseMVS -DDEFAULT_CAM_WIDTH=2448 -DDEFAULT_CAM_HEIGHT=2048)
+    message("-- [${PROJECT_NAME}] 相机: MVS (2448×2048), SDK: ${MVS_SDK_DIR}")
+else()
+    message(FATAL_ERROR "-- [${PROJECT_NAME}] CAMERA_BACKEND 只支持 ORB 或 MVS，当前值: '${CAMERA_BACKEND}'")
 endif()
 
 # ============================================================
@@ -178,13 +206,7 @@ target_link_libraries(${PROJECT_NAME}
 
 # MVS SDK
 if(useMVS_QT)
-    if(ARCH_TYPE STREQUAL "x86_64")
-        target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/64)
-    elseif(ARCH_TYPE STREQUAL "ARM64")
-        target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/aarch64)
-    else()
-        target_link_directories(${PROJECT_NAME} PRIVATE /opt/MVS/lib/32)
-    endif()
+    target_link_directories(${PROJECT_NAME} PRIVATE ${MVS_LIB_DIR})
     target_link_libraries(${PROJECT_NAME} MvCameraControl)
 endif()
 
@@ -204,6 +226,14 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     OUTPUT_NAME "hand-eye-${CAM_SUFFIX}"
 )
 
+# MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
+# 开发机上回退到 SDK 安装目录；ORB 产物不引用任何 MVS 路径。
+if(useMVS_QT)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        INSTALL_RPATH "$ORIGIN/lib/mvs"
+        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
+endif()
+
 # 构建身份必须在每次 build 时重新获取。若只在 configure 阶段执行，提交或
 # 修改工作区后直接 cmake --build 会把旧 commit/dirty 状态编进新程序。
 set(APP_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -213,6 +243,7 @@ add_custom_target(hand_eye_app_build_info ALL
         -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DOUTPUT_FILE=${APP_BUILD_INFO_HEADER}
         -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/GenerateBuildInfo.cmake
     BYPRODUCTS ${APP_BUILD_INFO_HEADER}
     COMMENT "Refreshing hand-eye build metadata"

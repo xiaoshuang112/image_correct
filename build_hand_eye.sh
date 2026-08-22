@@ -5,8 +5,12 @@ set -e
 #  手眼标定 GUI 编译脚本
 #  用法:
 #    ./build_hand_eye.sh        # 编译 MVS 版本 → build_mvs/hand-eye-mvs
+#    ./build_hand_eye.sh mvs    # 同上
 #    ./build_hand_eye.sh orb    # 编译 ORB 版本 → build_orb/hand-eye-orb
-#    ./build_hand_eye.sh all    # 两个都编译
+#    ./build_hand_eye.sh all    # 两个都编译（均为 Release）
+#
+#  相机后端通过 -DCAMERA_BACKEND=ORB|MVS 传给 CMake；
+#  旧的 -DUSE_ORB=ON/OFF 入口仍然兼容。
 # ============================================================
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -19,28 +23,62 @@ build_target() {
 
     echo ""
     echo "========================================"
-    echo "  编译 hand-eye-${cam_type}"
+    echo "  编译 hand-eye-${cam_type} (Release)"
     echo "========================================"
 
     mkdir -p "$build_dir"
     cd "$build_dir"
-    cmake .. $cmake_args
+    cmake .. -DCMAKE_BUILD_TYPE=Release $cmake_args
     make hand-eye-app -j$(nproc)
     cd "$SCRIPT_DIR"
 
     echo "  完成: ${build_dir}/hand-eye-${cam_type}"
 }
 
+verify_target() {
+    local cam_type="$1"
+    local build_dir="$2"
+    local bin="${build_dir}/hand-eye-${cam_type}"
+
+    echo ""
+    echo "---- 校验 ${bin} ----"
+    file "$bin"
+    sha256sum "$bin"
+    if ldd "$bin" | grep -q "not found"; then
+        echo "  [错误] 存在未解析的动态库:"
+        ldd "$bin" | grep "not found"
+        exit 1
+    fi
+    echo "  ldd: 无缺失库"
+    if [ "$cam_type" = "orb" ]; then
+        if ldd "$bin" | grep -qi "MvCameraControl"; then
+            echo "  [错误] ORB 产物不应依赖 MVS 运行库"
+            exit 1
+        fi
+        echo "  未链接 libMvCameraControl.so: 符合预期"
+    else
+        if ! ldd "$bin" | grep -qi "MvCameraControl"; then
+            echo "  [错误] MVS 产物未链接 libMvCameraControl.so"
+            exit 1
+        fi
+        echo "  已链接 libMvCameraControl.so: 符合预期"
+    fi
+}
+
 case "${1:-mvs}" in
     mvs)
-        build_target "mvs" "build_mvs" "-DUSE_ORB=OFF"
+        build_target "mvs" "build_mvs" "-DCAMERA_BACKEND=MVS"
+        verify_target "mvs" "build_mvs"
         ;;
     orb)
-        build_target "orb" "build_orb" "-DUSE_ORB=ON"
+        build_target "orb" "build_orb" "-DCAMERA_BACKEND=ORB"
+        verify_target "orb" "build_orb"
         ;;
     all)
-        build_target "mvs" "build_mvs" "-DUSE_ORB=OFF"
-        build_target "orb" "build_orb" "-DUSE_ORB=ON"
+        build_target "mvs" "build_mvs" "-DCAMERA_BACKEND=MVS"
+        build_target "orb" "build_orb" "-DCAMERA_BACKEND=ORB"
+        verify_target "mvs" "build_mvs"
+        verify_target "orb" "build_orb"
         ;;
     *)
         echo "用法: $0 {mvs|orb|all}"

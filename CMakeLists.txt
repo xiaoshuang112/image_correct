@@ -7,9 +7,46 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
+# ============================================================
+#  相机后端选择：CAMERA_BACKEND=ORB|MVS（默认 ORB，保持现有产线产物）
+#  兼容旧入口 -DUSE_ORB=ON/OFF；两者同时给出且矛盾时直接报错。
+# ============================================================
+set(CAMERA_BACKEND "" CACHE STRING "Camera backend: ORB or MVS (default ORB)")
+if(CAMERA_BACKEND STREQUAL "")
+    if(DEFINED USE_ORB)
+        if(USE_ORB)
+            set(CAMERA_BACKEND "ORB")
+        else()
+            set(CAMERA_BACKEND "MVS")
+        endif()
+    else()
+        set(CAMERA_BACKEND "ORB")
+    endif()
+    set(CAMERA_BACKEND "${CAMERA_BACKEND}" CACHE STRING "Camera backend: ORB or MVS (default ORB)" FORCE)
+else()
+    string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
+    set(CAMERA_BACKEND "${CAMERA_BACKEND}" CACHE STRING "Camera backend: ORB or MVS (default ORB)" FORCE)
+    if(DEFINED USE_ORB)
+        if((USE_ORB AND NOT CAMERA_BACKEND STREQUAL "ORB") OR
+           (NOT USE_ORB AND NOT CAMERA_BACKEND STREQUAL "MVS"))
+            message(FATAL_ERROR
+                "USE_ORB=${USE_ORB} 与 CAMERA_BACKEND=${CAMERA_BACKEND} 矛盾，请只保留一种写法")
+        endif()
+    endif()
+endif()
+if(NOT CAMERA_BACKEND STREQUAL "ORB" AND NOT CAMERA_BACKEND STREQUAL "MVS")
+    message(FATAL_ERROR "CAMERA_BACKEND 只支持 ORB 或 MVS，当前值: '${CAMERA_BACKEND}'")
+endif()
+
 SET(useORB FALSE)
 SET(useOAK FALSE)
-SET(useMVS TRUE)
+SET(useMVS FALSE)
+if(CAMERA_BACKEND STREQUAL "ORB")
+    SET(useORB TRUE)
+elseif(CAMERA_BACKEND STREQUAL "MVS")
+    SET(useMVS TRUE)
+endif()
+message(STATUS "Camera backend: ${CAMERA_BACKEND}")
 
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -96,22 +133,32 @@ link_directories(${ORBBEC_SDK_V2_DIR}/lib)
 include_directories(${depthai_DIR}/include)
 link_directories(${depthai_DIR}/lib)
 
-# MVS SDK
+# MVS SDK：头文件和当前架构的运行库都必须存在，否则配置直接失败，
+# 不允许生成名为 MVS、实际无相机支持的二进制。
 if(useMVS)
-    set(MVS_SDK_DIR "/opt/MVS")
-    include_directories(${MVS_SDK_DIR}/include)
-
-    if(ARCH_TYPE STREQUAL "x86_64")
-        if(ARCH_TYPE STREQUAL "x86_64")
-            link_directories(${MVS_SDK_DIR}/lib/64)
-        else()
-            link_directories(${MVS_SDK_DIR}/lib/32)
-        endif()
-    elseif(ARCH_TYPE STREQUAL "ARM64")
-        link_directories(${MVS_SDK_DIR}/lib/aarch64)
+    set(MVS_SDK_DIR "/opt/MVS" CACHE PATH "MVS SDK install prefix")
+    if(NOT EXISTS "${MVS_SDK_DIR}/include/MvCameraControl.h")
+        message(FATAL_ERROR
+            "CAMERA_BACKEND=MVS 但未找到 MVS SDK 头文件: "
+            "${MVS_SDK_DIR}/include/MvCameraControl.h")
     endif()
 
+    if(ARCH_TYPE STREQUAL "x86_64")
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/64")
+    elseif(ARCH_TYPE STREQUAL "ARM64")
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/aarch64")
+    else()
+        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/32")
+    endif()
+    if(NOT EXISTS "${MVS_LIB_DIR}/libMvCameraControl.so")
+        message(FATAL_ERROR
+            "CAMERA_BACKEND=MVS 但未找到 ${ARCH_TYPE} 架构的 MVS 运行库: "
+            "${MVS_LIB_DIR}/libMvCameraControl.so")
+    endif()
 
+    include_directories(${MVS_SDK_DIR}/include)
+    link_directories(${MVS_LIB_DIR})
+    message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
 endif()
 
 
@@ -164,6 +211,15 @@ add_executable(${PROJECT_NAME} ${SRC_LISTS})
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )
 
+# MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
+# 开发机上回退到 SDK 安装目录。ORB 产物不引用任何 MVS 路径。
+if(useMVS)
+    set_target_properties(${PROJECT_NAME} PROPERTIES
+        BUILD_WITH_INSTALL_RPATH OFF
+        INSTALL_RPATH "$ORIGIN/lib/mvs"
+        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
+endif()
+
 # 标定审计报告需要记录构建身份。与 GUI 使用同一个生成脚本，并在每次
 # build 时刷新，避免复用 configure 阶段的旧 commit/dirty 状态。
 set(CALIBRATION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
@@ -173,6 +229,7 @@ add_custom_target(calibration_build_info ALL
         -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
         -DOUTPUT_FILE=${CALIBRATION_BUILD_INFO_HEADER}
         -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+        -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui/GenerateBuildInfo.cmake
     BYPRODUCTS ${CALIBRATION_BUILD_INFO_HEADER}
     COMMENT "Refreshing calibration audit build metadata"
