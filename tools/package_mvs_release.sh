@@ -112,9 +112,13 @@ if [ ! -f "$OUTPUT_DIR/config.yaml" ] && [ -f "$REPO_DIR/build/config.yaml" ]; t
     echo "  已复制配置样例 config.yaml"
 fi
 
-# ---- 目标机校验脚本随包分发 ----
+# ---- 目标机校验脚本与真机验收工具随包分发 ----
 cp "$REPO_DIR/tools/check_mvs_target.sh" "$OUTPUT_DIR/check_mvs_target.sh"
 chmod +x "$OUTPUT_DIR/check_mvs_target.sh"
+if [ -f "$BUILD_DIR/mvs_hw_acceptance" ]; then
+    cp -d "$BUILD_DIR/mvs_hw_acceptance" "$OUTPUT_DIR/mvs_hw_acceptance"
+    echo "  已打包真机验收工具 mvs_hw_acceptance"
+fi
 
 # ---- RPATH 检查 ----
 if ! readelf -d "$OUTPUT_DIR/hand-eye-mvs" | grep -q '\$ORIGIN/lib/mvs'; then
