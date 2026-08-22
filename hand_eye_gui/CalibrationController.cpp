@@ -6,6 +6,7 @@
 #include "calibration/intrinsic_identity.hpp"
 #include "utils/robot_util.hpp"
 #include "DiagnosticLogger.hpp"
+#include "config_resolver.hpp"
 
 #include <QCoreApplication>
 #include <QDir>
@@ -213,68 +214,39 @@ void CalibrationController::loadConfigYaml()
         return;
     }
 
-    // 配置兼容顺序（逐键回退）：
-    //   1. 当前平铺键 cam_ip/cam_port/cam_width/cam_height/cam_sn
-    //   2. camera_profile 显式选择的嵌套节（如 camera_mvs_130/camera_mvs_500）
-    //   3. 编译期默认值
-    // 禁止根据枚举顺序猜型号——嵌套节必须由 camera_profile 显式指定。
-    std::string profile;
-    fs["camera_profile"] >> profile;
-    m_cameraProfile = QString::fromStdString(profile);
+    // 配置兼容顺序（逐键回退）：平铺键 > camera_profile 嵌套节 > 编译期默认。
+    // 解析逻辑在纯 C++ 助手 config_resolver 中，可无硬件单测。
+    config_resolver::CameraConfig defaults;
+    defaults.cam_ip = m_cameraIp.toStdString();
+    defaults.cam_port = m_cameraPort;
+    defaults.cam_width = m_previewWidth;
+    defaults.cam_height = m_previewHeight;
+    defaults.cam_sn = m_cameraSn.toStdString();
+    defaults.allow_legacy_intrinsics = m_allowLegacyIntrinsics;
 
-    cv::FileNode profileNode;
-    if (!profile.empty()) {
-        profileNode = fs[profile];
-        if (profileNode.empty() || !profileNode.isMap()) {
-            APP_LOG_EVENT_WARNING("config",
-                                  "config_load",
-                                  "profile_missing",
-                                  {{"profile", QString::fromStdString(profile)},
-                                   {"path", QString::fromStdString(cfg_file)}});
-            profileNode = cv::FileNode();
-        }
+    const config_resolver::CameraConfig resolved =
+        config_resolver::resolveCameraConfig(fs, defaults);
+    fs.release();
+
+    m_cameraIp = QString::fromStdString(resolved.cam_ip);
+    m_cameraPort = resolved.cam_port;
+    m_previewWidth = resolved.cam_width;
+    m_previewHeight = resolved.cam_height;
+    m_cameraSn = QString::fromStdString(resolved.cam_sn);
+    m_allowLegacyIntrinsics = resolved.allow_legacy_intrinsics;
+    m_cameraProfile = QString::fromStdString(resolved.profile);
+
+    if (!resolved.profile.empty() && !resolved.profile_found) {
+        APP_LOG_EVENT_WARNING("config",
+                              "config_load",
+                              "profile_missing",
+                              {{"profile", m_cameraProfile},
+                               {"path", QString::fromStdString(cfg_file)}});
     }
 
     QStringList sources;
-    auto resolveString = [&](const char* key, QString& target) {
-        std::string value;
-        fs[key] >> value;
-        std::string source = "flat";
-        if (value.empty() && !profileNode.empty()) {
-            profileNode[key] >> value;
-            source = "profile:" + profile;
-        }
-        if (!value.empty()) {
-            target = QString::fromStdString(value);
-            sources << QString("%1=%2(%3)").arg(key, target, QString::fromStdString(source));
-        }
-    };
-    auto resolveInt = [&](const char* key, int& target) {
-        int value = 0;
-        if (!fs[key].empty()) fs[key] >> value;
-        std::string source = "flat";
-        if (value <= 0 && !profileNode.empty() && !profileNode[key].empty()) {
-            profileNode[key] >> value;
-            source = "profile:" + profile;
-        }
-        if (value > 0) {
-            target = value;
-            sources << QString("%1=%2(%3)").arg(key).arg(value).arg(QString::fromStdString(source));
-        }
-    };
-
-    resolveString("cam_ip", m_cameraIp);
-    resolveInt("cam_port", m_cameraPort);
-    resolveInt("cam_width", m_previewWidth);
-    resolveInt("cam_height", m_previewHeight);
-    resolveString("cam_sn", m_cameraSn);
-    {
-        int allowLegacy = 0;
-        if (!fs["allow_legacy_intrinsics"].empty())
-            fs["allow_legacy_intrinsics"] >> allowLegacy;
-        m_allowLegacyIntrinsics = (allowLegacy != 0);
-    }
-    fs.release();
+    for (const std::string& s : resolved.sources)
+        sources << QString::fromStdString(s);
 
     APP_LOG_EVENT_INFO("config",
                        "config_load",

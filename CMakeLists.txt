@@ -275,6 +275,31 @@ target_link_libraries(offline_eye_in_hand ${OpenCV_LIBS} ${CGX_SDK_LIBS})
 add_dependencies(offline_eye_in_hand calibration_build_info)
 
 # ============================================================
+#  无硬件单元测试（纯 C++ 助手：选机策略/错误码/内参门禁/配置解析）
+# ============================================================
+option(BUILD_TESTS "Build no-hardware unit tests" ON)
+if(BUILD_TESTS)
+    add_executable(caitu_tests
+        tests/run_tests.cpp
+        tests/test_mvs_device_selector.cpp
+        tests/test_mvs_error.cpp
+        tests/test_intrinsic_identity.cpp
+        tests/test_config_resolver.cpp
+        cameras/mvs_device_selector.cpp
+        cameras/mvs_error.cpp
+        calibration/intrinsic_identity.cpp
+        hand_eye_gui/config_resolver.cpp
+    )
+    target_include_directories(caitu_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/tests
+    )
+    target_link_libraries(caitu_tests ${OpenCV_LIBS})
+    enable_testing()
+    add_test(NAME caitu_tests COMMAND caitu_tests)
+endif()
+
+# ============================================================
 #  Qt5 QML 手眼标定 GUI（可选）
 # ============================================================
 option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
