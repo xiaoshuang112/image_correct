@@ -29,7 +29,12 @@ build_target() {
     mkdir -p "$build_dir"
     cd "$build_dir"
     cmake .. -DCMAKE_BUILD_TYPE=Release $cmake_args
-    make hand-eye-app -j$(nproc)
+    if [ "$cam_type" = "mvs" ]; then
+        # 发布包必备：GUI 与真机验收工具必须同时产出
+        make hand-eye-app mvs_hw_acceptance -j$(nproc)
+    else
+        make hand-eye-app -j$(nproc)
+    fi
     cd "$SCRIPT_DIR"
 
     echo "  完成: ${build_dir}/hand-eye-${cam_type}"
@@ -62,6 +67,21 @@ verify_target() {
             exit 1
         fi
         echo "  已链接 libMvCameraControl.so: 符合预期"
+        local hw="${build_dir}/mvs_hw_acceptance"
+        if [ ! -x "$hw" ]; then
+            echo "  [错误] 缺少真机验收工具 $hw"
+            exit 1
+        fi
+        if ldd "$hw" | grep -q "not found"; then
+            echo "  [错误] mvs_hw_acceptance 存在未解析的动态库:"
+            ldd "$hw" | grep "not found"
+            exit 1
+        fi
+        if ! ldd "$hw" | grep -qi "MvCameraControl"; then
+            echo "  [错误] mvs_hw_acceptance 未链接 libMvCameraControl.so"
+            exit 1
+        fi
+        echo "  mvs_hw_acceptance: 可执行且已链接 MVS 运行库"
     fi
 }
 

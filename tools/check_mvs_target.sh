@@ -8,7 +8,7 @@ set -e
 #    ./check_mvs_target.sh [发布包目录]
 #
 #  校验内容:
-#    1. 二进制架构与当前机器一致；
+#    1. 主程序与真机验收工具均存在、可执行，架构与当前机器一致；
 #    2. ldd 无 not found（优先使用包内 lib/mvs，其次 /opt/MVS）；
 #    3. 未捆绑运行库时，目标机必须已安装 /opt/MVS，否则明确失败；
 #    4. 打印 MVS 运行库版本、相机默认配置是否就位。
@@ -16,6 +16,7 @@ set -e
 
 PKG_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 BIN="$PKG_DIR/hand-eye-mvs"
+HW_ACCEPTANCE="$PKG_DIR/mvs_hw_acceptance"
 MVS_SDK_DIR="/opt/MVS"
 
 echo "========================================"
@@ -26,12 +27,19 @@ echo "========================================"
 fail() { echo "[失败] $1"; exit 1; }
 
 [ -x "$BIN" ] || fail "未找到可执行文件 $BIN"
+[ -x "$HW_ACCEPTANCE" ] || fail "未找到真机验收工具 $HW_ACCEPTANCE"
 
 # ---- 1. 架构 ----
 HOST_ARCH="$(uname -m)"
-file "$BIN" | grep -q "$HOST_ARCH" \
-    || fail "二进制架构与目标机($HOST_ARCH)不符: $(file -b "$BIN")"
-echo "1. 架构: $HOST_ARCH OK"
+check_arch() {
+    local path="$1"
+    local name="$2"
+    file "$path" | grep -q "$HOST_ARCH" \
+        || fail "$name 架构与目标机($HOST_ARCH)不符: $(file -b "$path")"
+}
+check_arch "$BIN" "hand-eye-mvs"
+check_arch "$HW_ACCEPTANCE" "mvs_hw_acceptance"
+echo "1. 架构: $HOST_ARCH OK（hand-eye-mvs / mvs_hw_acceptance）"
 
 # ---- 2. 运行库解析 ----
 if [ -d "$PKG_DIR/lib/mvs" ] && compgen -G "$PKG_DIR/lib/mvs/libMvCameraControl.so*" > /dev/null; then
@@ -48,11 +56,17 @@ else
     fail "包内无 lib/mvs 且目标机未安装 $MVS_SDK_DIR，无法解析 libMvCameraControl.so"
 fi
 
-if env LD_LIBRARY_PATH="$LDD_LIBS" ldd "$BIN" | grep -q "not found"; then
-    env LD_LIBRARY_PATH="$LDD_LIBS" ldd "$BIN" | grep "not found"
-    fail "存在未解析的动态库"
-fi
-echo "   ldd: 无缺失库"
+check_ldd() {
+    local path="$1"
+    local name="$2"
+    if env LD_LIBRARY_PATH="$LDD_LIBS" ldd "$path" | grep -q "not found"; then
+        env LD_LIBRARY_PATH="$LDD_LIBS" ldd "$path" | grep "not found"
+        fail "$name 存在未解析的动态库"
+    fi
+    echo "   $name ldd: 无缺失库"
+}
+check_ldd "$BIN" "hand-eye-mvs"
+check_ldd "$HW_ACCEPTANCE" "mvs_hw_acceptance"
 
 # ---- 3. MVS 运行库版本 ----
 MVS_CORE="$(ls "$LDD_LIBS"/libMvCameraControl.so.* 2>/dev/null | head -1 || true)"
