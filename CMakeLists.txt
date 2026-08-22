@@ -275,6 +275,29 @@ target_link_libraries(offline_eye_in_hand ${OpenCV_LIBS} ${CGX_SDK_LIBS})
 add_dependencies(offline_eye_in_hand calibration_build_info)
 
 # ============================================================
+#  MVS 真机验收工具（仅 MVS 后端构建；连接真实相机执行冒烟项）
+# ============================================================
+if(useMVS)
+    add_executable(mvs_hw_acceptance
+        tools/mvs_hw_acceptance.cpp
+        cameras/MVSCamera.cpp
+        cameras/mvs_device_selector.cpp
+        cameras/mvs_error.cpp
+        utils/exposure_fusion.cpp
+    )
+    target_compile_definitions(mvs_hw_acceptance PRIVATE useMVS)
+    target_include_directories(mvs_hw_acceptance PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/calibration
+        ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui
+    )
+    target_link_libraries(mvs_hw_acceptance ${OpenCV_LIBS} MvCameraControl)
+    set_target_properties(mvs_hw_acceptance PROPERTIES
+        INSTALL_RPATH "$ORIGIN/lib/mvs"
+        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
+endif()
+
+# ============================================================
 #  无硬件单元测试（纯 C++ 助手：选机策略/错误码/内参门禁/配置解析）
 # ============================================================
 option(BUILD_TESTS "Build no-hardware unit tests" ON)

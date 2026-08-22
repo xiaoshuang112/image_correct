@@ -63,7 +63,8 @@ CameraDeviceAuditInfo MVSCamera::getDeviceAuditInfo() const {
         info.current_ip = mvsdiag::ipv4ToString(m_deviceIp);
     info.actual_width = m_width;
     info.actual_height = m_height;
-    info.pixel_format = "BGR8";  // 输出给上层的格式固定为 CV_8UC3 BGR
+    // 设备实际流格式（Mono8/Bayer8/...）；输出给上层的图像固定转为 BGR8
+    info.pixel_format = m_devicePixelFormat.empty() ? "unknown" : m_devicePixelFormat;
     info.exposure_us = m_exposureUs;
     info.gain = m_gain;
     info.trigger_mode = m_triggerOn ? "on" : "off";
@@ -425,9 +426,12 @@ cv::Mat MVSCamera::captureOneFrame(int timeoutMs) {
     MV_FRAME_OUT_INFO_EX stFrameInfo;
     memset(&stFrameInfo, 0, sizeof(stFrameInfo));
 
-    int nRet = MV_CC_GetImageForBGR(m_handle, m_buffer.data(),
-                                    static_cast<unsigned int>(m_buffer.size()),
-                                    &stFrameInfo, timeoutMs);
+    // 原始取流 + 显式转 BGR8。不使用 MV_CC_GetImageForBGR：
+    // 该旧接口要求缓冲区容纳转换后的 BGR 数据（w*h*3），而 PayloadSize
+    // 对 Mono8/Bayer8 只有 w*h*1，会返回 MV_E_BUFOVER 导致永远取不到帧。
+    int nRet = MV_CC_GetOneFrameTimeout(m_handle, m_buffer.data(),
+                                        static_cast<unsigned int>(m_buffer.size()),
+                                        &stFrameInfo, timeoutMs);
     if (MV_OK != nRet) {
         if (MV_E_NODATA == nRet)
             MV_CC_ClearImageBuffer(m_handle);
@@ -438,17 +442,26 @@ cv::Mat MVSCamera::captureOneFrame(int timeoutMs) {
                 stPayload.nCurValue > m_buffer.size() &&
                 ensureBufferCapacityLocked(static_cast<size_t>(stPayload.nCurValue))) {
                 memset(&stFrameInfo, 0, sizeof(stFrameInfo));
-                nRet = MV_CC_GetImageForBGR(m_handle, m_buffer.data(),
-                                            static_cast<unsigned int>(m_buffer.size()),
-                                            &stFrameInfo, timeoutMs);
+                nRet = MV_CC_GetOneFrameTimeout(m_handle, m_buffer.data(),
+                                                static_cast<unsigned int>(m_buffer.size()),
+                                                &stFrameInfo, timeoutMs);
                 if (MV_OK == nRet)
                     goto frame_ok;
             }
         }
         ++m_frameFailCount;
         ++m_consecutiveFailures;
+        // 取帧失败也更新 lastError（限频打印，避免超时风暴刷屏）
+        {
+            m_lastError.stage = "capture";
+            m_lastError.sdk_code = nRet;
+            m_lastError.message = mvsdiag::diagnostic("capture", nRet) +
+                " timeout_ms=" + std::to_string(timeoutMs) +
+                " consecutive=" + std::to_string(m_consecutiveFailures);
+        }
         if (m_consecutiveFailures == 1 ||
             m_consecutiveFailures % kFailureLogInterval == 0) {
+            std::cerr << "[MVSCamera] " << m_lastError.message << std::endl;
             APP_LOG_EVENT_WARNING("camera.mvs",
                                   "capture",
                                   "fail",
@@ -464,25 +477,70 @@ cv::Mat MVSCamera::captureOneFrame(int timeoutMs) {
 
 frame_ok:
     {
-        const int w = stFrameInfo.nExtendWidth;
-        const int h = stFrameInfo.nExtendHeight;
-        if (w <= 0 || h <= 0) {
+        const int w = static_cast<int>(stFrameInfo.nWidth);
+        const int h = static_cast<int>(stFrameInfo.nHeight);
+        const unsigned int srcType = static_cast<unsigned int>(stFrameInfo.enPixelType);
+        const uint32_t frameLen = stFrameInfo.nFrameLen;
+        if (w <= 0 || h <= 0 || frameLen == 0 ||
+            frameLen > m_buffer.size()) {
             ++m_frameFailCount;
             ++m_consecutiveFailures;
-            return cv::Mat();
-        }
-        const uint64_t frameBytes = static_cast<uint64_t>(w) *
-                                    static_cast<uint64_t>(h) * 3ULL;
-        if (frameBytes > m_buffer.size() ||
-            frameBytes > static_cast<uint64_t>(std::numeric_limits<size_t>::max())) {
-            ++m_frameFailCount;
-            ++m_consecutiveFailures;
+            m_lastError.stage = "capture";
+            m_lastError.sdk_code = 0;
+            m_lastError.message = "帧头非法: w=" + std::to_string(w) +
+                " h=" + std::to_string(h) +
+                " len=" + std::to_string(frameLen) +
+                " buffer=" + std::to_string(m_buffer.size());
             APP_LOG_EVENT_ERROR("camera.mvs",
                                 "capture",
-                                "invalid_size",
+                                "invalid_frame",
                                 {{"frame", QString("%1x%2").arg(w).arg(h)},
+                                 {"len", QString::number(frameLen)},
                                  {"buffer", QString::number(m_buffer.size())}});
             return cv::Mat();
+        }
+
+        // 输出拥有独立内存的 CV_8UC3 BGR，SDK 缓冲区生命周期不外泄
+        cv::Mat frame(h, w, CV_8UC3);
+        const uint64_t bgrBytes = static_cast<uint64_t>(w) *
+                                  static_cast<uint64_t>(h) * 3ULL;
+        if (srcType == PixelType_Gvsp_BGR8_Packed) {
+            if (frameLen < bgrBytes) {
+                ++m_frameFailCount;
+                ++m_consecutiveFailures;
+                return cv::Mat();
+            }
+            memcpy(frame.data, m_buffer.data(), static_cast<size_t>(bgrBytes));
+        } else {
+            MV_CC_PIXEL_CONVERT_PARAM_EX cvt;
+            memset(&cvt, 0, sizeof(cvt));
+            cvt.nWidth = static_cast<unsigned int>(w);
+            cvt.nHeight = static_cast<unsigned int>(h);
+            cvt.enSrcPixelType = stFrameInfo.enPixelType;
+            cvt.pSrcData = m_buffer.data();
+            cvt.nSrcDataLen = frameLen;
+            cvt.enDstPixelType = PixelType_Gvsp_BGR8_Packed;
+            cvt.pDstBuffer = frame.data;
+            cvt.nDstBufferSize = static_cast<unsigned int>(bgrBytes);
+            nRet = MV_CC_ConvertPixelTypeEx(m_handle, &cvt);
+            if (MV_OK != nRet) {
+                ++m_frameFailCount;
+                ++m_consecutiveFailures;
+                m_lastError.stage = "convert";
+                m_lastError.sdk_code = nRet;
+                m_lastError.message = mvsdiag::diagnostic("convert", nRet) +
+                    " src_type=0x" + ([&]{ char b[16]; std::snprintf(b, sizeof(b), "%08x", srcType); return std::string(b); }()) +
+                    " frame=" + std::to_string(w) + "x" + std::to_string(h);
+                std::cerr << "[MVSCamera] " << m_lastError.message << std::endl;
+                APP_LOG_EVENT_ERROR("camera.mvs",
+                                    "capture",
+                                    "convert_fail",
+                                    {{"code", QString("0x%1").arg(nRet, 0, 16)},
+                                     {"name", QString::fromLatin1(mvsdiag::errorName(nRet))},
+                                     {"src_type", QString("0x%1").arg(srcType, 0, 16)},
+                                     {"frame", QString("%1x%2").arg(w).arg(h)}});
+                return cv::Mat();
+            }
         }
 
         ++m_frameOkCount;
@@ -502,13 +560,10 @@ frame_ok:
                                 {{"frame_num", QString::number(stFrameInfo.nFrameNum)},
                                  {"device_ts", QString::number(devTs)},
                                  {"size", QString("%1x%2").arg(w).arg(h)},
+                                 {"src_type", QString("0x%1").arg(srcType, 0, 16)},
                                  {"host_output_format", "BGR8"},
                                  {"frames_ok", QString::number(m_frameOkCount)}});
         }
-
-        // 输出拥有独立内存的 CV_8UC3 BGR，SDK 缓冲区生命周期不外泄
-        cv::Mat frame(h, w, CV_8UC3);
-        memcpy(frame.data, m_buffer.data(), static_cast<size_t>(frameBytes));
         return frame;
     }
 }
@@ -525,9 +580,9 @@ void MVSCamera::discardFramesLocked(int count, int timeoutMs) {
     MV_CC_ClearImageBuffer(m_handle);
     for (int i = 0; i < count; ++i) {
         MV_FRAME_OUT_INFO_EX stDiscard{};
-        MV_CC_GetImageForBGR(m_handle, m_buffer.data(),
-                             static_cast<unsigned int>(m_buffer.size()),
-                             &stDiscard, timeoutMs);
+        MV_CC_GetOneFrameTimeout(m_handle, m_buffer.data(),
+                                 static_cast<unsigned int>(m_buffer.size()),
+                                 &stDiscard, timeoutMs);
     }
 }
 
@@ -589,7 +644,7 @@ int MVSCamera::getColorExposureTime() {
     if (!m_isOpened || !m_handle) return -1;
     MVCC_FLOATVALUE stValue{};
     int nRet = MV_CC_GetFloatValue(m_handle, "ExposureTime", &stValue);
-    if (MV_OK == nRet) return (int)stValue.fCurValue;
+    if (MV_OK == nRet) return (int)(stValue.fCurValue + 0.5f);
     return -1;
 }
 
@@ -679,7 +734,8 @@ int MVSCamera::getColorGain() {
     if (!m_isOpened || !m_handle) return -1;
     MVCC_FLOATVALUE stValue{};
     int nRet = MV_CC_GetFloatValue(m_handle, "Gain", &stValue);
-    if (MV_OK == nRet) return (int)stValue.fCurValue;
+    // 设备浮点增益可能量化（如设 5.0 应用为 4.999），四舍五入避免界面显示掉档
+    if (MV_OK == nRet) return (int)(stValue.fCurValue + 0.5f);
     return -1;
 }
 
