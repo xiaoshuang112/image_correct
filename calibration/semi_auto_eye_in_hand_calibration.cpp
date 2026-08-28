@@ -32,10 +32,24 @@ static bool generateEyeInHandCandidates(
     int robot_handle,
     const double flangeEuleInit[6],
     const PoseGenerationConfig& config,
-    std::vector<PoseCandidate>& candidates) {
+    std::vector<PoseCandidate>& candidates,
+    CandidatePlanningReport& planning_report,
+    std::string& error) {
 
     candidates.clear();
-    double euler[6], joint[6];
+    error.clear();
+    double initial_joint[6]{};
+    const CRresult joint_ret = cr_get_jointActualPos(
+        (RobotHandle)robot_handle, initial_joint);
+    if (joint_ret != sucess) {
+        error = "读取候选规划初始关节角失败: " + std::to_string(joint_ret);
+        return false;
+    }
+
+    double euler[6]{}, axis_angle[6]{}, joint[6]{};
+    int source_index = 0;
+    int euler_failures = 0;
+    int ik_failures = 0;
 
     for (double dx : config.offset_x) {
     for (double dy : config.offset_y) {
@@ -50,21 +64,58 @@ static bool generateEyeInHandCandidates(
         euler[4] = flangeEuleInit[4] + dry;
         euler[5] = flangeEuleInit[5] + drz;
 
-        if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
-            PoseCandidate cand;
-            std::copy(joint, joint + 6, cand.joint);
-            std::fill(cand.axis_angle, cand.axis_angle + 6, 0.0);
-            candidates.push_back(cand);
+        const CRresult euler_ret = cr_Eule2AxisAngle(euler, axis_angle);
+        if (euler_ret != sucess) {
+            ++euler_failures;
+            ++source_index;
+            continue;
         }
+        const CRresult ik_ret = cr_kineInverse((RobotHandle)robot_handle,
+                                               axis_angle, initial_joint, joint);
+        if (ik_ret == sucess) {
+            PoseCandidate cand{};
+            std::copy(joint, joint + 6, cand.joint);
+            std::copy(axis_angle, axis_angle + 6, cand.axis_angle);
+            std::copy(euler, euler + 6, cand.flange_euler);
+            cand.source_index = source_index;
+            candidates.push_back(cand);
+        } else {
+            ++ik_failures;
+        }
+        ++source_index;
     }}}}}}
 
-    std::cout << "[semiAutoEyeInHand] 位姿生成: " << candidates.size() << "/"
-              << (config.offset_x.size() * config.offset_y.size() *
-                  config.offset_z.size() * config.offset_rx.size() *
-                  config.offset_ry.size() * config.offset_rz.size())
-              << " IK 可达" << std::endl;
+    const std::size_t reachable = candidates.size();
+    CandidatePlanningOptions options;
+    options.maximum_candidates = static_cast<std::size_t>(config.maximum_candidates);
+    options.maximum_joint_step_degrees = config.maximum_joint_step_degrees;
+    if (!planPoseCandidates(candidates, initial_joint, options,
+                            planning_report, error)) {
+        return false;
+    }
+
+    std::cout << "[semiAutoEyeInHand] 位姿生成: planned=" << source_index
+              << ", IK可达=" << reachable
+              << ", IK失败=" << ik_failures
+              << ", 欧拉转换失败=" << euler_failures
+              << ", 选取=" << planning_report.selected_candidates
+              << ", 最大关节跳变=" << std::fixed << std::setprecision(3)
+              << planning_report.maximum_joint_step_degrees << " deg"
+              << std::endl;
 
     return !candidates.empty();
+}
+
+static std::string formatSixValues(const double values[6]) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(4) << "[";
+    for (int axis = 0; axis < 6; ++axis) {
+        if (axis > 0)
+            stream << ",";
+        stream << values[axis];
+    }
+    stream << "]";
+    return stream.str();
 }
 
 // 统计 save_dir 下 .jpg 文件数
@@ -136,6 +187,18 @@ bool semiAutoEyeInHandCalibration(
     session_options.source_data_directory = "live_capture";
     session_options.board = board_config;
     session_options.robot_endpoint = pchRobotIP ? pchRobotIP : "";
+    session_options.pose_config_source_file = pose_config.source_file;
+    session_options.pose_offset_x = pose_config.offset_x;
+    session_options.pose_offset_y = pose_config.offset_y;
+    session_options.pose_offset_z = pose_config.offset_z;
+    session_options.pose_offset_rx = pose_config.offset_rx;
+    session_options.pose_offset_ry = pose_config.offset_ry;
+    session_options.pose_offset_rz = pose_config.offset_rz;
+    session_options.pose_min_corners = pose_config.min_corners;
+    session_options.pose_min_valid_frames = pose_config.min_valid_frames;
+    session_options.pose_maximum_candidates = pose_config.maximum_candidates;
+    session_options.pose_maximum_joint_step_degrees =
+        pose_config.maximum_joint_step_degrees;
     if (camera) {
         const CONFIG& config = camera->getConfig();
         const CameraDeviceAuditInfo deviceInfo = camera->getDeviceAuditInfo();
@@ -188,10 +251,34 @@ bool semiAutoEyeInHandCalibration(
 
     // ---- Phase 2: 生成候选位姿 ----
     std::vector<PoseCandidate> candidates;
-    if (!generateEyeInHandCandidates(robot_handle, flangeEuleInit, pose_config, candidates)) {
-        result.message = "无 IK 可达位姿";
+    CandidatePlanningReport planning_report;
+    std::string planning_error;
+    if (!generateEyeInHandCandidates(robot_handle, flangeEuleInit, pose_config,
+                                     candidates, planning_report,
+                                     planning_error)) {
+        result.message = "候选位姿规划失败: " + planning_error;
         std::cerr << "[semiAutoEyeInHand] " << result.message << std::endl;
-        return failSession("pose_generation", "no_reachable_pose");
+        return failSession("pose_generation", "candidate_planning_failed");
+    }
+    session->appendEvent(
+        "candidate_plan", "success",
+        "input=" + std::to_string(planning_report.input_candidates) +
+        " selected=" + std::to_string(planning_report.selected_candidates) +
+        " ordered=" + std::to_string(planning_report.ordered_candidates) +
+        " path_deg=" + std::to_string(planning_report.estimated_path_degrees) +
+        " max_step_deg=" + std::to_string(
+            planning_report.maximum_joint_step_degrees) +
+        " max_j6_step_deg=" + std::to_string(
+            planning_report.maximum_j6_step_degrees));
+    for (std::size_t ordered_index = 0; ordered_index < candidates.size();
+         ++ordered_index) {
+        const PoseCandidate& candidate = candidates[ordered_index];
+        session->appendEvent(
+            "candidate_plan_item", "ready",
+            "ordered=" + std::to_string(ordered_index) +
+            " source=" + std::to_string(candidate.source_index) +
+            " joint=" + formatSixValues(candidate.joint) +
+            " flange_euler=" + formatSixValues(candidate.flange_euler));
     }
 
     // ---- Phase 3: 逐点采集 ----

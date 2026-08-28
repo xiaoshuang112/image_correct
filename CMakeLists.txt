@@ -161,9 +161,15 @@ if(useMVS)
     message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
 endif()
 
+# 将安全关键的半自动位姿配置放到每个构建目录，避免发布产物缺失后静默回退。
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/param")
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_in_hand_config.yaml"
+    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_in_hand_config.yaml"
+    COPYONLY)
 
 SET(SRC_LISTS
-calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
+calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
     calibration.cpp utils/exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
@@ -260,6 +266,7 @@ add_executable(offline_eye_in_hand
     calibration/charuco_detector.cpp
     calibration/camera_calibration.cpp
     calibration/calibration_utils.cpp
+    calibration/candidate_planner.cpp
     calibration/calibration_session.cpp
     calibration/semi_auto_eye_in_hand_calibration.cpp
     utils/calib_transform.cpp
@@ -308,10 +315,13 @@ if(BUILD_TESTS)
         tests/test_mvs_error.cpp
         tests/test_intrinsic_identity.cpp
         tests/test_config_resolver.cpp
+        tests/test_candidate_planner.cpp
+        tests/test_pose_generation_config.cpp
         cameras/mvs_device_selector.cpp
         cameras/mvs_error.cpp
         calibration/intrinsic_identity.cpp
         hand_eye_gui/config_resolver.cpp
+        calibration/candidate_planner.cpp
     )
     target_include_directories(caitu_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

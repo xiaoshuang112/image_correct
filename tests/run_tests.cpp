@@ -8,6 +8,8 @@ int test_mvs_device_selector();
 int test_mvs_error();
 int test_intrinsic_identity();
 int test_config_resolver();
+int test_candidate_planner();
+int test_pose_generation_config();
 }  // namespace suite
 
 int main() {
@@ -16,6 +18,8 @@ int main() {
     failures += suite::test_mvs_error();
     failures += suite::test_intrinsic_identity();
     failures += suite::test_config_resolver();
+    failures += suite::test_candidate_planner();
+    failures += suite::test_pose_generation_config();
     if (failures == 0) {
         std::cout << "\n[caitu_tests] ALL PASS\n";
         return 0;

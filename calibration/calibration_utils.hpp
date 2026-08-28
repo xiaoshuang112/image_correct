@@ -12,14 +12,9 @@
 #include "det.h"
 #include "utils/calib_transform.hpp"
 #include "calibration_runtime_status.hpp"
+#include "candidate_planner.hpp"
 
 class CalibrationSession;
-
-// 采集候选位姿
-struct PoseCandidate {
-    double axis_angle[6];   // TCP 轴角位姿 (mm, deg)
-    double joint[6];        // 关节角 (deg)
-};
 
 /**
  * @brief 断线重连机械臂

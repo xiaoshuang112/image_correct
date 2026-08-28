@@ -962,66 +962,6 @@ static bool computeZValues_old(int robot_handle,
 // Phase 3: 生成约 360 个高覆盖候选 + IK 过滤
 // ============================================================
 
-static double jointPathDistance(const double lhs[ROB_AXIS_NUM],
-                                const double rhs[ROB_AXIS_NUM]) {
-    double sum = 0.0;
-    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
-        double delta = rhs[axis] - lhs[axis];
-        if (axis == 5)
-            delta = std::remainder(delta, 360.0);
-        sum += delta * delta;
-    }
-    return std::sqrt(sum);
-}
-
-static void orderCandidatesByNearestJoint(std::vector<PoseCandidate>& candidates,
-                                          const double initialJoint[ROB_AXIS_NUM]) {
-    std::vector<PoseCandidate> ordered;
-    ordered.reserve(candidates.size());
-    std::vector<bool> used(candidates.size(), false);
-    double current[ROB_AXIS_NUM];
-    std::copy(initialJoint, initialJoint + ROB_AXIS_NUM, current);
-    double pathDegrees = 0.0;
-    double maximumStepDegrees = 0.0;
-    double maximumJ6StepDegrees = 0.0;
-
-    for (size_t count = 0; count < candidates.size(); ++count) {
-        size_t bestIndex = candidates.size();
-        double bestDistance = std::numeric_limits<double>::infinity();
-        for (size_t index = 0; index < candidates.size(); ++index) {
-            if (used[index])
-                continue;
-            const double distance = jointPathDistance(current, candidates[index].joint);
-            if (distance < bestDistance) {
-                bestDistance = distance;
-                bestIndex = index;
-            }
-        }
-        if (bestIndex == candidates.size())
-            break;
-
-        PoseCandidate candidate = candidates[bestIndex];
-        candidate.joint[5] += std::round((current[5] - candidate.joint[5]) / 360.0) * 360.0;
-        const double j6Step = std::abs(candidate.joint[5] - current[5]);
-        pathDegrees += bestDistance;
-        maximumStepDegrees = std::max(maximumStepDegrees, bestDistance);
-        maximumJ6StepDegrees = std::max(maximumJ6StepDegrees, j6Step);
-        std::copy(candidate.joint, candidate.joint + ROB_AXIS_NUM, current);
-        ordered.push_back(candidate);
-        used[bestIndex] = true;
-    }
-
-    candidates.swap(ordered);
-    APP_LOG_EVENT_INFO("calibration.candidates",
-                       "candidate_ordering",
-                       "success",
-                       {{"strategy", "nearest_joint_greedy"},
-                        {"candidates", QString::number(candidates.size())},
-                        {"estimated_path_deg", QString::number(pathDegrees, 'f', 3)},
-                        {"max_step_deg", QString::number(maximumStepDegrees, 'f', 3)},
-                        {"max_j6_step_deg", QString::number(maximumJ6StepDegrees, 'f', 3)}});
-}
-
 bool generateCandidates(int robot_handle,
                         std::shared_ptr<AICamera>& camera,
                         const double z_values[3],
@@ -1031,6 +971,7 @@ bool generateCandidates(int robot_handle,
     double tcp_aa[ROB_AXIS_NUM] = {};
     double flangeEulePos[ROB_AXIS_NUM] = {};
     double joint[ROB_AXIS_NUM] = {};
+    double axisAngle[ROB_AXIS_NUM] = {};
     const CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
     if (tcpRet != sucess) {
         APP_LOG_EVENT_ERROR("calibration.candidates",
@@ -1112,9 +1053,20 @@ bool generateCandidates(int robot_handle,
                 euler[4] = flangeEulePos[4] + attitude[1];
                 euler[5] = flangeEulePos[5] + attitude[2];
 
-                if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
+                const int sourceIndex = total - 1;
+                const CRresult eulerRet = cr_Eule2AxisAngle(euler, axisAngle);
+                const CRresult ikRet = eulerRet == sucess
+                    ? cr_kineInverse((RobotHandle)robot_handle, axisAngle,
+                                     initialJoint, joint)
+                    : eulerRet;
+                if (ikRet == sucess) {
                     PoseCandidate candidate{};
                     std::copy(joint, joint + ROB_AXIS_NUM, candidate.joint);
+                    std::copy(axisAngle, axisAngle + ROB_AXIS_NUM,
+                              candidate.axis_angle);
+                    std::copy(euler, euler + ROB_AXIS_NUM,
+                              candidate.flange_euler);
+                    candidate.source_index = sourceIndex;
                     candidates.push_back(candidate);
                     ++ik_ok;
                 }
@@ -1122,7 +1074,18 @@ bool generateCandidates(int robot_handle,
         }
     }
 
-    orderCandidatesByNearestJoint(candidates, initialJoint);
+    CandidatePlanningOptions planningOptions;
+    CandidatePlanningReport planningReport;
+    std::string planningError;
+    if (!planPoseCandidates(candidates, initialJoint, planningOptions,
+                            planningReport, planningError)) {
+        APP_LOG_EVENT_ERROR("calibration.candidates",
+                            "candidate_ordering",
+                            "fail",
+                            {{"strategy", "nearest_joint_greedy"},
+                             {"reason", QString::fromStdString(planningError)}});
+        return false;
+    }
     std::cout << "[autoCalib] 360 candidates generated, IK reachable: "
               << ik_ok << "/" << total << std::endl;
     if (planned_count)
@@ -1135,6 +1098,12 @@ bool generateCandidates(int robot_handle,
                         {"total", QString::number(total)},
                         {"reachable", QString::number(ik_ok)},
                         {"ordered", QString::number(candidates.size())},
+                        {"estimated_path_deg", QString::number(
+                            planningReport.estimated_path_degrees, 'f', 3)},
+                        {"max_step_deg", QString::number(
+                            planningReport.maximum_joint_step_degrees, 'f', 3)},
+                        {"max_j6_step_deg", QString::number(
+                            planningReport.maximum_j6_step_degrees, 'f', 3)},
                         {"tilt_far_deg", QString::number(tiltByDistance[0], 'f', 1)},
                         {"tilt_mid_deg", QString::number(tiltByDistance[1], 'f', 1)},
                         {"tilt_near_deg", QString::number(tiltByDistance[2], 'f', 1)},

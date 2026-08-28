@@ -70,6 +70,42 @@ bool parseDoubles(const std::string& line,
     return true;
 }
 
+template <typename Values>
+std::string formatAuditValues(const Values& values)
+{
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(4) << "[";
+    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
+        if (axis > 0)
+            stream << ",";
+        stream << values[axis];
+    }
+    stream << "]";
+    return stream.str();
+}
+
+std::string formatMotionDiagnostics(const RobotMotionDiagnostics& motion)
+{
+    return "outcome=" + motion.outcome +
+        " phase=" + motion.phase +
+        " origin=" + motion.origin +
+        " sdk_function=" + motion.sdk_function +
+        " result=" + std::to_string(motion.result) +
+        " sdk_result=" + std::to_string(motion.sdk_result) +
+        " stop_result=" + std::to_string(motion.stop_result) +
+        " elapsed_ms=" + std::to_string(motion.elapsed_ms) +
+        " timeout_ms=" + std::to_string(motion.timeout_ms) +
+        " polls=" + std::to_string(motion.polls) +
+        " joint_read_failures=" + std::to_string(motion.joint_read_failures) +
+        " status_read_failures=" + std::to_string(motion.status_read_failures) +
+        " stable_polls=" + std::to_string(motion.stable_polls) +
+        " moving=" + std::string(motion.moving ? "true" : "false") +
+        " initial_error_deg=" + std::to_string(motion.initial_error_degrees) +
+        " initial=" + formatAuditValues(motion.initial) +
+        " target=" + formatAuditValues(motion.target) +
+        " actual=" + formatAuditValues(motion.actual);
+}
+
 } // namespace
 
 int reconnectRobotHandle(int old_handle, char* pchRobotIP){
@@ -305,7 +341,16 @@ bool executeCollection(int robot_handle,
             std::cout << "] " << progress << "%\r\033[A" << std::flush;
 #endif
         }        
-        CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint);
+        if (session) {
+            session->appendEvent(
+                "candidate_motion", "start",
+                "ordered=" + std::to_string(i) +
+                " source=" + std::to_string(candidates[i].source_index) +
+                " target=" + formatAuditValues(candidates[i].joint));
+        }
+        RobotMotionDiagnostics motion_diagnostics;
+        CRresult ret_move = moveToJointPos(robot_handle, candidates[i].joint,
+                                           &motion_diagnostics);
         if(sucess != ret_move){
             if (ret_move == robot_motion_cancelled ||
                 robotMotionCancellationRequested()) {
@@ -335,8 +380,10 @@ bool executeCollection(int robot_handle,
                                    {"error", QString::number(ret_move)}});
             if (session)
                 session->appendEvent("collection_frame", "skip",
-                    "candidate=" + std::to_string(i) + " reason=move_failed error=" +
-                    std::to_string(ret_move));
+                    "candidate=" + std::to_string(i) +
+                    " source=" + std::to_string(candidates[i].source_index) +
+                    " reason=move_failed error=" + std::to_string(ret_move) +
+                    " " + formatMotionDiagnostics(motion_diagnostics));
             if(operate_timeout == ret_move){
                 APP_LOG_EVENT_ERROR("calibration.collection",
                                     "collection",
@@ -359,6 +406,13 @@ bool executeCollection(int robot_handle,
             ++skipped;
             publishCollection("candidate_skip_move_failed");
             continue;
+        }
+        if (session) {
+            session->appendEvent(
+                "candidate_motion", "success",
+                "ordered=" + std::to_string(i) +
+                " source=" + std::to_string(candidates[i].source_index) +
+                " " + formatMotionDiagnostics(motion_diagnostics));
         }
 
         // moveToJointPos() 已等待控制器连续报告停止，并保留了 100 ms 的短窗口。

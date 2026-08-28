@@ -1021,6 +1021,8 @@ bool CalibrationSession::writeRawRobotPose(int frame_id,
 bool CalibrationSession::writeEffectiveConfig(std::string& error) {
     const std::string intrinsicFileHash = options_.intrinsic_source_file.empty()
         ? "" : sha256File(options_.intrinsic_source_file);
+    const std::string poseConfigHash = options_.pose_config_source_file.empty()
+        ? "" : sha256File(options_.pose_config_source_file);
     return atomicYamlWrite(fs::path(directory_) / "effective_config.yaml",
                            [&](cv::FileStorage& out) {
         out << "schema_version" << 1;
@@ -1073,6 +1075,23 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
         out << "coordinate_system" << "right_handed";
         out << "handeye_matrix_definition" << "T_flange_camera";
         out << "}";
+        if (!options_.pose_offset_x.empty()) {
+            out << "candidate_planning" << "{";
+            out << "source_file" << options_.pose_config_source_file;
+            out << "source_file_sha256" << poseConfigHash;
+            out << "offset_x" << options_.pose_offset_x;
+            out << "offset_y" << options_.pose_offset_y;
+            out << "offset_z" << options_.pose_offset_z;
+            out << "offset_rx" << options_.pose_offset_rx;
+            out << "offset_ry" << options_.pose_offset_ry;
+            out << "offset_rz" << options_.pose_offset_rz;
+            out << "min_corners" << options_.pose_min_corners;
+            out << "min_valid_frames" << options_.pose_min_valid_frames;
+            out << "maximum_candidates" << options_.pose_maximum_candidates;
+            out << "maximum_joint_step_degrees"
+                << options_.pose_maximum_joint_step_degrees;
+            out << "}";
+        }
         out << "board" << "{";
         out << "dictionary_id" << options_.board.dictionary_id;
         out << "squares_x" << options_.board.squares_x;

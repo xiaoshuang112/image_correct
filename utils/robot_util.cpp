@@ -143,11 +143,20 @@ CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS
     return result;
 }
 
-CRresult moveToJointPos(int robot_handle, const double joint[6]) {
-    const auto startedAt = std::chrono::steady_clock::now();
+CRresult moveToJointPos(int robot_handle, const double joint[6],
+                        RobotMotionDiagnostics* diagnostics) {
+    RobotMotionDiagnostics localDiagnostics;
+    RobotMotionDiagnostics& motion = diagnostics ? *diagnostics : localDiagnostics;
+    motion = RobotMotionDiagnostics{};
     double pose[6] = {0, 0, 0, 0, 0, 0};
     CRresult ret = cr_get_jointActualPos(robot_handle, pose);
     if (ret != sucess) {
+        motion.outcome = "failed";
+        motion.phase = "query_initial_joint";
+        motion.origin = "sdk";
+        motion.sdk_function = "cr_get_jointActualPos";
+        motion.result = ret;
+        motion.sdk_result = ret;
         APP_LOG_EVENT_ERROR("robot.motion",
                             "joint_move",
                             "fail",
@@ -159,12 +168,14 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                   << ret << std::endl;
         return ret;
     }
+    std::copy(pose, pose + ROB_AXIS_NUM, motion.initial.begin());
 
     // SDK 逆解可能把 J6 归一化到另一圈。保持与当前角度连续，避免例如
     // 318° -> -42° 这种物理上无意义的整圈运动。
     double target[ROB_AXIS_NUM];
     std::copy(joint, joint + ROB_AXIS_NUM, target);
     target[5] = nearestEquivalentAngle(target[5], pose[5]);
+    std::copy(target, target + ROB_AXIS_NUM, motion.target.begin());
 
     const double initialError = maximumJointError(pose, target);
     const int timeoutMs = std::clamp(
@@ -172,6 +183,8 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                                      initialError * kMotionTimeoutPerDegreeMs)),
         kMotionMinTimeoutMs,
         kMotionMaxTimeoutMs);
+    motion.initial_error_degrees = initialError;
+    motion.timeout_ms = timeoutMs;
 
     APP_LOG_EVENT_INFO("robot.motion",
                        "joint_move",
@@ -185,6 +198,10 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
                         {"mode", "non_blocking"}});
 
     if (robotMotionCancellationRequested()) {
+        motion.outcome = "cancelled";
+        motion.phase = "before_command";
+        motion.origin = "user";
+        motion.result = robot_motion_cancelled;
         APP_LOG_EVENT_WARNING("robot.motion",
                               "joint_move",
                               "cancelled",
@@ -228,12 +245,23 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
             } else {
                 ++statusFailures;
                 stablePolls = 0;
+                motion.sdk_result = statusRet;
+                motion.sdk_function = "cr_get_robotMoveStatus";
             }
 
             const long long waitedMs =
                 std::chrono::duration_cast<std::chrono::milliseconds>(
                     std::chrono::steady_clock::now() - idleStartedAt).count();
             if (waitedMs >= kIdleWaitTimeoutMs) {
+                motion.outcome = "failed";
+                motion.phase = phase;
+                motion.origin = "application";
+                motion.result = operate_timeout;
+                motion.elapsed_ms = waitedMs;
+                motion.polls = polls;
+                motion.status_read_failures = statusFailures;
+                motion.stable_polls = stablePolls;
+                motion.moving = moving == TRUE;
                 APP_LOG_EVENT_ERROR("robot.motion",
                                     "joint_move",
                                     "fail",
@@ -252,8 +280,15 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     // 上一个非阻塞命令可能已经进入位置容差但仍在减速。下发新命令前必须
     // 由控制器连续确认静止，否则 SDK 会返回 result_invalid。
     ret = waitUntilRobotIdle("before_command");
-    if (ret != sucess)
+    if (ret != sucess) {
+        if (ret == robot_motion_cancelled) {
+            motion.outcome = "cancelled";
+            motion.phase = "before_command";
+            motion.origin = "user";
+            motion.result = ret;
+        }
         return ret;
+    }
 
     PointControlParaSimple simple{};
     for (int i = 0; i < ROB_AXIS_NUM; i++) {
@@ -272,6 +307,12 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     ret = cr_move_pointControlPara_transfer(
         (RobotHandle)robot_handle, simple, &para);
     if (ret != sucess) {
+        motion.outcome = "failed";
+        motion.phase = "command_build";
+        motion.origin = "sdk";
+        motion.sdk_function = "cr_move_pointControlPara_transfer";
+        motion.result = ret;
+        motion.sdk_result = ret;
         APP_LOG_EVENT_ERROR("robot.motion",
                             "joint_move",
                             "fail",
@@ -308,6 +349,12 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         break;
     }
     if (ret != sucess) {
+        motion.outcome = "failed";
+        motion.phase = "command_send";
+        motion.origin = "sdk";
+        motion.sdk_function = "cr_move_joint";
+        motion.result = ret;
+        motion.sdk_result = ret;
         APP_LOG_EVENT_ERROR("robot.motion",
                             "joint_move",
                             "fail",
@@ -319,6 +366,10 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         std::cerr << "[robot_util] cr_move_joint failed: " << ret << std::endl;
         return ret;
     }
+
+    // 关节距离决定的是实际运动预算，因此从 SDK 接受运动命令后开始计时；
+    // 上一条命令释放等待由独立的 idle timeout 约束，不再挤占本次运动时间。
+    const auto motionStartedAt = std::chrono::steady_clock::now();
 
     // 非阻塞下发后由应用轮询实际关节角，因此超时和取消可以真正生效。
     double actual[6] = {0, 0, 0, 0, 0, 0};
@@ -333,10 +384,18 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     while (true) {
         const auto now = std::chrono::steady_clock::now();
         const long long elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-            now - startedAt).count();
+            now - motionStartedAt).count();
 
         if (robotMotionCancellationRequested()) {
             const CRresult stopRet = cr_stop((RobotHandle)robot_handle);
+            motion.outcome = "cancelled";
+            motion.phase = "reach";
+            motion.origin = "user";
+            motion.result = robot_motion_cancelled;
+            motion.stop_result = stopRet;
+            motion.elapsed_ms = elapsedMs;
+            motion.polls = polls;
+            std::copy(actual, actual + ROB_AXIS_NUM, motion.actual.begin());
             APP_LOG_EVENT_WARNING("robot.motion",
                                   "joint_move",
                                   "cancelled",
@@ -351,6 +410,18 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
 
         if (elapsedMs >= timeoutMs) {
             const CRresult stopRet = cr_stop((RobotHandle)robot_handle);
+            motion.outcome = "failed";
+            motion.phase = "reach";
+            motion.origin = "application";
+            motion.result = operate_timeout;
+            motion.stop_result = stopRet;
+            motion.elapsed_ms = elapsedMs;
+            motion.polls = polls;
+            motion.joint_read_failures = readFailures;
+            motion.status_read_failures = statusFailures;
+            motion.stable_polls = stablePolls;
+            motion.moving = moving == TRUE;
+            std::copy(actual, actual + ROB_AXIS_NUM, motion.actual.begin());
             APP_LOG_EVENT_ERROR("robot.motion",
                                 "joint_move",
                                 "fail",
@@ -377,10 +448,14 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
         if (actualRet != sucess) {
             ++readFailures;
             stablePolls = 0;
+            motion.sdk_result = actualRet;
+            motion.sdk_function = "cr_get_jointActualPos";
         }
         if (statusRet != sucess) {
             ++statusFailures;
             stablePolls = 0;
+            motion.sdk_result = statusRet;
+            motion.sdk_function = "cr_get_robotMoveStatus";
         }
 
         const bool positionReached =
@@ -423,8 +498,19 @@ CRresult moveToJointPos(int robot_handle, const double joint[6]) {
     }
 
     const auto elapsedMs = std::chrono::duration_cast<std::chrono::milliseconds>(
-        std::chrono::steady_clock::now() - startedAt).count();
+        std::chrono::steady_clock::now() - motionStartedAt).count();
     if (reached) {
+        motion.outcome = "success";
+        motion.phase = "complete";
+        motion.origin = "application";
+        motion.result = sucess;
+        motion.elapsed_ms = elapsedMs;
+        motion.polls = polls;
+        motion.joint_read_failures = readFailures;
+        motion.status_read_failures = statusFailures;
+        motion.stable_polls = stablePolls;
+        motion.moving = moving == TRUE;
+        std::copy(actual, actual + ROB_AXIS_NUM, motion.actual.begin());
         APP_LOG_EVENT_INFO("robot.motion",
                            "joint_move",
                            "success",

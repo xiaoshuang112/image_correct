@@ -706,8 +706,16 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
                                "semiAutoEyeInHand"))
         return;
 
-    // 加载配置或使用默认
-    PoseGenerationConfig pose_config = loadPoseGenerationConfig(g_paramPath + "eye_in_hand_config.yaml");
+    // 半自动标定的运动范围属于安全关键配置，缺失或非法时禁止静默回退默认值。
+    PoseGenerationConfig pose_config;
+    std::string pose_config_error;
+    const std::string pose_config_path = g_paramPath + "eye_in_hand_config.yaml";
+    if (!tryLoadPoseGenerationConfig(pose_config_path, pose_config,
+                                     pose_config_error)) {
+        std::cerr << "[semiAutoEyeInHand] 位姿配置加载失败，已阻止机器人运动: "
+                  << pose_config_error << std::endl;
+        return;
+    }
 
     // 加载已知相机内参（如有）
     cv::Mat camera_matrix, dist_coeffs;

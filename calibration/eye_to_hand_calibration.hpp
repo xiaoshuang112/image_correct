@@ -5,6 +5,8 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <algorithm>
+#include <cmath>
 
 #include "cameras/AICamera.hpp"
 #include "charuco_detector.hpp"
@@ -35,12 +37,22 @@ struct PoseGenerationConfig {
 
     int min_corners = 12;
     int min_valid_frames = 10;
+    int maximum_candidates = 90;
+    double maximum_joint_step_degrees = 60.0;
+    std::string source_file;
 };
 
-inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_path) {
-    PoseGenerationConfig cfg;
-    cv::FileStorage fs(yaml_path, cv::FileStorage::READ);
-    if (fs.isOpened()) {
+inline bool tryLoadPoseGenerationConfig(const std::string& yaml_path,
+                                        PoseGenerationConfig& cfg,
+                                        std::string& error) {
+    error.clear();
+    cv::FileStorage fs;
+    try {
+        fs.open(yaml_path, cv::FileStorage::READ);
+        if (!fs.isOpened()) {
+            error = "cannot open pose generation config: " + yaml_path;
+            return false;
+        }
         cv::FileNode fn;
         fn = fs["offset_x"]; if (!fn.empty()) fn >> cfg.offset_x;
         fn = fs["offset_y"]; if (!fn.empty()) fn >> cfg.offset_y;
@@ -48,11 +60,53 @@ inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_pat
         fn = fs["offset_rx"]; if (!fn.empty()) fn >> cfg.offset_rx;
         fn = fs["offset_ry"]; if (!fn.empty()) fn >> cfg.offset_ry;
         fn = fs["offset_rz"]; if (!fn.empty()) fn >> cfg.offset_rz;
-        fs["min_corners"] >> cfg.min_corners;
-        fs["min_valid_frames"] >> cfg.min_valid_frames;
+        fn = fs["min_corners"]; if (!fn.empty()) fn >> cfg.min_corners;
+        fn = fs["min_valid_frames"]; if (!fn.empty()) fn >> cfg.min_valid_frames;
+        fn = fs["maximum_candidates"]; if (!fn.empty()) fn >> cfg.maximum_candidates;
+        fn = fs["maximum_joint_step_degrees"];
+        if (!fn.empty()) fn >> cfg.maximum_joint_step_degrees;
         fs.release();
-        std::cout << "加载配置: " << yaml_path << std::endl;
+    } catch (const cv::Exception& exception) {
+        error = "invalid pose generation config " + yaml_path + ": " +
+                exception.what();
+        return false;
     }
+
+    const std::vector<const std::vector<double>*> offsets{
+        &cfg.offset_x, &cfg.offset_y, &cfg.offset_z,
+        &cfg.offset_rx, &cfg.offset_ry, &cfg.offset_rz};
+    for (const std::vector<double>* values : offsets) {
+        if (values->empty() ||
+            !std::all_of(values->begin(), values->end(),
+                         [](double value) { return std::isfinite(value); })) {
+            error = "pose generation offsets must be non-empty and finite";
+            return false;
+        }
+    }
+    if (cfg.min_corners <= 0 || cfg.min_valid_frames <= 0) {
+        error = "min_corners and min_valid_frames must be positive";
+        return false;
+    }
+    if (cfg.maximum_candidates <= 0) {
+        error = "maximum_candidates must be positive";
+        return false;
+    }
+    if (!std::isfinite(cfg.maximum_joint_step_degrees) ||
+        cfg.maximum_joint_step_degrees <= 0.0 ||
+        cfg.maximum_joint_step_degrees > 180.0) {
+        error = "maximum_joint_step_degrees must be in (0, 180]";
+        return false;
+    }
+    std::cout << "加载配置: " << yaml_path << std::endl;
+    cfg.source_file = yaml_path;
+    return true;
+}
+
+inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_path) {
+    PoseGenerationConfig cfg;
+    std::string error;
+    if (!tryLoadPoseGenerationConfig(yaml_path, cfg, error))
+        std::cerr << "加载位姿配置失败，使用默认参数: " << error << std::endl;
     return cfg;
 }
 
