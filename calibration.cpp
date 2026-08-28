@@ -194,8 +194,20 @@ int load_config(std::string cfg_file) {
     fs["robot_port"] >> g_cfg.robot_port;
     fs["robot_pwd"] >> g_cfg.robot_pwd;
 
+    // 机械臂运行速度百分比 (1~100)，缺省或越界时回退为 100
+    int speed_pct = 100;
+    if (!fs["robotSpeedPercent"].empty())
+        fs["robotSpeedPercent"] >> speed_pct;
+    if (speed_pct < 1 || speed_pct > 100) {
+        std::cerr << "[load_config] robotSpeedPercent (" << speed_pct
+                  << ") 超出 1~100 范围，回退为 100" << std::endl;
+        speed_pct = 100;
+    }
+    g_cfg.robotSpeedPercent = speed_pct;
+
     std::cout << "相机型号: " << cam_section << std::endl;
     std::cout << "图像尺寸: " << g_cfg.cam_width << " x " << g_cfg.cam_height << std::endl;
+    std::cout << "机械臂速度百分比: " << g_cfg.robotSpeedPercent << "%" << std::endl;
 
     fs.release();
 
@@ -258,6 +270,21 @@ void checkAndRestoreRobotHand(){
     }
     else
         std::cout << "获取机械臂模式失败" << std::endl;
+}
+
+// ============================================================
+// 将配置中的机械臂运行速度百分比 (1~100) 下发到控制器
+// 用于自动/半自动眼在手上标定开始前设置机械臂速度
+// ============================================================
+static void applyRobotSpeedPercent() {
+    int pct = g_cfg.robotSpeedPercent;
+    if (pct < 1) pct = 1;
+    if (pct > 100) pct = 100;
+    CRresult res = cr_set_robotSpeedPercent(robotHandle, static_cast<unsigned int>(pct));
+    if (res == sucess)
+        std::cout << "机械臂速度百分比已设置为 " << pct << "%" << std::endl;
+    else
+        std::cerr << "设置机械臂速度百分比失败 res: " << res << std::endl;
 }
 
 int  open_camera(){
@@ -609,6 +636,7 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
     }
 
     checkAndRestoreRobotHand();
+    applyRobotSpeedPercent();
     // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
     //double init_tcp_pose[6] = {-502.377, 204.607, 207.971,1.76, -0.918, -47.680}, euler_fixed[6];// offseted
     double init_flangeAxisPos[6]={-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780}; // no-offset
@@ -665,6 +693,9 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
 
 
 static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
+    // 标定开始前设置机械臂运行速度
+    applyRobotSpeedPercent();
+
     if (open_camera() != 0) return;
 
     CharucoBoardConfig board_cfg;
@@ -835,6 +866,9 @@ static void local_eye_in_hand_calibration_wrapper() {
 // 眼在手外标定入口（菜单项 6）
 // ============================================================
 static void auto_eye_to_hand_calibration(char* pchRobotIP) {
+    // 标定开始前设置机械臂运行速度
+    applyRobotSpeedPercent();
+
     if (open_camera() != 0) return;
 
     CharucoBoardConfig board_cfg;
