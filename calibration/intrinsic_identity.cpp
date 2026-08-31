@@ -1,6 +1,13 @@
 #include "intrinsic_identity.hpp"
 
+#include <chrono>
 #include <cmath>
+#include <filesystem>
+
+#if defined(__linux__)
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace intrinsic_gate {
 
@@ -115,6 +122,104 @@ bool loadCameraParamsWithIdentity(const std::string& path,
     return true;
 }
 
+bool saveCameraParamsWithIdentity(const std::string& path,
+                                  const cv::Mat& cameraMatrix,
+                                  const cv::Mat& distCoeffs,
+                                  const IntrinsicIdentity& identity,
+                                  const std::string& source,
+                                  std::string& error) {
+    namespace fs = std::filesystem;
+    error.clear();
+    std::string validationReason;
+    if (!validateIntrinsicsShape(cameraMatrix, distCoeffs,
+                                 identity.width, identity.height,
+                                 validationReason)) {
+        error = "拒绝保存无效内参: " + validationReason;
+        return false;
+    }
+    if (!identity.hasSerial() || !identity.hasResolution()) {
+        error = "拒绝保存未绑定相机序列号和分辨率的内参";
+        return false;
+    }
+
+    const fs::path destination = fs::absolute(fs::path(path)).lexically_normal();
+    std::error_code ec;
+    if (!destination.parent_path().empty()) {
+        fs::create_directories(destination.parent_path(), ec);
+        if (ec) {
+            error = "无法创建内参目录: " + ec.message();
+            return false;
+        }
+    }
+    const auto nonce = std::chrono::steady_clock::now().time_since_epoch().count();
+    const fs::path temporary = destination.string() + ".tmp." +
+                               std::to_string(nonce);
+    try {
+        cv::FileStorage out(temporary.string(), cv::FileStorage::WRITE);
+        if (!out.isOpened()) {
+            error = "无法创建内参临时文件: " + temporary.string();
+            return false;
+        }
+        out << "schema_version" << 1;
+        out << "intrinsic_source" << source;
+        out << "camera_matrix" << cameraMatrix;
+        out << "distortion_coefficients" << distCoeffs;
+        out << "camera_serial" << identity.serial;
+        out << "image_width" << identity.width;
+        out << "image_height" << identity.height;
+        out << "pixel_format" << identity.pixel_format;
+        if (identity.roi_width > 0 && identity.roi_height > 0) {
+            out << "roi" << "{"
+                << "x" << identity.roi_x
+                << "y" << identity.roi_y
+                << "width" << identity.roi_width
+                << "height" << identity.roi_height
+                << "}";
+        }
+        if (identity.binning > 0)
+            out << "binning" << identity.binning;
+        out.release();
+    } catch (const cv::Exception& exception) {
+        fs::remove(temporary, ec);
+        error = "写入内参失败: " + std::string(exception.what());
+        return false;
+    }
+
+#if defined(__linux__)
+    const int fileDescriptor = ::open(temporary.c_str(), O_RDONLY | O_CLOEXEC);
+    if (fileDescriptor < 0 || ::fsync(fileDescriptor) != 0) {
+        if (fileDescriptor >= 0)
+            ::close(fileDescriptor);
+        fs::remove(temporary, ec);
+        error = "同步内参临时文件失败";
+        return false;
+    }
+    ::close(fileDescriptor);
+#endif
+
+    fs::rename(temporary, destination, ec);
+    if (ec) {
+        const std::string renameError = ec.message();
+        std::error_code removeError;
+        fs::remove(temporary, removeError);
+        error = "发布内参文件失败: " + renameError;
+        return false;
+    }
+
+#if defined(__linux__)
+    const int directoryDescriptor = ::open(destination.parent_path().c_str(),
+                                           O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (directoryDescriptor < 0 || ::fsync(directoryDescriptor) != 0) {
+        if (directoryDescriptor >= 0)
+            ::close(directoryDescriptor);
+        error = "同步内参目录失败";
+        return false;
+    }
+    ::close(directoryDescriptor);
+#endif
+    return true;
+}
+
 bool checkIntrinsicBinding(const IntrinsicIdentity& identity,
                            const std::string& deviceSerial,
                            int actualWidth,
@@ -155,6 +260,67 @@ bool checkIntrinsicBinding(const IntrinsicIdentity& identity,
         return true;
     }
     return true;
+}
+
+MvsIntrinsicDecision decideMvsIntrinsics(
+    const std::string& path,
+    const cv::Mat& cameraMatrix,
+    const cv::Mat& distCoeffs,
+    const std::string& deviceSerial,
+    int actualWidth,
+    int actualHeight,
+    bool allowLegacy,
+    IntrinsicIdentity& identity,
+    std::string& reason) {
+    identity = IntrinsicIdentity{};
+    reason.clear();
+    if (cameraMatrix.empty() || distCoeffs.empty()) {
+        reason = "未找到可用内参，将从本次采集数据标定";
+        return MvsIntrinsicDecision::BootstrapFromCollection;
+    }
+
+    if (!validateIntrinsicsShape(cameraMatrix, distCoeffs,
+                                 actualWidth, actualHeight, reason)) {
+        reason = "现有内参无效，将从本次采集数据重新标定: " + reason;
+        return MvsIntrinsicDecision::BootstrapFromCollection;
+    }
+
+    cv::Mat fileK, fileD;
+    std::string loadError;
+    if (path.empty() || !loadCameraParamsWithIdentity(
+            path, fileK, fileD, identity, loadError)) {
+        reason = "无法确认现有内参身份，将从本次采集数据重新标定: " +
+                 loadError;
+        return MvsIntrinsicDecision::BootstrapFromCollection;
+    }
+
+    if (identity.hasSerial() && identity.serial != deviceSerial) {
+        reason = "内参明确绑定到另一台相机: intrinsic_serial=" +
+                 identity.serial + " device_serial=" + deviceSerial;
+        return MvsIntrinsicDecision::Block;
+    }
+    if (identity.hasResolution() && actualWidth > 0 && actualHeight > 0 &&
+        (identity.width != actualWidth || identity.height != actualHeight)) {
+        reason = "内参分辨率与当前图像不一致，将重新标定: intrinsic=" +
+                 std::to_string(identity.width) + "x" +
+                 std::to_string(identity.height) + " actual=" +
+                 std::to_string(actualWidth) + "x" +
+                 std::to_string(actualHeight);
+        return MvsIntrinsicDecision::BootstrapFromCollection;
+    }
+    if (!identity.hasAny() && !allowLegacy) {
+        reason = "现有内参未绑定相机身份，将从本次采集数据重新标定";
+        return MvsIntrinsicDecision::BootstrapFromCollection;
+    }
+
+    std::string bindingReason;
+    if (!checkIntrinsicBinding(identity, deviceSerial, actualWidth,
+                               actualHeight, allowLegacy, bindingReason)) {
+        reason = bindingReason;
+        return MvsIntrinsicDecision::Block;
+    }
+    reason = bindingReason;
+    return MvsIntrinsicDecision::UseProvided;
 }
 
 }  // namespace intrinsic_gate

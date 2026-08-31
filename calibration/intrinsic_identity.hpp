@@ -30,6 +30,12 @@ struct IntrinsicIdentity {
     bool hasAny() const { return hasSerial() || hasResolution(); }
 };
 
+enum class MvsIntrinsicDecision {
+    UseProvided,
+    BootstrapFromCollection,
+    Block
+};
+
 // 校验 K/D 的形状、有限性与焦距合理性。
 // imageW/imageH 为实际流分辨率（>0 时用于 cx/cy/焦距合理性检查）。
 bool validateIntrinsicsShape(const cv::Mat& cameraMatrix,
@@ -45,6 +51,15 @@ bool loadCameraParamsWithIdentity(const std::string& path,
                                   IntrinsicIdentity& identity,
                                   std::string& error);
 
+// 原子保存 K/D 及其相机身份。用于首次 MVS 标定完成后发布
+// param/camera_params.yaml，避免下一次运行误用未绑定的旧参数。
+bool saveCameraParamsWithIdentity(const std::string& path,
+                                  const cv::Mat& cameraMatrix,
+                                  const cv::Mat& distCoeffs,
+                                  const IntrinsicIdentity& identity,
+                                  const std::string& source,
+                                  std::string& error);
+
 // 身份绑定校验。
 //   - 内参声明了 serial：必须与设备序列号精确匹配；
 //   - 内参声明了分辨率：必须与设备实际流分辨率一致；
@@ -56,6 +71,19 @@ bool checkIntrinsicBinding(const IntrinsicIdentity& identity,
                            int actualHeight,
                            bool allowLegacy,
                            std::string& reason);
+
+// 决定当前 MVS 内参是否可直接使用。缺失、损坏、未绑定或仅分辨率不匹配
+// 时进入首次/重新标定；明确绑定到另一台相机时阻断，防止覆盖错误设备数据。
+MvsIntrinsicDecision decideMvsIntrinsics(
+    const std::string& path,
+    const cv::Mat& cameraMatrix,
+    const cv::Mat& distCoeffs,
+    const std::string& deviceSerial,
+    int actualWidth,
+    int actualHeight,
+    bool allowLegacy,
+    IntrinsicIdentity& identity,
+    std::string& reason);
 
 }  // namespace intrinsic_gate
 

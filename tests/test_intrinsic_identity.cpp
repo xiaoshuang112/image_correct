@@ -15,6 +15,7 @@ namespace {
 
 const char* kYamlPath = "caitu_test_camera_params.yaml";
 const char* kLegacyYamlPath = "caitu_test_camera_params_legacy.yaml";
+const char* kPublishedYamlPath = "caitu_test_camera_params_published.yaml";
 
 cv::Mat makeK() {
     return (cv::Mat_<double>(3, 3) << 2400, 0, 1224, 0, 2400, 1024, 0, 0, 1);
@@ -133,6 +134,54 @@ int test_intrinsic_identity() {
     TEST_CHECK(reason.find("警告") != std::string::npos,
                "legacy_warning_returned");
 
+    // ---- MVS 首次标定/复用决策 ----
+    IntrinsicIdentity decisionIdentity;
+    TEST_CHECK(decideMvsIntrinsics(
+                   kYamlPath, cv::Mat(), cv::Mat(), "DA1234567",
+                   2448, 2048, false, decisionIdentity, reason) ==
+                   MvsIntrinsicDecision::BootstrapFromCollection,
+               "mvs_missing_bootstraps");
+    TEST_CHECK(decideMvsIntrinsics(
+                   kLegacyYamlPath, makeK(), makeD(), "DA1234567",
+                   2448, 2048, false, decisionIdentity, reason) ==
+                   MvsIntrinsicDecision::BootstrapFromCollection,
+               "mvs_unbound_legacy_bootstraps");
+    TEST_CHECK(decideMvsIntrinsics(
+                   kLegacyYamlPath, makeK(), makeD(), "DA1234567",
+                   2448, 2048, true, decisionIdentity, reason) ==
+                   MvsIntrinsicDecision::UseProvided,
+               "mvs_legacy_compatibility_reuses");
+    TEST_CHECK(decideMvsIntrinsics(
+                   kYamlPath, makeK(), makeD(), "OTHER_CAMERA",
+                   2448, 2048, false, decisionIdentity, reason) ==
+                   MvsIntrinsicDecision::Block,
+               "mvs_explicit_serial_mismatch_blocks");
+    TEST_CHECK(decideMvsIntrinsics(
+                   kYamlPath, makeK(), makeD(), "DA1234567",
+                   1280, 1024, false, decisionIdentity, reason) ==
+                   MvsIntrinsicDecision::BootstrapFromCollection,
+               "mvs_resolution_change_bootstraps");
+
+    // ---- 首次标定结果带身份原子发布 ----
+    IntrinsicIdentity publishedIdentity;
+    publishedIdentity.serial = "DA1234567";
+    publishedIdentity.width = 2448;
+    publishedIdentity.height = 2048;
+    publishedIdentity.pixel_format = "Mono8";
+    TEST_CHECK(saveCameraParamsWithIdentity(
+                   kPublishedYamlPath, makeK(), makeD(), publishedIdentity,
+                   "calibrated_from_collection", err),
+               "save_identity_bound_intrinsics");
+    IntrinsicIdentity loadedPublishedIdentity;
+    TEST_CHECK(loadCameraParamsWithIdentity(
+                   kPublishedYamlPath, K2, D2, loadedPublishedIdentity, err),
+               "load_published_intrinsics");
+    TEST_CHECK(loadedPublishedIdentity.serial == "DA1234567" &&
+                   loadedPublishedIdentity.width == 2448 &&
+                   loadedPublishedIdentity.height == 2048 &&
+                   loadedPublishedIdentity.pixel_format == "Mono8",
+               "published_identity_roundtrip");
+
     // ---- 缺失文件 ----
     TEST_CHECK(!loadCameraParamsWithIdentity("nonexistent_file.yaml", K2, D2,
                                              id, err),
@@ -140,6 +189,7 @@ int test_intrinsic_identity() {
 
     std::remove(kYamlPath);
     std::remove(kLegacyYamlPath);
+    std::remove(kPublishedYamlPath);
     return testutil::takeFailures();
 }
 

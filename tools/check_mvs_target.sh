@@ -82,9 +82,9 @@ fi
     || echo "4. config.yaml: 缺失（将使用编译期默认值）"
 [ -d "$PKG_DIR/param" ] || mkdir -p "$PKG_DIR/param"
 if [ -f "$PKG_DIR/param/camera_params.yaml" ]; then
-    echo "   param/camera_params.yaml: 就位（MVS 标定必须依赖此外部内参）"
+    echo "   param/camera_params.yaml: 就位（将校验相机身份和分辨率后复用）"
 else
-    echo "   param/camera_params.yaml: 缺失 —— MVS 眼在手内标定前必须放置匹配该机的外参内参文件"
+    echo "   param/camera_params.yaml: 缺失（允许首次标定，采集完成后自动生成）"
 fi
 
 echo ""

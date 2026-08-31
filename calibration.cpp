@@ -2,6 +2,7 @@
 #include "eye_to_hand_calibration.hpp"
 #include "calibration_utils.hpp"
 #include "calibration_session.hpp"
+#include "intrinsic_identity.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
 #include "charuco_detector.hpp"
 #include <iostream>
@@ -720,7 +721,7 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
     // 加载已知相机内参（如有）
     cv::Mat camera_matrix, dist_coeffs;
     std::string cam_file = g_paramPath + "camera_params.yaml";
-    {
+    if (fs::exists(cam_file)) {
         cv::FileStorage storage(cam_file, cv::FileStorage::READ);
         if (storage.isOpened()) {
             storage["camera_matrix"] >> camera_matrix;
@@ -728,6 +729,37 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
             storage.release();
         }
     }
+
+    bool bootstrap_intrinsics = camera_matrix.empty() || dist_coeffs.empty();
+#ifdef useMVS
+    if (g_camera) {
+        const CameraDeviceAuditInfo device_info = g_camera->getDeviceAuditInfo();
+        intrinsic_gate::IntrinsicIdentity identity;
+        std::string decision_reason;
+        const intrinsic_gate::MvsIntrinsicDecision decision =
+            intrinsic_gate::decideMvsIntrinsics(
+                cam_file, camera_matrix, dist_coeffs, device_info.serial,
+                device_info.actual_width, device_info.actual_height,
+                g_cfg.allow_legacy_intrinsics, identity, decision_reason);
+        if (decision == intrinsic_gate::MvsIntrinsicDecision::Block) {
+            std::cerr << "[semiAutoEyeInHand] MVS 内参身份冲突，已阻止机器人运动: "
+                      << decision_reason << std::endl;
+            return;
+        }
+        if (decision ==
+            intrinsic_gate::MvsIntrinsicDecision::BootstrapFromCollection) {
+            camera_matrix.release();
+            dist_coeffs.release();
+            bootstrap_intrinsics = true;
+            std::cout << "[semiAutoEyeInHand] 现有内参不适用于当前相机，"
+                         "将从本次采集数据重新标定: "
+                      << decision_reason << std::endl;
+        } else {
+            bootstrap_intrinsics = false;
+            std::cout << "[semiAutoEyeInHand] 使用已验证的 MVS 内参" << std::endl;
+        }
+    }
+#endif
     std::string save_dir = g_paramPath + "semi_eye_in_hand/";
 
     CalibrationResult result;
@@ -739,7 +771,32 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
         g_paramPath + "hand_eye_result.yaml");
 
     if (ok) {
+#ifdef useMVS
+        if (bootstrap_intrinsics && g_camera) {
+            const CameraDeviceAuditInfo device_info = g_camera->getDeviceAuditInfo();
+            const CONFIG& camera_config = g_camera->getConfig();
+            intrinsic_gate::IntrinsicIdentity identity;
+            identity.serial = device_info.serial;
+            identity.width = device_info.actual_width > 0
+                ? device_info.actual_width : camera_config.cam_width;
+            identity.height = device_info.actual_height > 0
+                ? device_info.actual_height : camera_config.cam_height;
+            identity.pixel_format = device_info.pixel_format;
+            std::string save_error;
+            if (!intrinsic_gate::saveCameraParamsWithIdentity(
+                    cam_file, result.camera_matrix, result.dist_coeffs,
+                    identity, "calibrated_from_semi_auto_collection",
+                    save_error)) {
+                std::cerr << "[semiAutoEyeInHand] 标定成功，但保存 MVS 内参失败: "
+                          << save_error << std::endl;
+            } else {
+                std::cout << "[semiAutoEyeInHand] MVS 内参已保存到: "
+                          << cam_file << std::endl;
+            }
+        }
+#else
         saveCalibratedCameraParams(camera_matrix, result.camera_matrix, result.dist_coeffs);
+#endif
     } else {
         std::cerr << "\n[semiAutoEyeInHand] 标定失败: " << result.message << std::endl;
     }

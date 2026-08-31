@@ -15,4 +15,4 @@ min_valid_frames: 10
 maximum_candidates: 90
 
 # 最近邻排序后任一关节仍超过该跳变值时，在运动前拒绝本轮规划。
-maximum_joint_step_degrees: 60.0
+maximum_joint_step_degrees: 65.0

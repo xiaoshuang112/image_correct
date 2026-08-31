@@ -972,8 +972,8 @@ void CalibrationController::openCamera()
     APP_LOG_EVENT_INFO("camera",
                        "camera_intrinsics",
                        "skip",
-                       {{"reason", "mvs_external_intrinsics_required"},
-                         {"note", "MVS 不提供镜头内参，不写入 camera_params.yaml"}});
+                       {{"reason", "mvs_sdk_intrinsics_unavailable"},
+                         {"note", "打开相机阶段不写内参；首次眼在手内标定将在采集后生成 camera_params.yaml"}});
 #endif
 
     setStatus("相机已打开");
@@ -1399,11 +1399,13 @@ void CalibrationController::calibrationThreadFunc(
         // 1. 加载已有相机内参
         cv::Mat camera_matrix, dist_coeffs;
         std::string cam_file = m_paramPath + "camera_params.yaml";
-        cv::FileStorage fs(cam_file, cv::FileStorage::READ);
-        if (fs.isOpened()) {
-            fs["camera_matrix"] >> camera_matrix;
-            fs["distortion_coefficients"] >> dist_coeffs;
-            fs.release();
+        if (fs::exists(cam_file)) {
+            cv::FileStorage storage(cam_file, cv::FileStorage::READ);
+            if (storage.isOpened()) {
+                storage["camera_matrix"] >> camera_matrix;
+                storage["distortion_coefficients"] >> dist_coeffs;
+                storage.release();
+            }
         }
         APP_LOG_EVENT_INFO("calibration",
                            "calibration_input",
@@ -1415,45 +1417,21 @@ void CalibrationController::calibrationThreadFunc(
                             {"matrix_cols", QString::number(camera_matrix.cols)},
                             {"dist_count", QString::number(static_cast<int>(dist_coeffs.total()))}});
 
-        // 1b. MVS 内参安全门禁预检：在机器人上电与任何运动之前失败。
-        // 核心标定入口还有同样的门禁兜底，这里只为尽早给出明确错误。
+        // 1b. MVS 内参策略：可信且匹配时复用；缺失、旧版未绑定或分辨率
+        // 不匹配时清空 K/D，进入“采集后现场标定内参”的首次标定链路。
+        // 只有文件明确绑定到另一台相机时才阻断，避免覆盖其他设备的参数。
         if (camera && camera->backendName() == "mvs") {
             const CameraDeviceAuditInfo gateInfo = camera->getDeviceAuditInfo();
-            std::string gateReason;
-            QString gateMessage;
-            if (camera_matrix.empty() || dist_coeffs.empty()) {
-                gateMessage = QString::fromStdString(
-                    "MVS 相机缺少外部内参 " + cam_file +
-                    "，已阻断标定；禁止在内参缺失时静默全量重算。"
-                    "请先用独立的相机内参标定流程生成内参并绑定相机身份。");
-            } else if (!intrinsic_gate::validateIntrinsicsShape(
-                           camera_matrix, dist_coeffs,
-                           gateInfo.actual_width, gateInfo.actual_height,
-                           gateReason)) {
-                gateMessage = QString("MVS 内参形状校验失败: %1")
-                    .arg(QString::fromStdString(gateReason));
-            } else {
-                intrinsic_gate::IntrinsicIdentity identity;
-                cv::Mat fileK, fileD;
-                std::string loadError;
-                if (!intrinsic_gate::loadCameraParamsWithIdentity(
-                        cam_file, fileK, fileD, identity, loadError))
-                    identity = intrinsic_gate::IntrinsicIdentity{};
-                std::string bindReason;
-                if (!intrinsic_gate::checkIntrinsicBinding(
-                        identity, gateInfo.serial,
-                        gateInfo.actual_width, gateInfo.actual_height,
-                        m_allowLegacyIntrinsics, bindReason)) {
-                    gateMessage = QString("MVS 内参身份校验失败: %1")
-                        .arg(QString::fromStdString(bindReason));
-                } else if (!bindReason.empty()) {
-                    APP_LOG_EVENT_WARNING("calibration",
-                                          "intrinsic_gate",
-                                          "legacy_pass",
-                                          {{"detail", QString::fromStdString(bindReason)}});
-                }
-            }
-            if (!gateMessage.isEmpty()) {
+            intrinsic_gate::IntrinsicIdentity identity;
+            std::string decisionReason;
+            const intrinsic_gate::MvsIntrinsicDecision decision =
+                intrinsic_gate::decideMvsIntrinsics(
+                    cam_file, camera_matrix, dist_coeffs, gateInfo.serial,
+                    gateInfo.actual_width, gateInfo.actual_height,
+                    m_allowLegacyIntrinsics, identity, decisionReason);
+            if (decision == intrinsic_gate::MvsIntrinsicDecision::Block) {
+                const QString gateMessage = QString("MVS 内参身份校验失败: %1")
+                    .arg(QString::fromStdString(decisionReason));
                 APP_LOG_EVENT_ERROR("calibration",
                                     "intrinsic_gate",
                                     "blocked",
@@ -1465,6 +1443,26 @@ void CalibrationController::calibrationThreadFunc(
                                 "intrinsic_gate_blocked");
                 emit calibrationFinished(false, gateMessage);
                 goto done;
+            }
+            if (decision ==
+                intrinsic_gate::MvsIntrinsicDecision::BootstrapFromCollection) {
+                camera_matrix.release();
+                dist_coeffs.release();
+                APP_LOG_EVENT_WARNING(
+                    "calibration", "intrinsic_gate", "bootstrap_planned",
+                    {{"type", "eye_in_hand"},
+                     {"backend", "mvs"},
+                     {"file", QString::fromStdString(cam_file)},
+                     {"device_serial", QString::fromStdString(gateInfo.serial)},
+                     {"actual_resolution", QString("%1x%2").arg(gateInfo.actual_width).arg(gateInfo.actual_height)},
+                     {"reason", QString::fromStdString(decisionReason)}});
+            } else {
+                APP_LOG_EVENT_INFO(
+                    "calibration", "intrinsic_gate", "reuse_validated",
+                    {{"file", QString::fromStdString(cam_file)},
+                     {"device_serial", QString::fromStdString(gateInfo.serial)},
+                     {"actual_resolution", QString("%1x%2").arg(gateInfo.actual_width).arg(gateInfo.actual_height)},
+                     {"detail", QString::fromStdString(decisionReason)}});
             }
         }
 
@@ -1533,8 +1531,8 @@ void CalibrationController::calibrationThreadFunc(
             if (ok) {
 #ifndef useMVS
                 // 保存相机内参（如果标定过程中更新了）。
-                // MVS 禁止此回写：内参只能来自外部绑定身份的文件，
-                // 回写会丢失 camera_serial/image_width 等身份字段。
+                // MVS 的首次标定内参已由核心流程连同相机身份原子发布，
+                // 此处只保留其他相机后端的兼容保存逻辑。
                 if (!camera_matrix.empty()) {
                     const std::string cameraOutput = m_appPath + "camera_params.yaml";
                     cv::FileStorage outCam(cameraOutput,
