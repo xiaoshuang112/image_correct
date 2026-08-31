@@ -1075,6 +1075,22 @@ bool generateCandidates(int robot_handle,
     }
 
     CandidatePlanningOptions planningOptions;
+    planningOptions.joint_resolver = [robot_handle](
+        const PoseCandidate& candidate,
+        const std::array<double, 6>& reference,
+        std::array<double, 6>& resolved,
+        int& error_code) {
+        double target[ROB_AXIS_NUM]{};
+        double referenceJoint[ROB_AXIS_NUM]{};
+        std::copy(candidate.axis_angle,
+                  candidate.axis_angle + ROB_AXIS_NUM, target);
+        std::copy(reference.begin(), reference.end(), referenceJoint);
+        const CRresult result = cr_kineInverse((RobotHandle)robot_handle,
+                                               target, referenceJoint,
+                                               resolved.data());
+        error_code = static_cast<int>(result);
+        return result == sucess;
+    };
     CandidatePlanningReport planningReport;
     std::string planningError;
     if (!planPoseCandidates(candidates, initialJoint, planningOptions,
@@ -1098,6 +1114,12 @@ bool generateCandidates(int robot_handle,
                         {"total", QString::number(total)},
                         {"reachable", QString::number(ik_ok)},
                         {"ordered", QString::number(candidates.size())},
+                        {"transitions", QString::number(
+                            planningReport.transition_candidates)},
+                        {"connected", QString::number(
+                            planningReport.connected_candidates)},
+                        {"disconnected", QString::number(
+                            planningReport.disconnected_candidates)},
                         {"estimated_path_deg", QString::number(
                             planningReport.estimated_path_degrees, 'f', 3)},
                         {"max_step_deg", QString::number(

@@ -89,6 +89,21 @@ static bool generateEyeInHandCandidates(
     CandidatePlanningOptions options;
     options.maximum_candidates = static_cast<std::size_t>(config.maximum_candidates);
     options.maximum_joint_step_degrees = config.maximum_joint_step_degrees;
+    options.joint_resolver = [robot_handle](
+        const PoseCandidate& candidate,
+        const std::array<double, 6>& reference,
+        std::array<double, 6>& resolved,
+        int& error_code) {
+        double target[6]{};
+        double reference_joint[6]{};
+        std::copy(candidate.axis_angle, candidate.axis_angle + 6, target);
+        std::copy(reference.begin(), reference.end(), reference_joint);
+        const CRresult result = cr_kineInverse((RobotHandle)robot_handle,
+                                               target, reference_joint,
+                                               resolved.data());
+        error_code = static_cast<int>(result);
+        return result == sucess;
+    };
     if (!planPoseCandidates(candidates, initial_joint, options,
                             planning_report, error)) {
         return false;
@@ -99,6 +114,9 @@ static bool generateEyeInHandCandidates(
               << ", IK失败=" << ik_failures
               << ", 欧拉转换失败=" << euler_failures
               << ", 选取=" << planning_report.selected_candidates
+              << ", 过渡=" << planning_report.transition_candidates
+              << ", 安全连通=" << planning_report.connected_candidates
+              << ", 不连通=" << planning_report.disconnected_candidates
               << ", 最大关节跳变=" << std::fixed << std::setprecision(3)
               << planning_report.maximum_joint_step_degrees << " deg"
               << std::endl;
@@ -263,11 +281,20 @@ bool semiAutoEyeInHandCalibration(
     session->appendEvent(
         "candidate_plan", "success",
         "input=" + std::to_string(planning_report.input_candidates) +
+        " connected=" + std::to_string(planning_report.connected_candidates) +
+        " disconnected=" + std::to_string(
+            planning_report.disconnected_candidates) +
         " selected=" + std::to_string(planning_report.selected_candidates) +
         " ordered=" + std::to_string(planning_report.ordered_candidates) +
+        " transitions=" + std::to_string(
+            planning_report.transition_candidates) +
         " path_deg=" + std::to_string(planning_report.estimated_path_degrees) +
         " max_step_deg=" + std::to_string(
             planning_report.maximum_joint_step_degrees) +
+        " max_step_axis=J" + std::to_string(
+            planning_report.maximum_step_axis + 1) +
+        " max_axis_steps=" + formatSixValues(
+            planning_report.maximum_axis_step_degrees.data()) +
         " max_j6_step_deg=" + std::to_string(
             planning_report.maximum_j6_step_degrees));
     for (std::size_t ordered_index = 0; ordered_index < candidates.size();
@@ -276,7 +303,13 @@ bool semiAutoEyeInHandCalibration(
         session->appendEvent(
             "candidate_plan_item", "ready",
             "ordered=" + std::to_string(ordered_index) +
+            " from_source=" + std::to_string(
+                candidate.previous_source_index) +
             " source=" + std::to_string(candidate.source_index) +
+            " role=" + std::string(
+                candidate.capture ? "capture" : "transition") +
+            " axis_steps_deg=" + formatSixValues(
+                candidate.step_from_previous) +
             " joint=" + formatSixValues(candidate.joint) +
             " flange_euler=" + formatSixValues(candidate.flange_euler));
     }

@@ -266,15 +266,20 @@ bool executeCollection(int robot_handle,
                        CalibrationRuntimeStatus* runtime_status,
                        const CalibrationRuntimeCallback& runtime_callback) {
     int total = (int)candidates.size();
+    const int capture_targets = static_cast<int>(std::count_if(
+        candidates.begin(), candidates.end(),
+        [](const PoseCandidate& candidate) { return candidate.capture; }));
     int captured = 0;
     int skipped = 0;
+    int transitions_completed = 0;
 
     auto publishCollection = [&](const std::string& detail = {}) {
         if (!runtime_status)
             return;
         runtime_status->captured_frames = captured;
         runtime_status->skipped_frames = skipped;
-        runtime_status->candidate_processed = captured + skipped;
+        runtime_status->candidate_processed = captured + skipped +
+                                              transitions_completed;
         publishCalibrationRuntime(runtime_callback, *runtime_status,
                                   CalibrationRuntimeStage::Collecting, detail);
     };
@@ -284,6 +289,9 @@ bool executeCollection(int robot_handle,
                        "start",
                        {{"handle", QString::number(robot_handle)},
                         {"candidates", QString::number(total)},
+                        {"capture_targets", QString::number(capture_targets)},
+                        {"transition_moves", QString::number(
+                            total - capture_targets)},
                         {"save_dir", QString::fromStdString(save_dir)}});
 
     if (runtime_status) {
@@ -345,7 +353,13 @@ bool executeCollection(int robot_handle,
             session->appendEvent(
                 "candidate_motion", "start",
                 "ordered=" + std::to_string(i) +
+                " from_source=" + std::to_string(
+                    candidates[i].previous_source_index) +
                 " source=" + std::to_string(candidates[i].source_index) +
+                " role=" + std::string(
+                    candidates[i].capture ? "capture" : "transition") +
+                " axis_steps_deg=" + formatAuditValues(
+                    candidates[i].step_from_previous) +
                 " target=" + formatAuditValues(candidates[i].joint));
         }
         RobotMotionDiagnostics motion_diagnostics;
@@ -403,9 +417,18 @@ bool executeCollection(int robot_handle,
                 }
                 return false;
             }
-            ++skipped;
-            publishCollection("candidate_skip_move_failed");
-            continue;
+            // 后续路径以上一个节点已经到达为前提。运动失败后继续执行会绕过
+            // 规划时的相邻关节门禁，因此必须终止并重新规划。
+            if (session)
+                session->appendEvent("collection", "fail",
+                    "candidate_route_invalid_after_move_failure ordered=" +
+                    std::to_string(i));
+            if (runtime_status) {
+                publishCalibrationRuntime(runtime_callback, *runtime_status,
+                                          CalibrationRuntimeStage::Failed,
+                                          "candidate_route_invalid");
+            }
+            return false;
         }
         if (session) {
             session->appendEvent(
@@ -413,6 +436,27 @@ bool executeCollection(int robot_handle,
                 "ordered=" + std::to_string(i) +
                 " source=" + std::to_string(candidates[i].source_index) +
                 " " + formatMotionDiagnostics(motion_diagnostics));
+        }
+
+        if (!candidates[i].capture) {
+            ++transitions_completed;
+            if (session) {
+                session->appendEvent(
+                    "candidate_transition", "success",
+                    "ordered=" + std::to_string(i) +
+                    " source=" + std::to_string(candidates[i].source_index) +
+                    " joint=" + formatAuditValues(candidates[i].joint));
+            }
+            APP_LOG_EVENT_INFO("calibration.collection",
+                               "candidate_transition",
+                               "success",
+                               {{"index", QString::number(i)},
+                                {"source", QString::number(
+                                    candidates[i].source_index)},
+                                {"completed", QString::number(
+                                    transitions_completed)}});
+            publishCollection("candidate_transition_complete");
+            continue;
         }
 
         // moveToJointPos() 已等待控制器连续报告停止，并保留了 100 ms 的短窗口。
@@ -763,13 +807,17 @@ bool executeCollection(int robot_handle,
     }
 
     std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
-              << "/" << total
+              << "/" << capture_targets
+              << ", 过渡动作: " << transitions_completed
               << ", 数据保存到: " << save_dir << std::endl;
     APP_LOG_EVENT_INFO("calibration.collection",
                        "collection",
                        "success",
                        {{"captured", QString::number(captured)},
-                        {"total", QString::number(total)},
+                        {"capture_targets", QString::number(capture_targets)},
+                        {"transition_moves", QString::number(
+                            transitions_completed)},
+                        {"route_entries", QString::number(total)},
                         {"save_dir", QString::fromStdString(save_dir)}});
     publishCollection("collection_complete");
     return captured > 0;
