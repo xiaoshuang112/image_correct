@@ -37,6 +37,8 @@ struct CalibrationResult {
  * 当前看不到板，才回退到历史水平法兰姿态。已有可信内参时先通过受限的
  * PnP 视觉闭环让相机光轴对准板面法向，再生成约 360 个兼顾高度、平移和
  * 旋转覆盖的候选位姿，IK 预过滤并按最近关节路径排序后逐点运动采集。
+ * 调正通过后在生产参数目录写入 eye_in_hand_observation_pose.yaml，保存
+ * 实际反馈的 joint_deg 和 flange_euler，供生产观察位姿复用。
  * 如 camera_matrix 为空，从采集帧自动标定相机内参。
  *
  * @param robot_handle    CGXi RobotHandle（来自 cr_create_robot）

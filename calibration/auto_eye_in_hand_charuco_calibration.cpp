@@ -73,6 +73,11 @@ struct VisualAlignmentMetrics {
     double reprojection_rms = std::numeric_limits<double>::infinity();
 };
 
+struct ObservationReferencePose {
+    std::array<double, ROB_AXIS_NUM> joint{};
+    std::array<double, ROB_AXIS_NUM> flange_euler{};
+};
+
 static bool waitForPoseSearchSettling(
     const std::shared_ptr<AICamera>& camera,
     int* discarded_frames = nullptr) {
@@ -693,6 +698,107 @@ static bool validateFinalObservationPose(
                         {"metrics", QString::fromStdString(
                             formatVisualAlignmentMetrics(metrics))}});
     return true;
+}
+
+static bool captureObservationReferencePose(
+    int robotHandle,
+    ObservationReferencePose& pose,
+    std::string& error) {
+    double tcpAxisAngle[ROB_AXIS_NUM] = {};
+    const CRresult jointResult = cr_get_jointActualPos(
+        (RobotHandle)robotHandle, pose.joint.data());
+    const CRresult tcpResult = cr_get_tcpActualPose(
+        (RobotHandle)robotHandle, tcpAxisAngle);
+    if (jointResult != sucess || tcpResult != sucess) {
+        error = "读取机器人实际关节或 TCP 位姿失败";
+        return false;
+    }
+    if (!convertTcpAxisPos2FlangeEule(robotHandle, tcpAxisAngle,
+                                      pose.flange_euler.data())) {
+        error = "TCP 位姿转换为法兰欧拉位姿失败";
+        return false;
+    }
+    return true;
+}
+
+static bool saveObservationReferencePose(
+    const std::filesystem::path& destination,
+    const ObservationReferencePose& pose,
+    std::string& error) {
+    if (destination.empty()) {
+        error = "观察位姿输出路径为空";
+        return false;
+    }
+
+    std::error_code fileError;
+    std::filesystem::create_directories(destination.parent_path(), fileError);
+    if (fileError) {
+        error = "无法创建观察位姿目录: " + fileError.message();
+        return false;
+    }
+
+    const std::filesystem::path temporary =
+        destination.string() + ".tmp.yaml";
+    try {
+        cv::FileStorage storage(temporary.string(), cv::FileStorage::WRITE);
+        if (!storage.isOpened()) {
+            error = "无法创建观察位姿临时文件";
+            return false;
+        }
+        storage << "joint_deg" << "[";
+        for (double value : pose.joint)
+            storage << value;
+        storage << "]";
+        storage << "flange_euler" << "[";
+        for (double value : pose.flange_euler)
+            storage << value;
+        storage << "]";
+        storage.release();
+    } catch (const cv::Exception& exception) {
+        std::filesystem::remove(temporary, fileError);
+        error = "写入观察位姿失败: " + std::string(exception.what());
+        return false;
+    }
+
+    const std::uintmax_t bytes = std::filesystem::file_size(
+        temporary, fileError);
+    if (fileError || bytes == 0) {
+        std::filesystem::remove(temporary, fileError);
+        error = "观察位姿临时文件校验失败";
+        return false;
+    }
+    std::filesystem::rename(temporary, destination, fileError);
+    if (fileError) {
+        std::filesystem::remove(temporary);
+        error = "发布观察位姿失败: " + fileError.message();
+        return false;
+    }
+
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "observation_reference_pose",
+                       "published",
+                       {{"path", QString::fromStdString(destination.string())},
+                        {"joint_count", QString::number(ROB_AXIS_NUM)},
+                        {"flange_value_count", QString::number(ROB_AXIS_NUM)}});
+    return true;
+}
+
+static std::filesystem::path observationReferencePosePath(
+    const std::string& outputYaml,
+    const std::string& intrinsicSourceFile) {
+    std::filesystem::path parameterDirectory;
+    if (!outputYaml.empty()) {
+        const std::filesystem::path outputPath(outputYaml);
+        parameterDirectory = outputPath.has_parent_path()
+            ? outputPath.parent_path() : std::filesystem::path(".");
+    } else if (!intrinsicSourceFile.empty()) {
+        const std::filesystem::path intrinsicPath(intrinsicSourceFile);
+        parameterDirectory = intrinsicPath.has_parent_path()
+            ? intrinsicPath.parent_path() : std::filesystem::path(".");
+    }
+    if (parameterDirectory.empty())
+        return {};
+    return parameterDirectory / "eye_in_hand_observation_pose.yaml";
 }
 
 
@@ -1916,6 +2022,40 @@ bool autoEyeInHandCharucoCalibration(
         std::cerr << "[autoCalib] 自动寻找最佳位姿失败" << std::endl;
         return failSession("pose_search", robotMotionCancellationRequested()
             ? "cancelled" : "best_pose_search_failed");
+    }
+
+    ObservationReferencePose observationPose;
+    std::string observationPoseError;
+    if (!captureObservationReferencePose(robot_handle, observationPose,
+                                         observationPoseError)) {
+        result.message = "保存水平观察位姿前读取机器人反馈失败: " +
+            observationPoseError;
+        session->appendEvent("observation_reference_pose", "fail",
+                             observationPoseError);
+        return failSession("pose_search",
+                           "observation_reference_pose_capture_failed");
+    }
+    const std::filesystem::path observationPosePath =
+        observationReferencePosePath(output_yaml, intrinsic_source_file);
+    if (!observationPosePath.empty()) {
+        if (!saveObservationReferencePose(observationPosePath,
+                                          observationPose,
+                                          observationPoseError)) {
+            result.message = "水平观察位姿保存失败: " + observationPoseError;
+            session->appendEvent("observation_reference_pose", "fail",
+                                 observationPoseError);
+            return failSession("pose_search",
+                               "observation_reference_pose_persist_failed");
+        }
+        session->appendEvent("observation_reference_pose", "published",
+                             observationPosePath.string());
+    } else {
+        session->appendEvent("observation_reference_pose", "skip",
+                             "production_parameter_path_unavailable");
+        APP_LOG_EVENT_WARNING("calibration.pose_search",
+                              "observation_reference_pose",
+                              "skip",
+                              {{"reason", "production_parameter_path_unavailable"}});
     }
 
     // ---- Phase 2: 计算动态 Z 值 ----
