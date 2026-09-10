@@ -54,6 +54,166 @@ struct CapturedFrame {
 
 namespace {
 
+constexpr int kPoseSearchSettlingMs = 1200;
+constexpr int kPoseSearchDiscardFrames = 1;
+constexpr int kMinimumObservationCorners = 12;
+constexpr double kTargetBoardAreaRatio = 0.275;
+constexpr double kTargetPlaneTiltDegrees = 2.0;
+constexpr double kMaximumPlaneTiltDegrees = 8.0;
+
+struct VisualAlignmentMetrics {
+    bool image_valid = false;
+    bool pose_valid = false;
+    int corners = 0;
+    int pose_corners = 0;
+    double center_offset_ratio = std::numeric_limits<double>::infinity();
+    double area_ratio = 0.0;
+    double roll_degrees = std::numeric_limits<double>::infinity();
+    double plane_tilt_degrees = std::numeric_limits<double>::infinity();
+    double reprojection_rms = std::numeric_limits<double>::infinity();
+};
+
+static bool waitForPoseSearchSettling(
+    const std::shared_ptr<AICamera>& camera,
+    int* discarded_frames = nullptr) {
+    constexpr int pollMs = 20;
+    int waitedMs = 0;
+    while (waitedMs < kPoseSearchSettlingMs) {
+        if (robotMotionCancellationRequested())
+            return false;
+        const int sliceMs = std::min(pollMs, kPoseSearchSettlingMs - waitedMs);
+        std::this_thread::sleep_for(std::chrono::milliseconds(sliceMs));
+        waitedMs += sliceMs;
+    }
+
+    int discarded = 0;
+    for (int index = 0; index < kPoseSearchDiscardFrames; ++index) {
+        if (robotMotionCancellationRequested())
+            return false;
+        if (camera && !camera->captureOneFrame(500).empty())
+            ++discarded;
+    }
+    if (discarded_frames)
+        *discarded_frames = discarded;
+    return true;
+}
+
+static bool measureVisualAlignment(
+    const std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    VisualAlignmentMetrics& metrics) {
+    metrics = VisualAlignmentMetrics{};
+    if (!camera)
+        return false;
+
+    const cv::Mat frame = camera->captureOneFrame(1500);
+    if (frame.empty())
+        return false;
+    metrics.image_valid = true;
+
+    std::vector<cv::Point2f> corners;
+    std::vector<int> ids;
+    detector.detectCorners(frame, corners, ids);
+    metrics.corners = static_cast<int>(ids.size());
+    if (corners.size() < 2 || corners.size() != ids.size())
+        return true;
+
+    cv::Point2f boardCenter(0.0f, 0.0f);
+    for (const cv::Point2f& corner : corners)
+        boardCenter += corner;
+    boardCenter *= 1.0f / static_cast<float>(corners.size());
+    const cv::Point2f imageCenter(frame.cols * 0.5f, frame.rows * 0.5f);
+    metrics.center_offset_ratio =
+        cv::norm(boardCenter - imageCenter) /
+        static_cast<double>(std::min(frame.cols, frame.rows));
+
+    std::vector<cv::Point2f> hull;
+    cv::convexHull(corners, hull);
+    const cv::Size boardSize = detector.getChessboardSize();
+    const int totalCorners = (boardSize.width - 1) * (boardSize.height - 1);
+    const double observedArea = std::abs(cv::contourArea(hull));
+    const double estimatedBoardArea = observedArea * totalCorners /
+        static_cast<double>(std::max<std::size_t>(corners.size(), 1));
+    metrics.area_ratio = estimatedBoardArea /
+        static_cast<double>(frame.cols * frame.rows);
+    metrics.roll_degrees = std::abs(
+        computeBoardAngle(corners, ids, boardSize.width, boardSize.height,
+                          frame.cols, frame.rows) * 180.0 / CV_PI);
+
+    if (detector.getCameraMatrix().empty())
+        return true;
+
+    cv::Mat rvec;
+    cv::Mat tvec;
+    std::vector<cv::Point2f> poseCorners;
+    std::vector<int> poseIds;
+    if (!detector.detectPose(frame, rvec, tvec, poseCorners, poseIds,
+                             kMinimumObservationCorners)) {
+        return true;
+    }
+
+    cv::Mat rotation;
+    cv::Rodrigues(rvec, rotation);
+    if (rotation.depth() != CV_64F)
+        rotation.convertTo(rotation, CV_64F);
+    const double normalZ = std::clamp(
+        std::abs(rotation.at<double>(2, 2)), 0.0, 1.0);
+    metrics.plane_tilt_degrees = std::acos(normalZ) * 180.0 / CV_PI;
+    metrics.pose_corners = static_cast<int>(poseIds.size());
+
+    const std::vector<cv::Point3f>& boardCorners =
+        detector.getChessboardCorners3D();
+    std::vector<cv::Point3f> objectPoints;
+    std::vector<cv::Point2f> imagePoints;
+    objectPoints.reserve(poseIds.size());
+    imagePoints.reserve(poseIds.size());
+    for (std::size_t index = 0; index < poseIds.size(); ++index) {
+        const int id = poseIds[index];
+        if (id < 0 || id >= static_cast<int>(boardCorners.size()))
+            continue;
+        objectPoints.push_back(boardCorners[id]);
+        imagePoints.push_back(poseCorners[index]);
+    }
+    if (objectPoints.size() < static_cast<std::size_t>(kMinimumObservationCorners))
+        return true;
+
+    std::vector<cv::Point2f> projected;
+    cv::projectPoints(objectPoints, rvec, tvec, detector.getCameraMatrix(),
+                      detector.getDistCoeffs(), projected);
+    double squaredError = 0.0;
+    for (std::size_t index = 0; index < projected.size(); ++index) {
+        const cv::Point2f residual = projected[index] - imagePoints[index];
+        squaredError += residual.dot(residual);
+    }
+    metrics.reprojection_rms = std::sqrt(
+        squaredError / static_cast<double>(projected.size()));
+    metrics.pose_valid = true;
+    return true;
+}
+
+static std::string formatVisualAlignmentMetrics(
+    const VisualAlignmentMetrics& metrics) {
+    std::ostringstream stream;
+    stream << std::fixed << std::setprecision(4)
+           << "corners=" << metrics.corners
+           << " pose_corners=" << metrics.pose_corners
+           << " center_ratio=" << metrics.center_offset_ratio
+           << " area_ratio=" << metrics.area_ratio
+           << " roll_deg=" << metrics.roll_degrees
+           << " tilt_deg=" << metrics.plane_tilt_degrees
+           << " reproj_px=" << metrics.reprojection_rms;
+    return stream.str();
+}
+
+static double visualAlignmentCost(const VisualAlignmentMetrics& metrics,
+                                  int totalCorners) {
+    if (!metrics.pose_valid)
+        return std::numeric_limits<double>::infinity();
+    const int missingCorners = std::max(0, totalCorners - metrics.pose_corners);
+    return metrics.plane_tilt_degrees + missingCorners * 0.25 +
+        metrics.center_offset_ratio * 2.0;
+}
+
 // ============================================================
 // 评价函数 + XY 搜索（共用）
 // ============================================================
@@ -127,6 +287,412 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
     double    score = (double)i.size() * 100000.0 + hull_area - pd - fabs(angle_diff) * 100;
     // }
     return {score, (int)i.size(), bc};
+}
+
+// 优先使用操作员已经示教、且当前能看见标定板的安全观察位姿。只有当前
+// 位姿无法形成有效观测时，才回退到历史的绝对法兰姿态。
+static bool selectInitialObservationPose(
+    int robotHandle,
+    const std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    double flangeEuler[ROB_AXIS_NUM],
+    std::string* failureMessage) {
+    if (!camera) {
+        if (failureMessage)
+            *failureMessage = "自动寻找最佳位姿失败：相机未初始化";
+        return false;
+    }
+
+    if (!waitForPoseSearchSettling(camera)) {
+        if (failureMessage)
+            *failureMessage = "自动寻找最佳位姿失败：等待初始观察位姿稳定时取消";
+        return false;
+    }
+    const cv::Mat initialFrame = camera->captureOneFrame(1500);
+    if (initialFrame.empty()) {
+        if (failureMessage)
+            *failureMessage = "自动寻找最佳位姿失败：相机采集不到图像";
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "initial_observation",
+                            "fail",
+                            {{"reason", "empty_frame"}});
+        return false;
+    }
+
+    std::vector<cv::Point2f> corners;
+    std::vector<int> ids;
+    detector.detectCorners(initialFrame, corners, ids);
+    if (ids.size() >= 4) {
+        double tcpAxisAngle[ROB_AXIS_NUM] = {};
+        const CRresult tcpResult = cr_get_tcpActualPose(
+            (RobotHandle)robotHandle, tcpAxisAngle);
+        if (tcpResult != sucess ||
+            !convertTcpAxisPos2FlangeEule(robotHandle, tcpAxisAngle,
+                                          flangeEuler)) {
+            if (failureMessage)
+                *failureMessage = "自动寻找最佳位姿失败：读取示教观察位姿失败";
+            APP_LOG_EVENT_ERROR("calibration.pose_search",
+                                "initial_observation",
+                                "fail",
+                                {{"reason", "taught_pose_read_failed"},
+                                 {"error", QString::number(tcpResult)}});
+            return false;
+        }
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "initial_observation",
+                           "selected",
+                           {{"source", "current_taught_pose"},
+                            {"corners", QString::number(ids.size())},
+                            {"minimum_reliable_corners",
+                             QString::number(kMinimumObservationCorners)}});
+        return true;
+    }
+
+    APP_LOG_EVENT_WARNING("calibration.pose_search",
+                          "initial_observation",
+                          "fallback",
+                          {{"source", "legacy_absolute_flange_pose"},
+                           {"reason", "board_not_visible_from_current_pose"},
+                           {"corners", QString::number(ids.size())},
+                           {"target_rx", "-180"},
+                           {"target_ry", "0"}});
+    if (!rotateFlangeToHorizon(robotHandle, flangeEuler)) {
+        if (failureMessage)
+            *failureMessage = "机器人回退水平姿态调整失败";
+        return false;
+    }
+    if (!waitForPoseSearchSettling(camera)) {
+        if (failureMessage)
+            *failureMessage = "机器人回退水平姿态后稳定等待失败";
+        return false;
+    }
+    return true;
+}
+
+enum class VisualAlignmentCandidateResult {
+    Measured,
+    Rejected,
+    Failed
+};
+
+static VisualAlignmentCandidateResult moveAndMeasureVisualAlignment(
+    int robotHandle,
+    const std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    const std::array<double, ROB_AXIS_NUM>& target,
+    VisualAlignmentMetrics& metrics) {
+    std::array<double, ROB_AXIS_NUM> movableTarget = target;
+    double currentJoint[ROB_AXIS_NUM] = {};
+    double targetJoint[ROB_AXIS_NUM] = {};
+    const CRresult jointResult = cr_get_jointActualPos(
+        (RobotHandle)robotHandle, currentJoint);
+    if (jointResult != sucess ||
+        !convertFlangeOulePos2Joint(robotHandle, movableTarget.data(),
+                                    targetJoint)) {
+        APP_LOG_EVENT_WARNING("calibration.pose_search",
+                              "visual_alignment_candidate",
+                              "reject",
+                              {{"reason", "ik_unavailable"},
+                               {"error", QString::number(jointResult)},
+                               {"target_rx", QString::number(target[3], 'f', 3)},
+                               {"target_ry", QString::number(target[4], 'f', 3)}});
+        return VisualAlignmentCandidateResult::Rejected;
+    }
+
+    double maximumJointStep = 0.0;
+    int maximumJointStepAxis = 0;
+    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
+        const double step = std::abs(targetJoint[axis] - currentJoint[axis]);
+        if (step > maximumJointStep) {
+            maximumJointStep = step;
+            maximumJointStepAxis = axis;
+        }
+    }
+    constexpr double maximumVisualAlignmentJointStepDegrees = 20.0;
+    if (maximumJointStep > maximumVisualAlignmentJointStepDegrees) {
+        APP_LOG_EVENT_WARNING("calibration.pose_search",
+                              "visual_alignment_candidate",
+                              "reject",
+                              {{"reason", "joint_step_gate_exceeded"},
+                               {"maximum_step_deg",
+                                QString::number(maximumJointStep, 'f', 3)},
+                               {"maximum_step_axis",
+                                QString("J%1").arg(maximumJointStepAxis + 1)},
+                               {"limit_deg", QString::number(
+                                    maximumVisualAlignmentJointStepDegrees,
+                                    'f', 1)},
+                               {"target_rx", QString::number(target[3], 'f', 3)},
+                               {"target_ry", QString::number(target[4], 'f', 3)}});
+        return VisualAlignmentCandidateResult::Rejected;
+    }
+
+    if (moveToJointPos(robotHandle, targetJoint) != sucess) {
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "visual_alignment_motion",
+                            "fail",
+                            {{"reason", "move_failed"},
+                             {"target_rx", QString::number(target[3], 'f', 3)},
+                             {"target_ry", QString::number(target[4], 'f', 3)},
+                             {"target_rz", QString::number(target[5], 'f', 3)}});
+        return VisualAlignmentCandidateResult::Failed;
+    }
+    int discardedFrames = 0;
+    if (!waitForPoseSearchSettling(camera, &discardedFrames))
+        return VisualAlignmentCandidateResult::Failed;
+    if (!measureVisualAlignment(camera, detector, metrics))
+        return VisualAlignmentCandidateResult::Failed;
+    APP_LOG_EVENT_DEBUG("calibration.pose_search",
+                        "visual_alignment_sample",
+                        "measured",
+                        {{"target_rx", QString::number(target[3], 'f', 3)},
+                         {"target_ry", QString::number(target[4], 'f', 3)},
+                         {"target_rz", QString::number(target[5], 'f', 3)},
+                         {"settling_ms", QString::number(kPoseSearchSettlingMs)},
+                         {"discarded_frames", QString::number(discardedFrames)},
+                         {"metrics", QString::fromStdString(
+                             formatVisualAlignmentMetrics(metrics))}});
+    return VisualAlignmentCandidateResult::Measured;
+}
+
+// 手眼外参尚未知时，不能可靠地把相机坐标系中的法向误差一次转换到法兰
+// 坐标系。这里用受限的小角度坐标下降直接观察 PnP 法向改善，既不依赖旧
+// 手眼矩阵，也不会产生大范围盲动。
+static bool alignCameraPlaneToBoard(
+    int robotHandle,
+    const std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    std::string* failureMessage) {
+    if (detector.getCameraMatrix().empty()) {
+        APP_LOG_EVENT_INFO("calibration.pose_search",
+                           "visual_plane_alignment",
+                           "skip",
+                           {{"reason", "intrinsics_unavailable"},
+                            {"fallback", "image_geometry_only"}});
+        return true;
+    }
+
+    double tcpAxisAngle[ROB_AXIS_NUM] = {};
+    double flangeEuler[ROB_AXIS_NUM] = {};
+    const CRresult tcpResult = cr_get_tcpActualPose(
+        (RobotHandle)robotHandle, tcpAxisAngle);
+    if (tcpResult != sucess ||
+        !convertTcpAxisPos2FlangeEule(robotHandle, tcpAxisAngle, flangeEuler)) {
+        if (failureMessage)
+            *failureMessage = "视觉调正失败：无法读取当前法兰位姿";
+        return false;
+    }
+
+    std::array<double, ROB_AXIS_NUM> seed{};
+    std::copy(flangeEuler, flangeEuler + ROB_AXIS_NUM, seed.begin());
+    std::array<double, ROB_AXIS_NUM> bestPose = seed;
+    VisualAlignmentMetrics bestMetrics;
+    if (!waitForPoseSearchSettling(camera) ||
+        !measureVisualAlignment(camera, detector, bestMetrics) ||
+        !bestMetrics.pose_valid) {
+        if (failureMessage)
+            *failureMessage = "视觉调正失败：可信内参下无法获得有效 ChArUco PnP 位姿";
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "visual_plane_alignment",
+                            "fail",
+                            {{"reason", "initial_pnp_invalid"},
+                             {"metrics", QString::fromStdString(
+                                 formatVisualAlignmentMetrics(bestMetrics))}});
+        return false;
+    }
+
+    const cv::Size boardSize = detector.getChessboardSize();
+    const int totalCorners = (boardSize.width - 1) * (boardSize.height - 1);
+    double bestCost = visualAlignmentCost(bestMetrics, totalCorners);
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "visual_plane_alignment",
+                       "start",
+                       {{"strategy", "bounded_coordinate_descent"},
+                        {"target_tilt_deg",
+                         QString::number(kTargetPlaneTiltDegrees, 'f', 2)},
+                        {"maximum_total_axis_offset_deg", "10.0"},
+                        {"metrics", QString::fromStdString(
+                            formatVisualAlignmentMetrics(bestMetrics))}});
+
+    constexpr std::array<double, 4> steps{{4.0, 2.0, 1.0, 0.5}};
+    constexpr double maximumAxisOffsetDegrees = 10.0;
+    for (std::size_t iteration = 0;
+         iteration < steps.size() &&
+         bestMetrics.plane_tilt_degrees > kTargetPlaneTiltDegrees;
+         ++iteration) {
+        const double step = steps[iteration];
+        const std::array<double, ROB_AXIS_NUM> iterationOrigin = bestPose;
+        std::array<double, ROB_AXIS_NUM> iterationBestPose = bestPose;
+        VisualAlignmentMetrics iterationBestMetrics = bestMetrics;
+        double iterationBestCost = bestCost;
+
+        for (int axis : {3, 4}) {
+            for (double direction : {-1.0, 1.0}) {
+                std::array<double, ROB_AXIS_NUM> candidate = iterationOrigin;
+                candidate[axis] += direction * step;
+                if (std::abs(candidate[axis] - seed[axis]) >
+                    maximumAxisOffsetDegrees) {
+                    continue;
+                }
+
+                VisualAlignmentMetrics candidateMetrics;
+                const VisualAlignmentCandidateResult candidateResult =
+                    moveAndMeasureVisualAlignment(robotHandle, camera, detector,
+                                                  candidate, candidateMetrics);
+                if (candidateResult ==
+                    VisualAlignmentCandidateResult::Rejected) {
+                    continue;
+                }
+                if (candidateResult == VisualAlignmentCandidateResult::Failed) {
+                    if (failureMessage)
+                        *failureMessage = "视觉调正失败：候选姿态运动或采图失败";
+                    return false;
+                }
+                const double candidateCost = visualAlignmentCost(
+                    candidateMetrics, totalCorners);
+                if (candidateCost + 0.05 < iterationBestCost) {
+                    iterationBestCost = candidateCost;
+                    iterationBestPose = candidate;
+                    iterationBestMetrics = candidateMetrics;
+                }
+            }
+        }
+
+        VisualAlignmentMetrics confirmedMetrics;
+        const VisualAlignmentCandidateResult confirmationResult =
+            moveAndMeasureVisualAlignment(robotHandle, camera, detector,
+                                          iterationBestPose,
+                                          confirmedMetrics);
+        if (confirmationResult != VisualAlignmentCandidateResult::Measured ||
+            !confirmedMetrics.pose_valid) {
+            if (failureMessage)
+                *failureMessage = "视觉调正失败：无法回到本轮最佳姿态";
+            return false;
+        }
+        iterationBestMetrics = confirmedMetrics;
+        iterationBestCost = visualAlignmentCost(confirmedMetrics, totalCorners);
+        if (iterationBestCost + 0.05 >= bestCost) {
+            VisualAlignmentMetrics recoveredMetrics;
+            const VisualAlignmentCandidateResult recoveryResult =
+                moveAndMeasureVisualAlignment(robotHandle, camera, detector,
+                                              bestPose, recoveredMetrics);
+            if (recoveryResult != VisualAlignmentCandidateResult::Measured ||
+                !recoveredMetrics.pose_valid) {
+                if (failureMessage)
+                    *failureMessage = "视觉调正失败：无法恢复上一最佳姿态";
+                return false;
+            }
+            bestMetrics = recoveredMetrics;
+            bestCost = visualAlignmentCost(bestMetrics, totalCorners);
+            APP_LOG_EVENT_INFO("calibration.pose_search",
+                               "visual_plane_alignment",
+                               "converged",
+                               {{"reason", "no_further_improvement"},
+                                {"iteration", QString::number(iteration)},
+                                {"metrics", QString::fromStdString(
+                                    formatVisualAlignmentMetrics(bestMetrics))}});
+            break;
+        }
+        bestPose = iterationBestPose;
+        bestMetrics = iterationBestMetrics;
+        bestCost = iterationBestCost;
+    }
+
+    VisualAlignmentMetrics finalMetrics;
+    if (!measureVisualAlignment(camera, detector, finalMetrics) ||
+        !finalMetrics.pose_valid) {
+        if (failureMessage)
+            *failureMessage = "视觉调正失败：最终姿态无法通过 PnP 复核";
+        return false;
+    }
+    if (finalMetrics.plane_tilt_degrees > kMaximumPlaneTiltDegrees) {
+        if (failureMessage) {
+            *failureMessage = "视觉调正失败：相机光轴与标定板法向偏差 " +
+                std::to_string(finalMetrics.plane_tilt_degrees) +
+                "°，超过 8° 安全门限";
+        }
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "visual_plane_alignment",
+                            "fail",
+                            {{"reason", "tilt_gate_exceeded"},
+                             {"metrics", QString::fromStdString(
+                                 formatVisualAlignmentMetrics(finalMetrics))}});
+        return false;
+    }
+
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "visual_plane_alignment",
+                       "success",
+                       {{"target_met", finalMetrics.plane_tilt_degrees <=
+                            kTargetPlaneTiltDegrees ? "true" : "false"},
+                        {"metrics", QString::fromStdString(
+                            formatVisualAlignmentMetrics(finalMetrics))}});
+    return true;
+}
+
+static bool validateFinalObservationPose(
+    const std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector,
+    std::string* failureMessage) {
+    VisualAlignmentMetrics metrics;
+    if (!waitForPoseSearchSettling(camera) ||
+        !measureVisualAlignment(camera, detector, metrics) ||
+        !metrics.image_valid) {
+        if (failureMessage)
+            *failureMessage = "观察位姿质量门禁失败：无法采集最终复核图像";
+        return false;
+    }
+
+    const cv::Size boardSize = detector.getChessboardSize();
+    const int totalCorners = (boardSize.width - 1) * (boardSize.height - 1);
+    const int requiredCorners = std::max(
+        kMinimumObservationCorners,
+        static_cast<int>(std::ceil(totalCorners * 0.8)));
+
+    std::string reason;
+    if (metrics.corners < requiredCorners) {
+        reason = "insufficient_corners";
+    } else if (metrics.center_offset_ratio > 0.18) {
+        reason = "board_not_centered";
+    } else if (metrics.area_ratio < 0.08 || metrics.area_ratio > 0.55) {
+        reason = "board_area_out_of_range";
+    } else if (metrics.roll_degrees > 5.0) {
+        reason = "board_roll_exceeded";
+    } else if (!detector.getCameraMatrix().empty() && !metrics.pose_valid) {
+        reason = "pnp_invalid";
+    } else if (metrics.pose_valid &&
+               metrics.plane_tilt_degrees > kMaximumPlaneTiltDegrees) {
+        reason = "plane_tilt_exceeded";
+    } else if (metrics.pose_valid && metrics.reprojection_rms > 1.0) {
+        reason = "pnp_reprojection_exceeded";
+    }
+
+    if (!reason.empty()) {
+        if (failureMessage) {
+            *failureMessage = "观察位姿质量门禁失败: " + reason + " (" +
+                formatVisualAlignmentMetrics(metrics) + ")";
+        }
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "observation_quality_gate",
+                            "fail",
+                            {{"reason", QString::fromStdString(reason)},
+                             {"required_corners", QString::number(requiredCorners)},
+                             {"metrics", QString::fromStdString(
+                                 formatVisualAlignmentMetrics(metrics))}});
+        return false;
+    }
+
+    APP_LOG_EVENT_INFO("calibration.pose_search",
+                       "observation_quality_gate",
+                       "pass",
+                       {{"required_corners", QString::number(requiredCorners)},
+                        {"target_center_ratio", "0.05"},
+                        {"target_area_ratio", "0.20-0.30"},
+                        {"target_roll_deg", "1.0"},
+                        {"target_tilt_deg",
+                         QString::number(kTargetPlaneTiltDegrees, 'f', 2)},
+                        {"metrics", QString::fromStdString(
+                            formatVisualAlignmentMetrics(metrics))}});
+    return true;
 }
 
 
@@ -386,21 +952,21 @@ bool autoFindBestPose(int robot_handle,
     if (failure_message)
         failure_message->clear();
 
-    const double TARGET_AREA_RATIO = 0.275;
     const int MAX_REFINE_ZRZ = 6;
     const double Z_STEP = 100.0;
     const double Z_MAX_OFFSET = 600.0;
     const double Z_MAX_APPROACH_OFFSET = 200.0;
 
-    // ---- 固定 rx=-180°, ry=0°（标定板水平），保留 rz ----
+    // ---- 优先采用当前示教观察位姿；看不到板时才回退历史水平姿态 ----
     double flangeEulePos[ROB_AXIS_NUM] = {};
     double tcp_aa[ROB_AXIS_NUM] = {};
-    if (!rotateFlangeToHorizon(robot_handle, flangeEulePos)) {
+    if (!selectInitialObservationPose(robot_handle, camera, detector,
+                                      flangeEulePos, failure_message)) {
         APP_LOG_EVENT_ERROR("calibration.pose_search",
                             "best_pose",
                             "fail",
-                            {{"phase", "initial_horizontal_rotation"},
-                             {"reason", "rotate_flange_failed"}});
+                            {{"phase", "initial_observation"},
+                             {"reason", "observation_pose_selection_failed"}});
         return false;
     }
     CRresult tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
@@ -533,7 +1099,7 @@ bool autoFindBestPose(int robot_handle,
                             {"corners", QString::number(cur_codes)},
                             {"total_corners", QString::number(total_corners)}});
     }
-    frame = camera->captureOneFrame(1500);
+
     // ================================================================
     // Phase 2: XY 搜索 — 码不全时找更好的水平位置
     // ================================================================
@@ -569,6 +1135,31 @@ bool autoFindBestPose(int robot_handle,
                             {"reason", "all_corners_visible"},
                             {"corners", QString::number(cur_codes)},
                             {"total_corners", QString::number(total_corners)}});
+    }
+
+    // 已有可信内参时，通过受限的小角度试探直接让相机光轴对准板面法向。
+    // 没有内参的首轮 MVS bootstrap 会在函数内明确降级，不使用伪 PnP。
+    if (!alignCameraPlaneToBoard(robot_handle, camera, detector,
+                                 failure_message)) {
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "visual_plane_alignment"},
+                             {"reason", "plane_alignment_failed"}});
+        return false;
+    }
+    tcpRet = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa);
+    if (tcpRet != sucess ||
+        !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEulePos)) {
+        if (failure_message)
+            *failure_message = "视觉调正后读取机器人实际位姿失败";
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "visual_plane_alignment"},
+                             {"reason", "actual_pose_refresh_failed"},
+                             {"error", QString::number(tcpRet)}});
+        return false;
     }
     frame = camera->captureOneFrame(1500);
 
@@ -649,7 +1240,8 @@ bool autoFindBestPose(int robot_handle,
         double hull_area = cv::contourArea(hull);
         double board_area = hull_area * total_corners / std::max((int)corners.size(), 1);
         double area_ratio = board_area / (double)(frame.cols * frame.rows);
-        double Z_desired = flangeEulePos[2] * std::sqrt(area_ratio / TARGET_AREA_RATIO);
+        double Z_desired = flangeEulePos[2] * std::sqrt(
+            area_ratio / kTargetBoardAreaRatio);
         double dZ =  (Z_desired - flangeEulePos[2]); 
         double dRz_deg = -computeBoardAngle(corners, ids, board_sz.width, board_sz.height, frame.cols, frame.rows) * 180.0 / CV_PI;
 
@@ -746,6 +1338,15 @@ bool autoFindBestPose(int robot_handle,
             return false;
         }
         frame = camera->captureOneFrame(1500);       
+    }
+
+    if (!validateFinalObservationPose(camera, detector, failure_message)) {
+        APP_LOG_EVENT_ERROR("calibration.pose_search",
+                            "best_pose",
+                            "fail",
+                            {{"phase", "observation_quality_gate"},
+                             {"reason", "quality_gate_failed"}});
+        return false;
     }
 
     APP_LOG_EVENT_INFO("calibration.pose_search",
@@ -1300,15 +1901,6 @@ bool autoEyeInHandCharucoCalibration(
     // ---- Phase 1b: 自动寻找最佳位姿 ----
     session->setStage("prepare");
     publish(CalibrationRuntimeStage::Preparing, "prepare");
-    if (!rotateFlangeToHorizon(robot_handle, nullptr)) {
-        result.message = "机器人水平姿态调整失败";
-        APP_LOG_EVENT_ERROR("calibration",
-                            "pipeline",
-                            "fail",
-                            {{"reason", "initial_rotation_failed"},
-                             {"stage", "prepare"}});
-        return failSession("prepare", "initial_rotation_failed");
-    }
     std::cout << "[autoCalib] 自动寻找最佳位姿..." << std::endl;
     publish(CalibrationRuntimeStage::PoseSearch, "pose_search");
     std::string best_pose_failure;
