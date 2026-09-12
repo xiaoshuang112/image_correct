@@ -1782,6 +1782,9 @@ bool generateCandidates(int robot_handle,
     }
 
     CandidatePlanningOptions planningOptions;
+    // 全自动候选网格不做数量压缩：规划上限与当前 IK 可达候选数一致。
+    // 这样 maximum_candidates 不会把 360 个原始候选再次裁剪成小集合。
+    planningOptions.maximum_candidates = candidates.size();
     planningOptions.joint_resolver = [robot_handle](
         const PoseCandidate& candidate,
         const std::array<double, 6>& reference,
@@ -1820,6 +1823,8 @@ bool generateCandidates(int robot_handle,
                         {"target", "360"},
                         {"total", QString::number(total)},
                         {"reachable", QString::number(ik_ok)},
+                        {"maximum_candidates", QString::number(
+                            planningOptions.maximum_candidates)},
                         {"ordered", QString::number(candidates.size())},
                         {"transitions", QString::number(
                             planningReport.transition_candidates)},
