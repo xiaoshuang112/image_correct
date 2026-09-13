@@ -103,24 +103,25 @@ void checkAccurate(const EyeToHandResult& result, const Fixture& fixture,
                    double consistency_tolerance = 1e-5) {
     require(result.success, "success flag missing: " + result.message);
     const cv::Mat& actual = result.T_base_camera;
+    const cv::Mat expected = fixture.X.inv();
     require(actual.rows == 4 && actual.cols == 4 && actual.type() == CV_64F,
             "T_base_camera must be a 4x4 double transform");
     require(cv::checkRange(actual), "non-finite output transform");
     const cv::Rect rotation(0, 0, 3, 3);
     cv::Mat rotation_error;
-    cv::Rodrigues(actual(rotation) * fixture.X(rotation).t(), rotation_error);
+    cv::Rodrigues(actual(rotation) * expected(rotation).t(), rotation_error);
     const double radians = cv::norm(rotation_error);
     const double metres = cv::norm(actual(cv::Rect(3, 0, 1, 3)) -
-                                  fixture.X(cv::Rect(3, 0, 1, 3)));
+                                  expected(cv::Rect(3, 0, 1, 3)));
     // Exact synthetic inliers should recover well within 10 um / 0.0006 deg.
     require(metres < translation_tolerance,
             "translation error (m): " + std::to_string(metres));
     require(radians < rotation_tolerance,
             "rotation error (rad): " + std::to_string(radians));
-    require(cv::norm(actual.row(3) - fixture.X.row(3)) < 1e-12,
+    require(cv::norm(actual.row(3) - expected.row(3)) < 1e-12,
             "invalid homogeneous output row");
-    require(cv::norm(actual - fixture.X.inv()) > 1.0,
-            "returned inverse camera-to-base convention");
+    require(cv::norm(actual - fixture.X) > 1.0,
+            "returned internal solver direction instead of production convention");
     require(std::isfinite(result.reproj_error) &&
                 result.reproj_error < consistency_tolerance,
             "consistency error (m): " + std::to_string(result.reproj_error));
@@ -159,7 +160,7 @@ int main() {
         }
     };
 
-    run("exact diverse poses recover X, not inverse(X)", [&] {
+    run("exact diverse poses recover production inverse convention", [&] {
         require(solveEyeToHandPoses(fixture.robot, fixture.camera, baseline),
                 "solve failed: " + baseline.message);
         checkAccurate(baseline, fixture);

@@ -1053,6 +1053,37 @@ static OptimizedMedoidResult optimizeMedoidOnce(
     return optimized;
 }
 
+// Closed-form hand-eye methods react differently to noisy, long-baseline
+// eye-to-hand data.  Compare them only after applying the same physical
+// consistency refinement; otherwise one raw method (commonly TSAI) can veto a
+// solution even though every method converges to the same SE(3) optimum.
+static std::vector<HandEyeMethodResult> refineMethodsForConsensus(
+    const std::vector<HandEyeMethodResult>& methods,
+    const std::vector<cv::Mat>& robot_poses,
+    const std::vector<cv::Mat>& camera_poses,
+    const char* phase,
+    HandEyePhase2Audit* audit,
+    bool emit_diagnostics = false) {
+    std::vector<HandEyeMethodResult> refined;
+    refined.reserve(methods.size());
+    for (const HandEyeMethodResult& method : methods) {
+        const OptimizedMedoidResult optimized = optimizeMedoidOnce(
+            method, robot_poses, camera_poses, phase, audit,
+            emit_diagnostics);
+        if (optimized.transform.empty() ||
+            !cv::checkRange(optimized.transform) ||
+            !std::isfinite(optimized.stats.translation_rms) ||
+            !std::isfinite(optimized.stats.rotation_rms_degrees)) {
+            continue;
+        }
+        HandEyeMethodResult result = method;
+        result.transform = optimized.transform.clone();
+        result.stats = optimized.stats;
+        refined.push_back(std::move(result));
+    }
+    return refined;
+}
+
 struct LooConsensusStageResult {
     bool calculable = false;
     std::string failure_reason;
@@ -1536,7 +1567,8 @@ static bool estimateHandEyeTrans(
     HandEyeSolveAudit* audit,
     CalibrationRuntimeStatus* runtime_status = nullptr,
     const CalibrationRuntimeCallback& runtime_callback = {},
-    const char* transform_name = "T_flange_camera") {
+    const char* transform_name = "T_flange_camera",
+    bool refine_all_methods_for_consensus = false) {
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
@@ -1591,12 +1623,33 @@ static bool estimateHandEyeTrans(
         return false;
     }
 
-    SolverConsensusResult final_consensus = evaluateSolverConsensus(
-        method_results, "initial", audit ? &audit->phase2 : nullptr);
-    size_t medoid_index = final_consensus.medoid_index;
-    OptimizedMedoidResult final_optimized = optimizeMedoidOnce(
-        method_results[medoid_index], robot_poses, camera_poses, "initial",
-        audit ? &audit->phase2 : nullptr);
+    SolverConsensusResult final_consensus;
+    size_t medoid_index = 0;
+    OptimizedMedoidResult final_optimized;
+    if (refine_all_methods_for_consensus) {
+        method_results = refineMethodsForConsensus(
+            method_results, robot_poses, camera_poses, "initial_refined",
+            audit ? &audit->phase2 : nullptr);
+        if (method_results.empty()) {
+            result.message = "所有手眼标定方法精化均失败";
+            publishSolve(CalibrationRuntimeStage::Failed,
+                         "all_method_refinements_failed");
+            return false;
+        }
+        final_consensus = evaluateSolverConsensus(
+            method_results, "initial_refined",
+            audit ? &audit->phase2 : nullptr);
+        medoid_index = final_consensus.medoid_index;
+        final_optimized.transform = method_results[medoid_index].transform.clone();
+        final_optimized.stats = method_results[medoid_index].stats;
+    } else {
+        final_consensus = evaluateSolverConsensus(
+            method_results, "initial", audit ? &audit->phase2 : nullptr);
+        medoid_index = final_consensus.medoid_index;
+        final_optimized = optimizeMedoidOnce(
+            method_results[medoid_index], robot_poses, camera_poses, "initial",
+            audit ? &audit->phase2 : nullptr);
+    }
     if (final_optimized.stats.translation_errors.size() != robot_poses.size() ||
         !std::isfinite(final_optimized.stats.translation_rms)) {
         result.message = "初始 medoid 精化结果无效";
@@ -1695,13 +1748,32 @@ static bool estimateHandEyeTrans(
             publishSolve(CalibrationRuntimeStage::Failed, "refit_failed");
             return false;
         }
-        final_consensus = evaluateSolverConsensus(
-            method_results, "refit", audit ? &audit->phase2 : nullptr);
-        medoid_index = final_consensus.medoid_index;
-        final_optimized = optimizeMedoidOnce(
-            method_results[medoid_index], filtered_robot_poses,
-            filtered_camera_poses, "refit",
-            audit ? &audit->phase2 : nullptr);
+        if (refine_all_methods_for_consensus) {
+            method_results = refineMethodsForConsensus(
+                method_results, filtered_robot_poses, filtered_camera_poses,
+                "refit_refined", audit ? &audit->phase2 : nullptr);
+            if (method_results.empty()) {
+                result.message = "离群过滤后所有手眼标定方法精化均失败";
+                publishSolve(CalibrationRuntimeStage::Failed,
+                             "all_refit_method_refinements_failed");
+                return false;
+            }
+            final_consensus = evaluateSolverConsensus(
+                method_results, "refit_refined",
+                audit ? &audit->phase2 : nullptr);
+            medoid_index = final_consensus.medoid_index;
+            final_optimized.transform =
+                method_results[medoid_index].transform.clone();
+            final_optimized.stats = method_results[medoid_index].stats;
+        } else {
+            final_consensus = evaluateSolverConsensus(
+                method_results, "refit", audit ? &audit->phase2 : nullptr);
+            medoid_index = final_consensus.medoid_index;
+            final_optimized = optimizeMedoidOnce(
+                method_results[medoid_index], filtered_robot_poses,
+                filtered_camera_poses, "refit",
+                audit ? &audit->phase2 : nullptr);
+        }
         publishSolve(CalibrationRuntimeStage::HandEyeRefit, "refit_complete");
     }
 
@@ -1877,8 +1949,11 @@ bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
         result.message = "旋转激励不足：需要至少两个独立旋转轴";
         return false;
     }
-    // The shared equation is robot_i * X * camera_i = constant.
-    // Substituting inv(G_i) yields X=T_base_camera, with NO output inversion.
+    // The shared solver equation is robot_i * X * camera_i = constant.
+    // Substituting inv(G_i) yields the internal eye-to-hand transform.  The
+    // production eye_to_hand_result.yaml convention (validated against the
+    // 2026-06-27 field result and used by existing consumers) stores its
+    // inverse under the historical T_base_camera key.
     std::vector<cv::Mat> inverse_robot, cameras = camera_poses;
     for (const auto& pose : robot_poses)
         inverse_robot.push_back(calib_transform::invertTransform(pose));
@@ -1886,14 +1961,23 @@ bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
     HandEyeSolveAudit audit;
     result.quality.pnp_valid_frames = static_cast<int>(robot_poses.size());
     const bool ok = estimateHandEyeTrans(result.camera_matrix, result.dist_coeffs,
-        inverse_robot, cameras, solved, &audit, &result.quality, {}, "T_base_camera");
+        inverse_robot, cameras, solved, &audit, &result.quality, {},
+        "T_eye_to_hand_internal", true);
     result.message = solved.message;
     if (!ok) return false;
     if (!validTransform(solved.T_flange_camera)) {
         result.message = "眼在手外求解输出不是有效刚体变换";
         return false;
     }
-    result.T_base_camera = solved.T_flange_camera.clone();
+    result.T_base_camera = calib_transform::invertTransform(
+        solved.T_flange_camera);
+    if (!validTransform(result.T_base_camera)) {
+        result.T_base_camera.release();
+        result.message = "眼在手外生产方向转换失败";
+        return false;
+    }
+    std::cout << "[eyeToHand] 生产约定 T_base_camera:\n"
+              << result.T_base_camera << std::endl;
     result.valid_frames = solved.valid_frames;
     result.reproj_error = solved.reproj_error;
     result.success = true;

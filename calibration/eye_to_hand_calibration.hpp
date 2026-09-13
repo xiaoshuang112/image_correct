@@ -19,7 +19,9 @@
 // 眼在手外标定结果
 struct EyeToHandResult {
     bool success = false;
-    cv::Mat T_base_camera;       // 4x4 相机在基坐标系下的位姿
+    // 4x4 生产约定矩阵；保持与 2026-06-27 现场结果及既有消费端一致。
+    // 它是内部眼在手外求解矩阵的逆，键名为历史兼容名称。
+    cv::Mat T_base_camera;
     cv::Mat camera_matrix;       // 3x3 相机内参
     cv::Mat dist_coeffs;        // 畸变系数
     int valid_frames = 0;        // 参与标定的有效帧数
@@ -30,7 +32,8 @@ struct EyeToHandResult {
 };
 
 // 无硬件求解：G=T_base_flange, C=T_camera_board（平移单位 m）。
-// 返回 X=T_base_camera，使 inv(G_i)*X*C_i 为固定的 T_flange_board。
+// 内部求解 X，使 inv(G_i)*X*C_i 为固定的 T_flange_board；返回值
+// T_base_camera 按生产历史约定保存为 inv(X)。
 // 复用眼在手内的五算法共识、MAD 和质量门限；失败清空旧解。
 bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
                         const std::vector<cv::Mat>& camera_poses,
