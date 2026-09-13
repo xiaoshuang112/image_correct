@@ -103,8 +103,9 @@ void display_menu() {
     std::cout << "7. 退出程序" << std::endl;
     std::cout << "8. 奇异点测试分析" << std::endl;
     std::cout << "9. 眼在手上本地数据标定" << std::endl;
+    std::cout << "10. 眼在手外本地数据标定" << std::endl;
     std::cout << "========================================" << std::endl;
-    std::cout << "请选择操作 (1-9): ";
+    std::cout << "请选择操作 (1-10): ";
 }
 
 
@@ -828,10 +829,25 @@ static void rotateImageForCalibration(const cv::Mat& src, cv::Mat& dst, int angl
         dst = src.clone();
 }
 
-// 将 src_dir 中的图像按指定角度旋转后写入工作目录，并复制 rob_pos.csv
+// 机器人位姿文件: 优先轴角 rob_pos.csv，其次欧拉 rob_eule.csv；都没有时返回空
+static std::string findRobotPoseFile(const std::string& dir) {
+    for (const char* name : {"rob_pos.csv", "rob_eule.csv"})
+        if (fs::exists(dir + name)) return name;
+    return "";
+}
+
+// 将 src_dir 中的图像按指定角度旋转后写入工作目录，并复制机器人位姿文件
 // 成功返回工作目录，失败返回空字符串
-static std::string prepareRotatedDataset(const std::string& src_dir, int angle_deg) {
+static std::string prepareRotatedDataset(const std::string& src_dir, int angle_deg,
+                                         const std::string& tag) {
     std::string work_dir = src_dir + "rotated_" + std::to_string(angle_deg) + "/";
+
+    const std::string pose_file = findRobotPoseFile(src_dir);
+    if (pose_file.empty()) {
+        std::cerr << "[" << tag << "] 未找到位姿文件 (rob_pos.csv / rob_eule.csv): "
+                  << src_dir << std::endl;
+        return "";
+    }
 
     if (fs::exists(work_dir))
         fs::remove_all(work_dir);
@@ -848,19 +864,20 @@ static std::string prepareRotatedDataset(const std::string& src_dir, int angle_d
         count++;
     }
     if (count == 0) {
-        std::cerr << "[localEyeInHand] 未找到可旋转的图像" << std::endl;
+        std::cerr << "[" << tag << "] 未找到可旋转的图像" << std::endl;
         return "";
     }
 
     std::error_code ec;
-    fs::copy_file(src_dir + "rob_pos.csv", work_dir + "rob_pos.csv",
+    fs::copy_file(src_dir + pose_file, work_dir + pose_file,
                   fs::copy_options::overwrite_existing, ec);
     if (ec) {
-        std::cerr << "[localEyeInHand] 复制 rob_pos.csv 失败: " << ec.message() << std::endl;
+        std::cerr << "[" << tag << "] 复制 " << pose_file << " 失败: "
+                  << ec.message() << std::endl;
         return "";
     }
 
-    std::cout << "[localEyeInHand] 已生成旋转数据: " << work_dir
+    std::cout << "[" << tag << "] 已生成旋转数据: " << work_dir
               << " (" << count << " 张, " << angle_deg << "°)" << std::endl;
     return work_dir;
 }
@@ -908,7 +925,7 @@ static void local_eye_in_hand_calibration_wrapper() {
     std::string work_dir = save_dir;
     if (angle_deg != 0) {
         std::cout << "[localEyeInHand] 图像旋转角度: " << angle_deg << "°" << std::endl;
-        work_dir = prepareRotatedDataset(save_dir, angle_deg);
+        work_dir = prepareRotatedDataset(save_dir, angle_deg, "localEyeInHand");
         if (work_dir.empty()) return;
     }
 
@@ -970,6 +987,79 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     } else {
         std::cerr << "\n[eyeToHand] 标定失败: " << result.message << std::endl;
     }
+}
+
+// ============================================================
+// 眼在手外本地数据标定入口（菜单项 10）
+// 图像与机械臂位姿已采集完成，仅离线计算相机内参与手眼矩阵
+// ============================================================
+static void local_eye_to_hand_calibration_wrapper() {
+    std::cout << "\n========== 眼在手外本地数据标定 ==========" << std::endl;
+
+    // 数据目录（默认为眼在手外标定的采集目录）
+    std::string save_dir = g_paramPath + "eye_to_hand/";
+    std::cout << "数据目录 (含图像与 rob_pos.csv) [" << save_dir << "]: ";
+    std::cin.ignore(std::numeric_limits<std::streamsize>::max(), '\n');
+    std::string user_dir;
+    std::getline(std::cin, user_dir);
+    if (!user_dir.empty()) {
+        save_dir = user_dir;
+        if (save_dir.back() != '/' && save_dir.back() != '\\')
+            save_dir += '/';
+    }
+
+    const std::string pose_file = findRobotPoseFile(save_dir);
+    if (pose_file.empty()) {
+        std::cerr << "[localEyeToHand] 未找到位姿文件: " << save_dir
+                  << "rob_pos.csv (或 rob_eule.csv)" << std::endl;
+        return;
+    }
+    int jpg_count = 0;
+    for (const auto& entry : fs::directory_iterator(save_dir))
+        if (entry.path().extension() == ".jpg") jpg_count++;
+    if (jpg_count == 0) {
+        std::cerr << "[localEyeToHand] 数据目录中没有图像: " << save_dir << std::endl;
+        return;
+    }
+    std::cout << "[localEyeToHand] 找到 " << jpg_count << " 张图像, 位姿文件: "
+              << pose_file << std::endl;
+
+    // 选择标定前的图像旋转角度
+    std::cout << "\n请选择标定前的图像旋转角度:" << std::endl;
+    std::cout << "  0: 0° (不旋转)" << std::endl;
+    std::cout << "  1: -90° (逆时针)" << std::endl;
+    std::cout << "  2: 90° (顺时针)" << std::endl;
+    std::cout << "  3: 180°" << std::endl;
+    std::cout << "请选择 (0-3) [0]: ";
+    int rot_choice = 0;
+    std::cin >> rot_choice;
+    int angle_deg = rotationChoiceToAngle(rot_choice);
+
+    // 需要旋转时生成旋转副本目录，否则直接使用原始数据
+    std::string work_dir = save_dir;
+    if (angle_deg != 0) {
+        std::cout << "[localEyeToHand] 图像旋转角度: " << angle_deg << "°" << std::endl;
+        work_dir = prepareRotatedDataset(save_dir, angle_deg, "localEyeToHand");
+        if (work_dir.empty()) return;
+    }
+
+    EyeToHandResult result;
+    bool ok = calibrateEyeToHandFromDisk(work_dir, result);
+    if (!ok) {
+        std::cerr << "\n[localEyeToHand] 标定失败: " << result.message << std::endl;
+        return;
+    }
+
+    // 与在线标定保持一致：结果发布到 param/eye_to_hand_result.yaml
+    if (!saveCalibrationResult(g_paramPath + "eye_to_hand_result.yaml", "T_base_camera",
+                               result.T_base_camera, result.camera_matrix, result.dist_coeffs,
+                               result.reproj_error * 1000.0, result.valid_frames)) {
+        std::cerr << "[localEyeToHand] 标定结果保存失败" << std::endl;
+        return;
+    }
+    saveCalibratedCameraParams(cv::Mat(), result.camera_matrix, result.dist_coeffs);
+    std::cout << "[localEyeToHand] 标定完成: " << g_paramPath + "eye_to_hand_result.yaml"
+              << std::endl;
 }
 
 bool tryMoveByLineOrJoint(int robotHandle, double tcpAxisPosZ[6], double x_off, double y_off, double z_off){
@@ -1254,8 +1344,11 @@ int main(int argc, char** argv) {
         case 9:
             local_eye_in_hand_calibration_wrapper();
             break;
+        case 10:
+            local_eye_to_hand_calibration_wrapper();
+            break;
         default:
-            std::cout << "无效选择，请重新输入 (1-9)" << std::endl;
+            std::cout << "无效选择，请重新输入 (1-10)" << std::endl;
         }
 
         // 清空输入缓冲区
