@@ -931,6 +931,13 @@ static void local_eye_in_hand_calibration_wrapper() {
 // 眼在手外标定入口（菜单项 6）
 // ============================================================
 static void auto_eye_to_hand_calibration(char* pchRobotIP) {
+    PoseGenerationConfig pose_config;
+    std::string config_error;
+    if (!tryLoadPoseGenerationConfig(g_paramPath + "eye_to_hand_config.yaml",
+                                     pose_config, config_error)) {
+        std::cerr << "[eyeToHand] 配置加载失败: " << config_error << std::endl;
+        return;
+    }
     // 标定开始前设置机械臂运行速度
     applyRobotSpeedPercent();
 
@@ -947,9 +954,6 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
                                "eyeToHand"))
         return;
 
-    // 加载配置
-    PoseGenerationConfig pose_config = loadPoseGenerationConfig(g_paramPath + "eye_to_hand_config.yaml");
-
     std::string save_dir = g_paramPath + "eye_to_hand/";
 
     EyeToHandResult result;
@@ -958,9 +962,11 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
         pose_config, result, save_dir);
 
     if (ok) {
-        saveCalibrationResult(g_paramPath + "eye_to_hand_result.yaml", "T_base_camera",
+        if (!saveCalibrationResult(g_paramPath + "eye_to_hand_result.yaml", "T_base_camera",
                                result.T_base_camera, result.camera_matrix, result.dist_coeffs,
-                               result.reproj_error * 1000.0, result.valid_frames);
+                               result.reproj_error * 1000.0, result.valid_frames)) {
+            std::cerr << "[eyeToHand] 标定结果保存失败" << std::endl;
+        }
     } else {
         std::cerr << "\n[eyeToHand] 标定失败: " << result.message << std::endl;
     }

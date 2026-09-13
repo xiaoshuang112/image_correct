@@ -19,6 +19,8 @@
 #include <iomanip>
 #include <cerrno>
 #include <cstdlib>
+#include <iterator>
+#include <stdexcept>
 
 namespace {
 
@@ -1327,7 +1329,8 @@ bool saveCalibrationResult(const std::string& yaml_path,
                         {"error_mm", QString::number(reproj_error_mm, 'f', 6)}});
     const std::string temporary_path = yaml_path + ".tmp.yaml";
     try {
-        cv::FileStorage out(temporary_path, cv::FileStorage::WRITE);
+        cv::FileStorage out("", cv::FileStorage::WRITE |
+                                cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_YAML);
         if (!out.isOpened()) {
             APP_LOG_EVENT_ERROR("calibration.output",
                                 "yaml_output",
@@ -1342,15 +1345,28 @@ bool saveCalibrationResult(const std::string& yaml_path,
         out << "distortion_coefficients" << dist_coeffs;
         out << "reprojection_error_mm" << reproj_error_mm;
         out << "valid_frames" << valid_frames;
-        out.release();
-    } catch (const cv::Exception& e) {
+        const std::string serialized = out.releaseAndGetString();
+        // OpenCV FileStorage may not report a short disk write. Write the complete
+        // serialization through an exception-enabled stream before publication.
+        std::ofstream output;
+        output.exceptions(std::ios::failbit | std::ios::badbit);
+        output.open(temporary_path, std::ios::binary | std::ios::trunc);
+        output.write(serialized.data(), static_cast<std::streamsize>(serialized.size()));
+        output.flush();
+        output.close();
+        std::ifstream verify(temporary_path, std::ios::binary);
+        const std::string persisted((std::istreambuf_iterator<char>(verify)),
+                                     std::istreambuf_iterator<char>());
+        if (verify.bad() || persisted != serialized)
+            throw std::runtime_error("saved calibration YAML verification failed");
+    } catch (const std::exception& e) {
         std::error_code ignored;
         std::filesystem::remove(temporary_path, ignored);
         APP_LOG_EVENT_ERROR("calibration.output",
                             "yaml_output",
                             "fail",
                             {{"path", QString::fromStdString(yaml_path)},
-                             {"reason", "opencv_exception"},
+                             {"reason", "serialization_or_write_failed"},
                              {"message", QString::fromUtf8(e.what())}});
         std::cerr << "[calibUtil] 写入 YAML 异常: " << e.what() << std::endl;
         return false;

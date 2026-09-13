@@ -167,6 +167,10 @@ configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_in_hand_config.yaml"
     "${CMAKE_CURRENT_BINARY_DIR}/param/eye_in_hand_config.yaml"
     COPYONLY)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_to_hand_config.yaml"
+    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_config.yaml"
+    COPYONLY)
 
 SET(SRC_LISTS
 calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
@@ -261,8 +265,7 @@ target_link_libraries(verify_fk ${CGX_SDK_LIBS})
 # ============================================================
 # 眼在手内离线复算工具（不连接机器人/相机）
 # ============================================================
-add_executable(offline_eye_in_hand
-    tools/offline_eye_in_hand.cpp
+set(OFFLINE_HAND_EYE_SOURCES
     calibration/charuco_detector.cpp
     calibration/camera_calibration.cpp
     calibration/calibration_utils.cpp
@@ -271,6 +274,10 @@ add_executable(offline_eye_in_hand
     calibration/semi_auto_eye_in_hand_calibration.cpp
     utils/calib_transform.cpp
     utils/robot_util.cpp
+)
+add_executable(offline_eye_in_hand
+    tools/offline_eye_in_hand.cpp
+    ${OFFLINE_HAND_EYE_SOURCES}
 )
 target_include_directories(offline_eye_in_hand PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -330,6 +337,22 @@ if(BUILD_TESTS)
     target_link_libraries(caitu_tests ${OpenCV_LIBS})
     enable_testing()
     add_test(NAME caitu_tests COMMAND caitu_tests)
+
+    # Synthetic pose and disk-preflight regression; no hardware connections.
+    add_executable(test_eye_to_hand_solver
+        tests/test_eye_to_hand_solver.cpp
+        calibration/eye_to_hand_calibration.cpp
+        ${OFFLINE_HAND_EYE_SOURCES}
+    )
+    target_include_directories(test_eye_to_hand_solver PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/calibration
+        ${CGX_SDK_DIR}/include
+        ${CALIBRATION_BUILD_INFO_DIR}
+    )
+    target_link_libraries(test_eye_to_hand_solver ${OpenCV_LIBS} ${CGX_SDK_LIBS})
+    add_dependencies(test_eye_to_hand_solver calibration_build_info)
+    add_test(NAME eye_to_hand_solver COMMAND test_eye_to_hand_solver)
 endif()
 
 # ============================================================

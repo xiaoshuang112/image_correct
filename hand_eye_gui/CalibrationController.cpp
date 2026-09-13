@@ -2,6 +2,7 @@
 #include "CameraImageProvider.hpp"
 #include "calibration/auto_eye_in_hand_charuco_calibration.hpp"
 #include "calibration/calibration_session.hpp"
+#include "calibration/calibration_utils.hpp"
 #include "calibration/eye_to_hand_calibration.hpp"
 #include "calibration/intrinsic_identity.hpp"
 #include "utils/robot_util.hpp"
@@ -28,10 +29,13 @@
 #endif
 
 #include <fstream>
+#include <iterator>
 #include <sstream>
 #include <filesystem>
 #include <algorithm>
 #include <array>
+#include <cmath>
+#include <stdexcept>
 
 namespace fs = std::filesystem;
 
@@ -1608,33 +1612,30 @@ void CalibrationController::calibrationThreadFunc(
         // 加载配置
         PoseGenerationConfig pose_config;
         std::string cfg_path = m_paramPath + "eye_to_hand_config.yaml";
-        cv::FileStorage cfg_fs(cfg_path, cv::FileStorage::READ);
-        if (cfg_fs.isOpened()) {
-            cv::FileNode fn;
-            fn = cfg_fs["offset_x"]; if (!fn.empty()) fn >> pose_config.offset_x;
-            fn = cfg_fs["offset_y"]; if (!fn.empty()) fn >> pose_config.offset_y;
-            fn = cfg_fs["offset_z"]; if (!fn.empty()) fn >> pose_config.offset_z;
-            fn = cfg_fs["offset_rx"]; if (!fn.empty()) fn >> pose_config.offset_rx;
-            fn = cfg_fs["offset_ry"]; if (!fn.empty()) fn >> pose_config.offset_ry;
-            fn = cfg_fs["offset_rz"]; if (!fn.empty()) fn >> pose_config.offset_rz;
-            cfg_fs["min_corners"] >> pose_config.min_corners;
-            cfg_fs["min_valid_frames"] >> pose_config.min_valid_frames;
-            cfg_fs.release();
-            APP_LOG_EVENT_INFO("calibration",
-                               "calibration_input",
-                               "config_load",
-                               {{"type", "eye_to_hand"},
-                                {"status", "loaded"},
-                                {"path", QString::fromStdString(cfg_path)}});
-        } else {
-            APP_LOG_EVENT_WARNING("calibration",
-                                  "calibration_input",
-                                  "config_load",
-                                  {{"type", "eye_to_hand"},
-                                   {"status", "missing"},
-                                   {"path", QString::fromStdString(cfg_path)},
-                                   {"using_defaults", "true"}});
+        std::string config_error;
+        if (!tryLoadPoseGenerationConfig(cfg_path, pose_config, config_error)) {
+            const QString message = QString("眼在手外配置加载失败: %1")
+                .arg(QString::fromStdString(config_error));
+            APP_LOG_EVENT_ERROR("calibration",
+                                "calibration_input",
+                                "config_load",
+                                {{"type", "eye_to_hand"},
+                                 {"status", "failed"},
+                                 {"path", QString::fromStdString(cfg_path)},
+                                 {"message", message}});
+            setStatus(message);
+            setResult(message);
+            setRuntimeStage(CalibrationRuntimeStage::Failed,
+                            "eye_to_hand_config_failed");
+            emit calibrationFinished(false, message);
+            goto done;
         }
+        APP_LOG_EVENT_INFO("calibration",
+                           "calibration_input",
+                           "config_load",
+                           {{"type", "eye_to_hand"},
+                            {"status", "loaded"},
+                            {"path", QString::fromStdString(cfg_path)}});
 
         APP_LOG_EVENT_INFO("calibration",
                            "calibration_input",
@@ -1647,7 +1648,8 @@ void CalibrationController::calibrationThreadFunc(
                             {"offset_ry", formatDoubleVector(pose_config.offset_ry)},
                             {"offset_rz", formatDoubleVector(pose_config.offset_rz)},
                             {"min_corners", QString::number(pose_config.min_corners)},
-                            {"min_valid_frames", QString::number(pose_config.min_valid_frames)}});
+                            {"min_valid_frames", QString::number(pose_config.min_valid_frames)},
+                            {"maximum_joint_step_degrees", QString::number(pose_config.maximum_joint_step_degrees)}});
 
         std::string save_dir = m_calibrationPath + "eye_to_hand/";
 
@@ -1675,6 +1677,8 @@ void CalibrationController::calibrationThreadFunc(
                                 {"error_mm", QString::number(result.reproj_error * 1000.0, 'f', 6)},
                                 {"message", QString::fromStdString(result.message)}});
 
+            // 发布前的最后取消检查；此后进入提交，发布成功即按已提交报告成功。
+            // 提交期间的新取消请求不撤销已发布结果；保存失败仍报告失败。
             if (m_cancelRequested) {
                 APP_LOG_EVENT_WARNING("calibration",
                                       "calibration_pipeline",
@@ -1686,34 +1690,74 @@ void CalibrationController::calibrationThreadFunc(
                 goto done;
             }
 
+            const std::string out_file = m_paramPath + "eye_to_hand_result.yaml";
+            if (ok && !saveCalibrationResult(
+                    out_file, "T_base_camera", result.T_base_camera,
+                    result.camera_matrix, result.dist_coeffs,
+                    result.reproj_error * 1000.0, result.valid_frames)) {
+                ok = false;
+                result.success = false;
+                result.message = "眼在手外标定结果保存失败: " + out_file;
+            }
+
             if (ok) {
-                std::string out_file = m_paramPath + "eye_to_hand_result.yaml";
-                cv::FileStorage out(out_file, cv::FileStorage::WRITE);
-                out << "T_base_camera" << result.T_base_camera;
-                out << "camera_matrix" << result.camera_matrix;
-                out << "distortion_coefficients" << result.dist_coeffs;
-                out << "reprojection_error_mm" << result.reproj_error * 1000.0;
-                out << "valid_frames" << result.valid_frames;
-                out.release();
                 APP_LOG_EVENT_INFO("calibration",
                                    "calibration_output",
                                    "result_saved",
                                    {{"type", "eye_to_hand"},
                                     {"path", QString::fromStdString(out_file)}});
 
-                // 保存相机内参（如果标定过程中更新了）
+                // 主结果已发布；内参副本保存失败仅警告，不撤销标定成功。
+                QString intrinsicsWarning;
                 if (!result.camera_matrix.empty()) {
                     const std::string cameraOutput = m_appPath + "camera_params.yaml";
-                    cv::FileStorage outCam(cameraOutput,
-                                           cv::FileStorage::WRITE);
-                    outCam << "camera_matrix" << result.camera_matrix;
-                    outCam << "distortion_coefficients" << result.dist_coeffs;
-                    outCam.release();
-                    APP_LOG_EVENT_INFO("calibration",
-                                       "calibration_output",
-                                       "intrinsics_saved",
-                                       {{"type", "eye_to_hand"},
-                                        {"path", QString::fromStdString(cameraOutput)}});
+                    const std::string temporaryOutput = cameraOutput + ".tmp.yaml";
+                    try {
+                        cv::FileStorage outCam("", cv::FileStorage::WRITE |
+                            cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_YAML);
+                        if (!outCam.isOpened())
+                            throw std::runtime_error("cannot serialize intrinsics");
+                        outCam << "camera_matrix" << result.camera_matrix;
+                        outCam << "distortion_coefficients" << result.dist_coeffs;
+                        const std::string serialized = outCam.releaseAndGetString();
+                        if (serialized.empty())
+                            throw std::runtime_error("empty intrinsics serialization");
+                        // FileStorage 不保证报告短写；完整写入、关闭并回读验证后才替换旧文件。
+                        std::ofstream output;
+                        output.exceptions(std::ios::failbit | std::ios::badbit);
+                        output.open(temporaryOutput, std::ios::binary | std::ios::trunc);
+                        output.write(serialized.data(),
+                                     static_cast<std::streamsize>(serialized.size()));
+                        output.flush();
+                        output.close();
+                        {
+                            std::ifstream verify(temporaryOutput, std::ios::binary);
+                            if (!verify.is_open())
+                                throw std::runtime_error("cannot verify " + temporaryOutput);
+                            const std::string persisted((std::istreambuf_iterator<char>(verify)),
+                                                         std::istreambuf_iterator<char>());
+                            if (verify.bad() || persisted != serialized)
+                                throw std::runtime_error("saved intrinsics YAML verification failed");
+                        }
+                        fs::rename(temporaryOutput, cameraOutput);
+                        APP_LOG_EVENT_INFO("calibration",
+                                           "calibration_output",
+                                           "intrinsics_saved",
+                                           {{"type", "eye_to_hand"},
+                                            {"path", QString::fromStdString(cameraOutput)}});
+                    } catch (const std::exception& e) {
+                        std::error_code ignored;
+                        fs::remove(temporaryOutput, ignored);
+                        intrinsicsWarning = QString("主标定结果已保存；相机内参副本保存失败 (%1): %2")
+                            .arg(QString::fromStdString(cameraOutput))
+                            .arg(QString::fromUtf8(e.what()));
+                        APP_LOG_EVENT_WARNING("calibration",
+                                              "calibration_output",
+                                              "intrinsics_save_failed",
+                                              {{"type", "eye_to_hand"},
+                                               {"path", QString::fromStdString(cameraOutput)},
+                                               {"message", intrinsicsWarning}});
+                    }
                 }
 
 
@@ -1721,21 +1765,40 @@ void CalibrationController::calibrationThreadFunc(
                 ss_et << result.T_base_camera;
                 QString resText = QString(
                     "T_base_camera:\n%1\n"
-                    "重投影误差: %2 mm\n"
+                    "平移一致性 RMS: %2 mm\n"
                     "有效帧数: %3")
                     .arg(QString::fromStdString(ss_et.str()))
                     .arg(result.reproj_error * 1000.0, 0, 'f', 4)
                     .arg(result.valid_frames);
+                if (std::isfinite(result.quality.translation_p95_mm))
+                    resText += QString("\n平移一致性 P95: %1 mm")
+                        .arg(result.quality.translation_p95_mm, 0, 'f', 4);
+                if (std::isfinite(result.quality.rotation_rms_deg))
+                    resText += QString("\n旋转一致性 RMS: %1 deg")
+                        .arg(result.quality.rotation_rms_deg, 0, 'f', 4);
+                if (std::isfinite(result.quality.rotation_p95_deg))
+                    resText += QString("\n旋转一致性 P95: %1 deg")
+                        .arg(result.quality.rotation_p95_deg, 0, 'f', 4);
+                if (!result.quality.selected_solver.empty())
+                    resText += QString("\n选用求解器: %1")
+                        .arg(QString::fromStdString(result.quality.selected_solver));
+                resText += QString("\n本次数据目录: %1")
+                    .arg(QString::fromStdString(result.data_directory));
+                if (!intrinsicsWarning.isEmpty())
+                    resText += QString("\n警告: %1").arg(intrinsicsWarning);
 
                 setResult(resText);
-                setStatus("眼在手外标定成功!");
+                const QString completionMessage = intrinsicsWarning.isEmpty()
+                    ? QString("眼在手外标定成功!")
+                    : QString("眼在手外标定成功（警告: %1）").arg(intrinsicsWarning);
+                setStatus(completionMessage);
                 setRuntimeStage(CalibrationRuntimeStage::Completed,
                                 "eye_to_hand_complete");
                 APP_LOG_EVENT_INFO("calibration",
                                    "calibration_pipeline",
                                    "success",
                                    {{"type", "eye_to_hand"}});
-                emit calibrationFinished(true, "标定成功");
+                emit calibrationFinished(true, completionMessage);
             } else {
                 APP_LOG_EVENT_ERROR("calibration",
                                     "calibration_pipeline",
@@ -1746,6 +1809,7 @@ void CalibrationController::calibrationThreadFunc(
                               QString::fromStdString(result.message)));
                 setRuntimeStage(CalibrationRuntimeStage::Failed,
                                 "eye_to_hand_failed");
+                setResult(QString::fromStdString(result.message));
                 emit calibrationFinished(false,
                     QString::fromStdString(result.message));
             }

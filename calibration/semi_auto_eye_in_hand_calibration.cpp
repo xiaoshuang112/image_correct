@@ -1535,7 +1535,8 @@ static bool estimateHandEyeTrans(
     CalibrationResult& result,
     HandEyeSolveAudit* audit,
     CalibrationRuntimeStatus* runtime_status = nullptr,
-    const CalibrationRuntimeCallback& runtime_callback = {}) {
+    const CalibrationRuntimeCallback& runtime_callback = {},
+    const char* transform_name = "T_flange_camera") {
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
@@ -1826,13 +1827,79 @@ static bool estimateHandEyeTrans(
             << " deg (medoid: " << medoid.name << ")";
     result.message = message.str();
     std::cout << "[autoCalib] " << result.message << std::endl;
-    std::cout << "[autoCalib] T_flange_camera:\n" << result.T_flange_camera << std::endl;
+    std::cout << "[autoCalib] " << transform_name << ":\n"
+              << result.T_flange_camera << std::endl;
     return true;
 }}
 
 // ============================================================
 // 手眼标定主入口（从磁盘读取数据）
 // ============================================================
+bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
+                        const std::vector<cv::Mat>& camera_poses,
+                        EyeToHandResult& result) {
+    result.success = false;
+    result.T_base_camera.release();
+    result.valid_frames = 0;
+    result.reproj_error = 0.0;
+    result.message.clear();
+    result.quality = CalibrationRuntimeStatus{};
+    auto validTransform = [](const cv::Mat& t) {
+        if (t.rows != 4 || t.cols != 4 || t.type() != CV_64FC1 || !cv::checkRange(t))
+            return false;
+        const cv::Mat r = t(cv::Rect(0, 0, 3, 3));
+        const cv::Mat identity = cv::Mat::eye(3, 3, CV_64F);
+        const cv::Mat bottom = (cv::Mat_<double>(1, 4) << 0, 0, 0, 1);
+        return cv::norm(r.t() * r - identity) < 1e-6 &&
+            std::abs(cv::determinant(r) - 1.0) < 1e-6 &&
+            cv::norm(t.row(3) - bottom) < 1e-9;
+    };
+    if (robot_poses.size() != camera_poses.size() ||
+        robot_poses.size() < static_cast<size_t>(kMinHandEyeFrames) ||
+        !std::all_of(robot_poses.begin(), robot_poses.end(), validTransform) ||
+        !std::all_of(camera_poses.begin(), camera_poses.end(), validTransform)) {
+        result.message = "位姿无效、数量不匹配或有效帧少于12";
+        return false;
+    }
+    // At least two independent rotation axes are needed. Reject static,
+    // translation-only and single-axis datasets before invoking the solvers.
+    cv::Mat rotations(3, static_cast<int>(robot_poses.size()), CV_64F);
+    const cv::Mat r0 = robot_poses.front()(cv::Rect(0, 0, 3, 3));
+    for (size_t i = 0; i < robot_poses.size(); ++i) {
+        cv::Mat relative = r0.t() * robot_poses[i](cv::Rect(0, 0, 3, 3));
+        cv::Mat rv;
+        cv::Rodrigues(relative, rv);
+        rv.copyTo(rotations.col(static_cast<int>(i)));
+    }
+    cv::Mat singular;
+    cv::SVD::compute(rotations, singular);
+    if (singular.at<double>(1) < 1e-3) {
+        result.message = "旋转激励不足：需要至少两个独立旋转轴";
+        return false;
+    }
+    // The shared equation is robot_i * X * camera_i = constant.
+    // Substituting inv(G_i) yields X=T_base_camera, with NO output inversion.
+    std::vector<cv::Mat> inverse_robot, cameras = camera_poses;
+    for (const auto& pose : robot_poses)
+        inverse_robot.push_back(calib_transform::invertTransform(pose));
+    CalibrationResult solved;
+    HandEyeSolveAudit audit;
+    result.quality.pnp_valid_frames = static_cast<int>(robot_poses.size());
+    const bool ok = estimateHandEyeTrans(result.camera_matrix, result.dist_coeffs,
+        inverse_robot, cameras, solved, &audit, &result.quality, {}, "T_base_camera");
+    result.message = solved.message;
+    if (!ok) return false;
+    if (!validTransform(solved.T_flange_camera)) {
+        result.message = "眼在手外求解输出不是有效刚体变换";
+        return false;
+    }
+    result.T_base_camera = solved.T_flange_camera.clone();
+    result.valid_frames = solved.valid_frames;
+    result.reproj_error = solved.reproj_error;
+    result.success = true;
+    return true;
+}
+
 bool calibrateHandEyeFromDisk(
     const std::string& save_dir,
     cv::Mat& camera_matrix,

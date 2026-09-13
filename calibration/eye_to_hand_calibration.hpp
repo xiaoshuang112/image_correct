@@ -14,6 +14,7 @@
 #include "basestruct.h"
 
 #include "det.h"
+#include "calibration_runtime_status.hpp"
 
 // 眼在手外标定结果
 struct EyeToHandResult {
@@ -22,9 +23,18 @@ struct EyeToHandResult {
     cv::Mat camera_matrix;       // 3x3 相机内参
     cv::Mat dist_coeffs;        // 畸变系数
     int valid_frames = 0;        // 参与标定的有效帧数
-    double reproj_error = 0.0;   // 重投影误差（平移一致性）
+    double reproj_error = 0.0;   // 法兰坐标系下标定板平移一致性 RMS（m），不是像素误差
     std::string message;
+    std::string data_directory; // 本次采集目录，或离线重放的输入目录
+    CalibrationRuntimeStatus quality;
 };
+
+// 无硬件求解：G=T_base_flange, C=T_camera_board（平移单位 m）。
+// 返回 X=T_base_camera，使 inv(G_i)*X*C_i 为固定的 T_flange_board。
+// 复用眼在手内的五算法共识、MAD 和质量门限；失败清空旧解。
+bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
+                        const std::vector<cv::Mat>& camera_poses,
+                        EyeToHandResult& result);
 
 // 位姿生成配置
 struct PoseGenerationConfig {

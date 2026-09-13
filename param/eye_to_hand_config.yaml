@@ -19,4 +19,6 @@ offset_rz: [10, 0, -10]
 # 单帧最小有效 ChArUco 角点数（低于此值跳过）
 min_corners: 12
 # 最小有效帧数（低于此值放弃标定）
-min_valid_frames: 10
+min_valid_frames: 12
+# 相邻采集位姿的最大关节步长 (deg)
+maximum_joint_step_degrees: 60

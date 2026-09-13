@@ -8,7 +8,6 @@
 #include <sstream>
 #include <iomanip>
 #include <algorithm>
-#include <numeric>
 #include <array>
 #include <cmath>
 #include <filesystem>
@@ -17,750 +16,540 @@
 
 #include "utils/robot_util.hpp"
 #include "utils/calib_transform.hpp"
-#include "hand_eye_gui/DiagnosticLogger.hpp"
+#include "candidate_planner.hpp"
+#include <set>
+#include <cctype>
+#include <stdexcept>
 
 using namespace calib_transform;
-
-// ============================================================
-// 眼在手外手眼矩阵精化
-// ============================================================
-// 对于眼在手外，T_base_camera * T_camera_calib_i = T_base_flange_i * T_flange_calib
-// 精化目标：Z_i = inv(T_base_flange_i) * X * T_camera_calib_i 的平移方差最小
-// 其中 X = T_base_camera, Z_i = T_flange_calib（应为常量）
-static cv::Mat refineEyeToHandConsistency(
-    const cv::Mat& X_init,
-    const std::vector<cv::Mat>& robot_poses,   // T_base_flange
-    const std::vector<cv::Mat>& camera_poses) { // T_camera_calib
-
-    int n = (int)robot_poses.size();
-    if (n < 3) return X_init.clone();
-
-    // 参数化 p = [tx, ty, tz, rx, ry, rz]
-    cv::Mat p(6, 1, CV_64F);
-    cv::Mat R_init = X_init(cv::Rect(0, 0, 3, 3)).clone();
-    cv::Mat rvec_init;
-    cv::Rodrigues(R_init, rvec_init);
-    p.at<double>(0) = X_init.at<double>(0, 3);
-    p.at<double>(1) = X_init.at<double>(1, 3);
-    p.at<double>(2) = X_init.at<double>(2, 3);
-    p.at<double>(3) = rvec_init.at<double>(0);
-    p.at<double>(4) = rvec_init.at<double>(1);
-    p.at<double>(5) = rvec_init.at<double>(2);
-
-    auto buildX = [](const cv::Mat& params) -> cv::Mat {
-        cv::Mat R(3, 3, CV_64F);
-        cv::Mat rv(3, 1, CV_64F);
-        rv.at<double>(0) = params.at<double>(3);
-        rv.at<double>(1) = params.at<double>(4);
-        rv.at<double>(2) = params.at<double>(5);
-        cv::Rodrigues(rv, R);
-        cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-        R.copyTo(T(cv::Rect(0, 0, 3, 3)));
-        T.at<double>(0, 3) = params.at<double>(0);
-        T.at<double>(1, 3) = params.at<double>(1);
-        T.at<double>(2, 3) = params.at<double>(2);
-        return T;
-    };
-
-    // Z_i = inv(T_base_flange_i) * X * T_camera_calib_i
-    auto eval = [&](const cv::Mat& X,
-                    std::vector<cv::Mat>& residuals,
-                    cv::Mat& mean_t) -> double {
-        std::vector<cv::Mat> tvecs(n);
-        mean_t = cv::Mat::zeros(3, 1, CV_64F);
-        for (int i = 0; i < n; i++) {
-            cv::Mat inv_robot = invertTransform(robot_poses[i]);
-            cv::Mat Z = inv_robot * X * camera_poses[i];
-            tvecs[i] = Z(cv::Rect(3, 0, 1, 3)).clone();
-            mean_t += tvecs[i];
-        }
-        mean_t /= n;
-        double cost = 0.0;
-        residuals.resize(n);
-        for (int i = 0; i < n; i++) {
-            residuals[i] = tvecs[i] - mean_t;
-            cost += residuals[i].dot(residuals[i]);
-        }
-        return cost;
-    };
-
-    const double eps_step = 1e-8;
-    const int max_iters = 100;
-    double lambda = 1e-6;
-    cv::Mat X = buildX(p);
-    std::vector<cv::Mat> res;
-    cv::Mat mean_t;
-    double prev_cost = eval(X, res, mean_t);
-    std::cout << "[eyeToHand/refine] 初始方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
-
-    for (int iter = 0; iter < max_iters; iter++) {
-        cv::Mat R_full(3 * n, 1, CV_64F);
-        for (int i = 0; i < n; i++) {
-            R_full.at<double>(3 * i,     0) = res[i].at<double>(0);
-            R_full.at<double>(3 * i + 1, 0) = res[i].at<double>(1);
-            R_full.at<double>(3 * i + 2, 0) = res[i].at<double>(2);
-        }
-
-        cv::Mat J_full(3 * n, 6, CV_64F);
-        for (int j = 0; j < 6; j++) {
-            cv::Mat p_pert = p.clone();
-            p_pert.at<double>(j) += eps_step;
-            cv::Mat X_pert = buildX(p_pert);
-            std::vector<cv::Mat> res_pert;
-            cv::Mat mean_pert;
-            eval(X_pert, res_pert, mean_pert);
-            for (int i = 0; i < n; i++) {
-                J_full.at<double>(3 * i,     j) = (res_pert[i].at<double>(0) - res[i].at<double>(0)) / eps_step;
-                J_full.at<double>(3 * i + 1, j) = (res_pert[i].at<double>(1) - res[i].at<double>(1)) / eps_step;
-                J_full.at<double>(3 * i + 2, j) = (res_pert[i].at<double>(2) - res[i].at<double>(2)) / eps_step;
-            }
-        }
-
-        cv::Mat H = J_full.t() * J_full;
-        cv::Mat g = J_full.t() * R_full;
-        for (int j = 0; j < 6; j++)
-            H.at<double>(j, j) += lambda;
-
-        cv::Mat dp;
-        if (!cv::solve(H, -g, dp, cv::DECOMP_SVD))
-            break;
-
-        cv::Mat p_new = p + dp;
-        cv::Mat X_new = buildX(p_new);
-        std::vector<cv::Mat> res_new;
-        cv::Mat mean_new;
-        double cost = eval(X_new, res_new, mean_new);
-
-        if (cost < prev_cost) {
-            p = p_new;
-            X = X_new;
-            res = res_new;
-            mean_t = mean_new;
-            lambda *= 0.3;
-            if (iter % 10 == 0)
-                std::cout << "[eyeToHand/refine]   iter " << iter << ": "
-                          << (cost * 1e6) << " mm²" << std::endl;
-            if (std::abs(prev_cost - cost) < 1e-14 || prev_cost == 0.0)
-                break;
-            prev_cost = cost;
-        } else {
-            lambda *= 3.0;
-        }
-    }
-
-    std::cout << "[eyeToHand/refine] 精化后方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
-    return X;
-}
 
 // ============================================================
 // Phase 2: 位姿生成 + IK 过滤
 // ============================================================
 static bool generateEyeToHandCandidates(
     int robot_handle,
-    const double flangeEuleInit[6],   // 示教原点的法兰欧拉位姿
+    const double flangeEuleInit[6],
     const PoseGenerationConfig& config,
-    std::vector<std::array<double, 6>>& candidates) {
+    std::vector<PoseCandidate>& candidates,
+    std::string& error) {
 
     candidates.clear();
+    double initial_joint[6]{};
+    if (cr_get_jointActualPos((RobotHandle)robot_handle, initial_joint) != sucess) {
+        error = "读取候选规划初始关节角失败";
+        return false;
+    }
+    if (!std::all_of(initial_joint, initial_joint + 6,
+                     [](double value) { return std::isfinite(value); })) {
+        error = "候选规划初始关节角包含非有限值";
+        return false;
+    }
+    if (!std::all_of(flangeEuleInit, flangeEuleInit + 6,
+                     [](double value) { return std::isfinite(value); })) {
+        error = "示教原点法兰欧拉位姿包含非有限值";
+        return false;
+    }
+    if (!std::isfinite(config.maximum_joint_step_degrees) ||
+        config.maximum_joint_step_degrees <= 0.0 ||
+        config.maximum_joint_step_degrees > 180.0) {
+        error = "maximum_joint_step_degrees must be in (0, 180]";
+        return false;
+    }
 
-    // 按 config 循环生成偏移
-    double euler[6], joint[6];
+    // Keep the complete offset product (729 candidates with the default config).
+    double euler[6]{}, joint[6]{};
+    int source_index = 0;
     for (double dx : config.offset_x) {
     for (double dy : config.offset_y) {
     for (double dz : config.offset_z) {
     for (double drx : config.offset_rx) {
     for (double dry : config.offset_ry) {
     for (double drz : config.offset_rz) {
+        if (robotMotionCancellationRequested()) {
+            error = "标定已取消";
+            return false;
+        }
         euler[0] = flangeEuleInit[0] + dx;
         euler[1] = flangeEuleInit[1] + dy;
         euler[2] = flangeEuleInit[2] + dz;
         euler[3] = flangeEuleInit[3] + drx;
         euler[4] = flangeEuleInit[4] + dry;
         euler[5] = flangeEuleInit[5] + drz;
-
-        if (convertFlangeOulePos2Joint(robot_handle, euler, joint)) {
-            std::array<double, 6> cand;
-            std::copy(joint, joint + 6, cand.data());
-            candidates.push_back(cand);
+        PoseCandidate candidate{};
+        candidate.source_index = source_index++;
+        if (convertFlangeOulePos2Joint(robot_handle, euler, joint) &&
+            cr_Eule2AxisAngle(euler, candidate.axis_angle) == sucess) {
+            std::copy(joint, joint + 6, candidate.joint);
+            std::copy(euler, euler + 6, candidate.flange_euler);
+            candidates.push_back(candidate);
         }
     }}}}}}
 
-    std::cout << "[eyeToHand] 位姿生成: " << candidates.size() << "/"
-              << (config.offset_x.size() * config.offset_y.size() *
-                  config.offset_z.size() * config.offset_rx.size() *
-                  config.offset_ry.size() * config.offset_rz.size())
-              << " IK 可达" << std::endl;
-
+    const auto reachable = candidates.size();
+    CandidatePlanningOptions options;
+    options.maximum_candidates = reachable;
+    options.maximum_joint_step_degrees = config.maximum_joint_step_degrees;
+    options.joint_resolver = [robot_handle](
+        const PoseCandidate& candidate, const std::array<double, 6>& reference,
+        std::array<double, 6>& resolved, int& error_code) {
+        double target[6]{}, reference_joint[6]{};
+        std::copy(candidate.axis_angle, candidate.axis_angle + 6, target);
+        std::copy(reference.begin(), reference.end(), reference_joint);
+        const CRresult ret = cr_kineInverse((RobotHandle)robot_handle,
+                                            target, reference_joint, resolved.data());
+        error_code = static_cast<int>(ret);
+        return ret == sucess;
+    };
+    CandidatePlanningReport report;
+    if (!planPoseCandidates(candidates, initial_joint, options, report, error))
+        return false;
+    std::cout << "[eyeToHand] 候选=" << source_index << ", IK可达=" << reachable
+              << ", 选取=" << report.selected_candidates
+              << ", 过渡=" << report.transition_candidates
+              << ", 不连通=" << report.disconnected_candidates
+              << ", 最大关节跳变=" << report.maximum_joint_step_degrees
+              << " deg" << std::endl;
     return !candidates.empty();
 }
 
-// ============================================================
-// Phase 3: 逐点采集
-// ============================================================
+static std::string imagePath(const std::string& directory, std::size_t index) {
+    std::ostringstream path;
+    path << directory << "/" << std::setw(3) << std::setfill('0') << index << ".jpg";
+    return path.str();
+}
+
+static bool waitForSettling() {
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    while (std::chrono::steady_clock::now() < deadline) {
+        if (robotMotionCancellationRequested()) return false;
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    return !robotMotionCancellationRequested();
+}
+
+// Return -1 for cancellation, -2 for a fatal motion/read/write failure.
 static int executeEyeToHandCollection(
     int robot_handle,
-    char* pchRobotIP,
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
-    const std::vector<std::array<double, 6>>& candidates,
+    const std::vector<PoseCandidate>& candidates,
     const std::string& save_dir,
-    std::vector<cv::Mat>& robot_poses,    // T_base_flange
+    std::vector<cv::Mat>& robot_poses,
     int min_corners,
+    double maximum_joint_step_degrees,
+    std::string& error,
     AI_det_callback callback = nullptr) {
 
     robot_poses.clear();
-
-    if (save_dir.empty()) {
-        std::cerr << "[eyeToHand] 保存目录为空" << std::endl;
-        return 0;
-    }
-
-    // 准备保存目录
-    {
-        namespace fs = std::filesystem;
-        if (fs::exists(save_dir))
-            fs::remove_all(save_dir);
-        fs::create_directories(save_dir);
-    }
-    std::string pos_file = save_dir + "/rob_pos.csv";
-    std::string joint_file = save_dir + "/rob_joint.csv";
-
-    int total = (int)candidates.size();
+    const int total = static_cast<int>(candidates.size());
     int captured = 0;
-
-    for (int i = 0; i < total; i++) {
-        std::cout << "\r[eyeToHand] 采集进度: " << (i + 1) << "/" << total
-                  << " (有效: " << captured << ")" << std::flush;
-
-        CRresult ret = moveToJointPos(robot_handle, candidates[i].data());
-        if (ret != sucess) {
-            if (ret == robot_motion_cancelled ||
-                robotMotionCancellationRequested()) {
-                APP_LOG_EVENT_WARNING("calibration.collection",
-                                      "eye_to_hand_collection",
-                                      "cancelled",
-                                      {{"index", QString::number(i)},
-                                       {"captured", QString::number(captured)},
-                                       {"total", QString::number(total)}});
-                return -1;
+    int empty_frames = 0, rejected_frames = 0, missed_candidates = 0;
+    try {
+        std::ofstream poses(save_dir + "/rob_pos.csv");
+        std::ofstream joints(save_dir + "/rob_joint.csv");
+        std::ofstream eulers(save_dir + "/rob_eule.csv");
+        for (auto* stream : {&poses, &joints, &eulers}) {
+            stream->exceptions(std::ios::failbit | std::ios::badbit);
+            *stream << std::fixed << std::setprecision(9);
+        }
+        for (int i = 0; i < total; ++i) {
+            if (robotMotionCancellationRequested()) return -1;
+            double current_joint[6]{};
+            if (cr_get_jointActualPos((RobotHandle)robot_handle, current_joint) != sucess ||
+                !std::all_of(current_joint, current_joint + 6,
+                             [](double value) { return std::isfinite(value); }) ||
+                // candidateMaximumJointStep uses remainder(delta, 360) for J6,
+                // matching moveToJointPos's nearest-equivalent-angle normalization.
+                candidateMaximumJointStep(current_joint, candidates[i].joint) >
+                    maximum_joint_step_degrees) {
+                error = "运动前实际关节读取失败或关节跳变超限";
+                return -2;
             }
-            continue;
-        }
-
-        // 采集新帧（失败时重试一次，避免偶发坏帧）
-        cv::Mat frame = camera->captureOneFrame(1500);
-        if (frame.empty()) continue;
-
-        // 仅检测角点（不需要相机内参），验证标定板可见
-        std::vector<cv::Point2f> corners;
-        std::vector<int> ids;
-        if (!detector.detectCorners(frame, corners, ids)) {
-            frame = camera->captureOneFrame(1500);
-            if (frame.empty()) continue;
-            if (!detector.detectCorners(frame, corners, ids))
-                continue;
-        }
-        if ((int)ids.size() < min_corners)
-            continue;
-
-        // 获取实际 TCP 位姿
-        double tcp_aa[6];
-        if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess)
-            continue;
-
-        // TCP 轴角 → 法兰轴角（与 axisAnglePoseToTransform 匹配）
-        double flange_aa[6];
-        if (!convertTcpAxisPos2FlangPos(robot_handle, tcp_aa, flange_aa))
-            continue;
-
-        // 保存图像
-        {
-            std::string img_name = save_dir + "/" +
-                (captured < 10 ? "00" : captured < 100 ? "0" : "") +
-                std::to_string(captured) + ".jpg";
-            cv::imwrite(img_name, frame);
-
-            // 回调通知调用者（传递图像路径 + 进度）
-            if (callback) {
-                int progress = (i + 1) * 100 / total;
-                int call_ret = callback((char*)img_name.c_str(),
-                                        (int)img_name.length(), progress);
-                if (-1 == call_ret) {
-                    std::cerr << "\r[eyeToHand] 用户取消了  采集进度" << std::endl;
+            const CRresult ret = moveToJointPos(robot_handle, candidates[i].joint);
+            if (ret != sucess) {
+                if (ret == robot_motion_cancelled)
                     return -1;
+                error = "机器人运动失败: " + std::to_string(ret);
+                return -2;
+            }
+            if (robotMotionCancellationRequested()) return -1;
+            if (!candidates[i].capture) continue;
+            if (!waitForSettling()) return -1;
+            // Drain stale frames after the robot has settled.
+            for (int discard = 0; discard < 2; ++discard) {
+                if (robotMotionCancellationRequested()) return -1;
+                camera->captureOneFrame(1500);
+            }
+            cv::Mat frame;
+            bool detected = false;
+            for (int attempt = 0; attempt < 3; ++attempt) {
+                if (robotMotionCancellationRequested()) return -1;
+                frame = camera->captureOneFrame(1500);
+                if (robotMotionCancellationRequested()) return -1;
+                if (frame.empty()) {
+                    ++empty_frames;
+                    continue;
+                }
+                std::vector<cv::Point2f> corners;
+                std::vector<int> ids;
+                if (detector.detectCorners(frame, corners, ids) &&
+                    ids.size() == corners.size() &&
+                    static_cast<int>(ids.size()) >= std::max(12, min_corners)) {
+                    detected = true;
+                    break;
+                }
+                ++rejected_frames;
+            }
+            if (!detected) {
+                ++missed_candidates;
+                continue;
+            }
+
+            // Preserve TCP -> flange semantics; joints are measured, not commanded.
+            double tcp_aa[6]{}, flange_aa[6]{}, actual_joint[6]{}, euler[6]{};
+            if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+                !convertTcpAxisPos2FlangPos(robot_handle, tcp_aa, flange_aa) ||
+                cr_get_jointActualPos((RobotHandle)robot_handle, actual_joint) != sucess ||
+                cr_AxisAngle2Eule(flange_aa, euler) != sucess) {
+                error = "读取实际关节/法兰位姿失败";
+                return -2;
+            }
+            for (const double* values : {flange_aa, actual_joint, euler}) {
+                if (!std::all_of(values, values + 6,
+                                 [](double value) { return std::isfinite(value); })) {
+                    error = "实际关节/法兰位姿包含非有限值";
+                    return -2;
                 }
             }
-        }
-
-        // 保存 pos（法兰轴角 mm,deg）
-        {
-            std::ofstream f(pos_file, std::ios::app);
-            f << std::fixed << std::setprecision(3);
-            for (int j = 0; j < 6; j++)
-                f << flange_aa[j] << (j < 5 ? "," : "\n");
-        }
-        {
-            std::ofstream f(joint_file, std::ios::app);
-            f << std::fixed << std::setprecision(3);
-            for (int j = 0; j < 6; j++)
-                f << candidates[i][j] << (j < 5 ? "," : "\n");
-        }
-
-        // 保存欧拉角位姿（法兰欧拉 mm,deg）
-        {
-            double eule[6];
-            if (cr_AxisAngle2Eule(flange_aa, eule) == sucess) {
-                std::ofstream f(save_dir + "/rob_eule.csv", std::ios::app);
-                f << std::fixed << std::setprecision(3);
-                for (int j = 0; j < 6; j++)
-                    f << eule[j] << (j < 5 ? "," : "\n");
+            if (robotMotionCancellationRequested()) return -1;
+            const std::string path = imagePath(save_dir, captured);
+            if (!cv::imwrite(path, frame))
+                throw std::runtime_error("图像写入失败: " + path);
+            for (int axis = 0; axis < 6; ++axis) {
+                poses << flange_aa[axis] << (axis < 5 ? "," : "\n");
+                joints << actual_joint[axis] << (axis < 5 ? "," : "\n");
+                eulers << euler[axis] << (axis < 5 ? "," : "\n");
             }
+            poses.flush();
+            joints.flush();
+            eulers.flush();
+            robot_poses.push_back(axisAnglePoseToTransform(flange_aa));
+            ++captured;
+            std::cout << "[eyeToHand] 采集进度: " << i + 1 << "/" << total
+                      << " (有效: " << captured << ")" << std::endl;
+            // Only announce frames once their corresponding rows are written.
+            if (callback && callback(const_cast<char*>(path.c_str()),
+                                     static_cast<int>(path.size()),
+                                     (i + 1) * 100 / total) == -1)
+                return -1;
         }
-
-        // 保存内存中的位姿用于标定
-        robot_poses.push_back(axisAnglePoseToTransform(flange_aa));
-        captured++;
+        poses.close();
+        joints.close();
+        eulers.close();
+    } catch (const std::exception& exception) {
+        error = "采集失败: " + std::string(exception.what());
+        return -2;
     }
-
-    std::cout << "\n[eyeToHand] 采集完成，有效帧: " << captured << "/" << total << std::endl;
+    error = "采集统计: 有效=" + std::to_string(captured) +
+            ", 未检出合格标定板候选=" + std::to_string(missed_candidates) +
+            ", 空帧=" + std::to_string(empty_frames) +
+            ", 检测失败或角点不足=" + std::to_string(rejected_frames);
+    std::cout << "[eyeToHand] " << error << std::endl;
     return captured;
 }
 
-// ============================================================
-// Phase 3.5: 从已采集的 ChArUco 图像标定相机内参
-// ============================================================
-// ============================================================
-// Phase 3.75: 用标定后的相机内参计算每帧标定板位姿
-// ============================================================
+// Strict row parsing prevents a malformed CSV row from shifting every later image.
+static bool loadMatchedRobotPoses(const std::string& directory,
+                                 std::vector<cv::Mat>& poses,
+                                 std::string& error) {
+    namespace fs = std::filesystem;
+    const bool axis_angle = fs::exists(fs::path(directory) / "rob_pos.csv");
+    const auto path = fs::path(directory) / (axis_angle ? "rob_pos.csv" : "rob_eule.csv");
+    std::ifstream input(path);
+    if (!input) {
+        error = "无法读取机器人位姿: " + path.string();
+        return false;
+    }
+    poses.clear();
+    std::string line;
+    while (std::getline(input, line)) {
+        std::istringstream row(line);
+        double values[6]{};
+        for (int axis = 0; axis < 6; ++axis) {
+            char comma = 0;
+            if (!(row >> values[axis]) || !std::isfinite(values[axis]) ||
+                (axis < 5 && (!(row >> comma) || comma != ','))) {
+                error = "机器人位姿 CSV 格式错误，第 " + std::to_string(poses.size() + 1) + " 行";
+                return false;
+            }
+        }
+        row >> std::ws;
+        if (!row.eof()) {
+            error = "机器人位姿 CSV 存在多余字段，第 " + std::to_string(poses.size() + 1) + " 行";
+            return false;
+        }
+        double axis_pose[6]{};
+        if (axis_angle) {
+            std::copy(values, values + 6, axis_pose);
+        } else if (cr_Eule2AxisAngle(values, axis_pose) != sucess) {
+            error = "机器人欧拉位姿转换失败";
+            return false;
+        }
+        poses.push_back(axisAnglePoseToTransform(axis_pose));
+    }
+    if (input.bad() || poses.empty()) {
+        error = "机器人位姿为空或读取失败";
+        return false;
+    }
+    return true;
+}
+
+static bool validateImagePoseMatching(const std::string& directory,
+                                     std::size_t pose_count, std::string& error) {
+    namespace fs = std::filesystem;
+    if (fs::exists(fs::path(directory) / ".collection_incomplete")) {
+        error = "采集未完整写入，拒绝重放: " + directory;
+        return false;
+    }
+    std::set<std::string> expected;
+    for (std::size_t i = 0; i < pose_count; ++i)
+        expected.insert(fs::path(imagePath(directory, i)).filename().string());
+    for (const auto& entry : fs::directory_iterator(directory)) {
+        std::string extension = entry.path().extension().string();
+        std::transform(extension.begin(), extension.end(), extension.begin(),
+                       [](unsigned char value) { return static_cast<char>(std::tolower(value)); });
+        if (extension != ".jpg" && extension != ".jpeg" && extension != ".png" &&
+            extension != ".bmp" && extension != ".tif" && extension != ".tiff")
+            continue;
+        if (!entry.is_regular_file() || expected.erase(entry.path().filename().string()) != 1) {
+            error = "存在多余或非标准编号图像: " + entry.path().string();
+            return false;
+        }
+    }
+    if (pose_count == 0 || !expected.empty()) {
+        error = expected.empty() ? "没有机器人位姿" : "缺少匹配图像: " + *expected.begin();
+        return false;
+    }
+    return true;
+}
+
 static bool computeBoardPosesFromImages(
-    const std::string& save_dir,
-    CharucoDetector& detector,
-    const cv::Mat& camera_matrix,
-    const cv::Mat& dist_coeffs,
-    std::vector<cv::Mat>& camera_poses,
-   std::vector<cv::Mat> &robot_poses) {
-
+    const std::string& directory, CharucoDetector& detector,
+    const cv::Mat& camera_matrix, const cv::Mat& dist_coeffs,
+    std::vector<cv::Mat>& camera_poses, std::vector<cv::Mat>& robot_poses,
+    std::string& error) {
     camera_poses.clear();
-    std::cout << "[eyeToHand] 计算标定板位姿..." << std::endl;
-    std::vector<cv::Mat> robot_poses_dst;
-    robot_poses_dst.reserve(robot_poses.size());
-    // 临时设置相机内参用于 detectPose
+    if (!validateImagePoseMatching(directory, robot_poses.size(), error)) return false;
     detector.setCameraParams(camera_matrix, dist_coeffs);
-
-    for (int i = 0; ; i++) {
-        std::ostringstream ss;
-        ss << save_dir << "/" << (i < 10 ? "00" : i < 100 ? "0" : "") << i << ".jpg";
-        std::string path = ss.str();
-
-        cv::Mat img = cv::imread(path);
-        if (img.empty()) break;
-
+    std::vector<cv::Mat> matched_robot, matched_camera;
+    for (std::size_t i = 0; i < robot_poses.size(); ++i) {
+        const auto path = imagePath(directory, i);
+        const cv::Mat image = cv::imread(path);
+        if (image.empty()) {
+            error = "无法读取匹配图像: " + path;
+            return false;
+        }
         cv::Mat rvec, tvec;
         std::vector<cv::Point2f> corners;
         std::vector<int> ids;
-        if (!detector.detectPose(img, rvec, tvec, corners, ids, 4)) {
-            std::cout << "[eyeToHand]   " << path << " 位姿估计失败，跳过" << std::endl;
+        if (!detector.detectPose(image, rvec, tvec, corners, ids, 12) ||
+            ids.size() < 12 || ids.size() != corners.size()) {
+            std::cout << "[eyeToHand] PnP失败或角点不足12，跳过配对帧: " << path << std::endl;
             continue;
         }
-        if (static_cast<size_t>(i) >= robot_poses.size()) {
-            std::cerr << "[eyeToHand] 图像数量超过机器人位姿数量，停止位姿计算: "
-                      << i + 1 << "/" << robot_poses.size() << std::endl;
-            return false;
-        }
-        robot_poses_dst.push_back(robot_poses[static_cast<size_t>(i)]);
-
-        camera_poses.push_back(rvecTvecToTransform(rvec, tvec));
+        matched_robot.push_back(robot_poses[i]);
+        matched_camera.push_back(rvecTvecToTransform(rvec, tvec));
     }
-    robot_poses = robot_poses_dst;
-    std::cout << "[eyeToHand] 成功计算 " << camera_poses.size() << " 帧位姿" << std::endl;
-    return !camera_poses.empty();
-}
-
-// 手眼标定 + 一致性精化（返回 4x4 T_camera_base，失败返回空 Mat）
-static cv::Mat runHandEyeCalibration(
-    const std::vector<cv::Mat>& R_gripper2base,
-    const std::vector<cv::Mat>& t_gripper2base,
-    const std::vector<cv::Mat>& R_target2cam,
-    const std::vector<cv::Mat>& t_target2cam,
-    const std::vector<cv::Mat>& robot_poses,   // T_base_flange
-    const std::vector<cv::Mat>& camera_poses,  // T_camera_calib
-    cv::HandEyeCalibrationMethod method) {
-    cv::Mat R_cam_gripper, t_cam_gripper;
-    try {
-        cv::calibrateHandEye(R_gripper2base, t_gripper2base,
-                              R_target2cam, t_target2cam,
-                              R_cam_gripper, t_cam_gripper,
-                              method);
-    } catch (const cv::Exception&) {
-        return cv::Mat();
-    }
-    cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-    R_cam_gripper.copyTo(T(cv::Rect(0, 0, 3, 3)));
-    t_cam_gripper.copyTo(T(cv::Rect(3, 0, 1, 3)));
-    // return T;
-    return refineEyeToHandConsistency(T, robot_poses, camera_poses);
-}
-
-// 评估眼在手外平移一致性
-// Z_i = inv(T_base_flange_i) * X * T_camera_calib_i, 返回 RMS 平移偏差 (m)
-static double evaluateTranslationConsistency(
-    const std::vector<cv::Mat>& robot_poses,   // T_base_flange
-    const std::vector<cv::Mat>& camera_poses,  // T_camera_calib
-    const cv::Mat& X,                          // T_camera_base
-    std::vector<double>& per_frame_errors) {   // output
-    int n = (int)robot_poses.size();
-    double sum_err = 0.0;
-    cv::Mat mean_t(3, 1, CV_64F, cv::Scalar(0));
-    for (int i = 0; i < n; i++) {
-        cv::Mat inv_robot = invertTransform(robot_poses[i]);
-        cv::Mat Z = inv_robot * X * camera_poses[i];
-        mean_t += Z(cv::Rect(3, 0, 1, 3));
-    }
-    mean_t /= n;
-    per_frame_errors.resize(n);
-    for (int i = 0; i < n; i++) {
-        cv::Mat inv_robot = invertTransform(robot_poses[i]);
-        cv::Mat Z = inv_robot * X * camera_poses[i];
-        cv::Mat d = Z(cv::Rect(3, 0, 1, 3)) - mean_t;
-        per_frame_errors[i] = std::sqrt(d.dot(d));
-        sum_err += d.dot(d);
-    }
-    return std::sqrt(sum_err / n);
-}
-
-// ============================================================
-// Phase 4: 眼在手外标定
-// ============================================================
-static bool eyeToHandCalibrate(
-    std::vector<cv::Mat>& robot_poses,   // T_base_flange (含离群过滤)
-    std::vector<cv::Mat>& camera_poses,  // T_camera_calib (含离群过滤)
-    EyeToHandResult& result) {
-
-    int valid = (int)robot_poses.size();
-    if (valid < 5) {
-        result.message = "有效帧数不足: " + std::to_string(valid) + " (need >=5)";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    result.valid_frames = valid;
-
-    // 眼在手外：传入 inv(T_base_flange) 作为 gripper2base
-    // T_camera_calib 作为 target2cam
-    // 输出 = T_camera_base (base 在 camera 下的位姿)
-    std::vector<cv::Mat> R_gripper2base, t_gripper2base;
-    std::vector<cv::Mat> R_target2cam, t_target2cam;
-    for (int i = 0; i < valid; i++) {
-        cv::Mat inv_robot = invertTransform(robot_poses[i]);   // T_flange_base
-        R_gripper2base.push_back(inv_robot(cv::Rect(0, 0, 3, 3)).clone());
-        t_gripper2base.push_back(inv_robot(cv::Rect(3, 0, 1, 3)).clone());
-        R_target2cam.push_back(camera_poses[i](cv::Rect(0, 0, 3, 3)).clone());
-        t_target2cam.push_back(camera_poses[i](cv::Rect(3, 0, 1, 3)).clone());
-    }
-
-    struct CalibMethodResult {
-        std::string name;
-        cv::Mat T;
-        double reproj_error;
-        std::vector<double> per_frame_errors;
-    };
-    std::vector<CalibMethodResult> calib_results;
-    std::vector<cv::HandEyeCalibrationMethod> calib_methods = {
-        cv::CALIB_HAND_EYE_TSAI, cv::CALIB_HAND_EYE_PARK, cv::CALIB_HAND_EYE_HORAUD};
-    std::vector<std::string> calib_method_names = {"TSAI", "PARK", "HORAUD"};
-
-    for (size_t m = 0; m < calib_methods.size(); m++) {
-        cv::Mat T_refined = runHandEyeCalibration(
-            R_gripper2base, t_gripper2base, R_target2cam, t_target2cam,
-            robot_poses, camera_poses, calib_methods[m]);
-        if (T_refined.empty()) {
-            std::cerr << "[eyeToHand] " << calib_method_names[m] << " 标定失败" << std::endl;
-            continue;
-        }
-
-        // 评估平移一致性
-        std::vector<double> vErr;
-        double rms = evaluateTranslationConsistency(robot_poses, camera_poses, T_refined, vErr);
-        calib_results.push_back({calib_method_names[m], T_refined, rms, vErr});
-
-        std::cout << "[eyeToHand] " << calib_method_names[m]
-                  << " -> 平移一致性误差: " << (std::sqrt(rms) * 1000.0)
-                  << " mm" << std::endl;
-    }
-
-    if (calib_results.empty()) {
-        result.message = "所有手眼标定方法均失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // 选误差最小的结果
-    size_t best_idx = 0;
-    for (size_t i = 1; i < calib_results.size(); i++) {
-        if (calib_results[i].reproj_error < calib_results[best_idx].reproj_error)
-            best_idx = i;
-    }
-
-    // ---- 离群过滤 ----
-    {
-        std::vector<double>& vErr = calib_results[best_idx].per_frame_errors;
-        double thresh = 0.001;  // 2mm
-        int removed = 0;
-        for (int i = valid - 1; i >= 0; i--) {
-            if (vErr[i] > thresh) {
-                robot_poses.erase(robot_poses.begin() + i);
-                camera_poses.erase(camera_poses.begin() + i);
-                R_gripper2base.erase(R_gripper2base.begin() + i);
-                t_gripper2base.erase(t_gripper2base.begin() + i);
-                R_target2cam.erase(R_target2cam.begin() + i);
-                t_target2cam.erase(t_target2cam.begin() + i);
-                removed++;
-            }
-        }
-        if (removed > 0) {
-            std::cout << "[eyeToHand] 离群剔除: " << removed
-                      << " 帧 (阈值 " << thresh * 1000.0 << "mm), 剩余 "
-                      << robot_poses.size() << " 帧" << std::endl;
-            valid = (int)robot_poses.size();
-            if (valid < 5) {
-                result.message = "离群过滤后有效帧数不足: " + std::to_string(valid);
-                std::cerr << "[eyeToHand] " << result.message << std::endl;
-                return false;
-            }
-
-            // 用过滤后的数据，以最优方法重新标定
-            cv::Mat T_new = runHandEyeCalibration(
-                R_gripper2base, t_gripper2base, R_target2cam, t_target2cam,
-                robot_poses, camera_poses, calib_methods[best_idx]);
-            if (!T_new.empty())
-                calib_results[best_idx].T = T_new;
-        }
-    }
-
-    valid = (int)robot_poses.size();
-    cv::Mat T_camera_base = calib_results[best_idx].T.clone();
-
-    // 重新评估剔除后的误差
-    {
-        std::vector<double> vErr;
-        double rms_err = evaluateTranslationConsistency(robot_poses, camera_poses, T_camera_base, vErr);
-        std::cout << "[eyeToHand] 剔除后误差: " << (rms_err * 1000.0)
-                  << " mm (" << valid << " 帧)" << std::endl;
-
-        // T_base_camera = inv(T_camera_base)
-        cv::Mat T = invertTransform(T_camera_base);
-
-        result.T_base_camera = T.clone();
-        result.reproj_error = rms_err;
-        result.valid_frames = valid;
-        result.success = true;
-        result.message = "标定成功, 有效帧: " + std::to_string(valid) +
-                         ", 平均误差: " + std::to_string(rms_err * 1000.0) + " mm"
-                         " (最优: " + calib_results[best_idx].name + ")";
-
-        std::cout << "[eyeToHand] " << result.message << std::endl;
-        std::cout << "[eyeToHand] T_base_camera:\n" << result.T_base_camera << std::endl;
-
-        // 位姿分布分析
-        {
-            cv::Mat inv0 = invertTransform(robot_poses[0]);
-            cv::Mat Z0 = inv0 * T_camera_base * camera_poses[0];
-            double x_min = Z0.at<double>(0, 3) * 1000.0, x_max = x_min;
-            double y_min = Z0.at<double>(1, 3) * 1000.0, y_max = y_min;
-            double z_min = Z0.at<double>(2, 3) * 1000.0, z_max = z_min;
-            for (int i = 1; i < valid; i++) {
-                cv::Mat inv_i = invertTransform(robot_poses[i]);
-                cv::Mat Z_i = inv_i * T_camera_base * camera_poses[i];
-                double x = Z_i.at<double>(0, 3) * 1000.0;
-                double y = Z_i.at<double>(1, 3) * 1000.0;
-                double z = Z_i.at<double>(2, 3) * 1000.0;
-                if (x < x_min) x_min = x; if (x > x_max) x_max = x;
-                if (y < y_min) y_min = y; if (y > y_max) y_max = y;
-                if (z < z_min) z_min = z; if (z > z_max) z_max = z;
-            }
-            std::cout << "[eyeToHand] 标定板在法兰坐标系下的空间分布:" << std::endl;
-            std::cout << "[eyeToHand]   X: " << x_min << " ~ " << x_max << " mm, 跨度 " << (x_max - x_min) << " mm" << std::endl;
-            std::cout << "[eyeToHand]   Y: " << y_min << " ~ " << y_max << " mm, 跨度 " << (y_max - y_min) << " mm" << std::endl;
-            std::cout << "[eyeToHand]   Z: " << z_min << " ~ " << z_max << " mm, 跨度 " << (z_max - z_min) << " mm" << std::endl;
-        }
-    }
-
+    robot_poses.swap(matched_robot);
+    camera_poses.swap(matched_camera);
     return true;
 }
 
-// ============================================================
-// 主入口
-// ============================================================
+static bool saveEyeToHandResult(const std::string& directory, EyeToHandResult& result) {
+    const std::string path = directory + "/eye_to_hand_result.yaml";
+    if (!saveCalibrationResult(path, "T_base_camera", result.T_base_camera,
+                               result.camera_matrix, result.dist_coeffs,
+                               result.reproj_error * 1000.0, result.valid_frames)) {
+        result.success = false;
+        result.message = "标定结果 YAML 写入失败: " + path;
+        return false;
+    }
+    return true;
+}
 
 bool autoEyeToHandCharucoCalibration(
-    int robot_handle,
-    char* pchRobotIP,
-    std::shared_ptr<AICamera>& camera,
-    CharucoDetector& detector,
-    const PoseGenerationConfig& pose_config,
-    EyeToHandResult& result,
-    const std::string& save_dir,
-    AI_det_callback callback) {
-
-    std::cout << "\n========== 眼在手外 ChArUco 标定 ==========" << std::endl;
-
-    // ---- Phase 1: 获取示教原点 ----
-    double tcp_aa[6], flangeEuleInit[6];
-    if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess) {
-        result.message = "获取机器人位姿失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
+    int robot_handle, char* pchRobotIP, std::shared_ptr<AICamera>& camera,
+    CharucoDetector& detector, const PoseGenerationConfig& pose_config,
+    EyeToHandResult& result, const std::string& save_dir, AI_det_callback callback) {
+    result = EyeToHandResult{};
+    (void)pchRobotIP;
+    if (pose_config.min_corners <= 0 || pose_config.min_valid_frames <= 0) {
+        result.message = "min_corners and min_valid_frames must be positive";
         return false;
     }
-    if (!convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flangeEuleInit)) {
-        result.message = "轴角转法兰欧拉失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-    std::cout << "[eyeToHand] 示教原点 (法兰欧拉): "
-              << flangeEuleInit[0] << ", " << flangeEuleInit[1] << ", " << flangeEuleInit[2] << " mm, "
-              << flangeEuleInit[3] << ", " << flangeEuleInit[4] << ", " << flangeEuleInit[5] << " deg"
-              << std::endl;
-
-    // ---- Phase 2: 生成候选位姿 ----
-    std::vector<std::array<double, 6>> candidates;
-    if (!generateEyeToHandCandidates(robot_handle, flangeEuleInit, pose_config, candidates)) {
-        result.message = "无 IK 可达位姿";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- Phase 3: 逐点采集（仅检测角点，不需要相机内参） ----
-    std::vector<cv::Mat> robot_poses;
-    int captured = executeEyeToHandCollection(
-        robot_handle, pchRobotIP, camera, detector, candidates,
-        save_dir, robot_poses, pose_config.min_corners, callback);
-
-    if (captured < 0 || robotMotionCancellationRequested()) {
-        result.message = "标定已取消";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    if (captured < pose_config.min_valid_frames) {
-        result.message = "有效帧数不足: " + std::to_string(captured) +
-                         " (need >= " + std::to_string(pose_config.min_valid_frames) + ")";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- Phase 3.5: 从采集图像标定相机内参（复用眼在手上的逐层筛选方法） ----
-    cv::Mat camera_matrix, dist_coeffs;
-    if (!calibrateCameraFromDisk(save_dir, detector, camera_matrix, dist_coeffs)) {
-        result.message = "相机标定失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-    result.camera_matrix = camera_matrix;
-    result.dist_coeffs = dist_coeffs;
-
-    // 保存相机内参供后续使用
-    {
-        std::string cam_file = save_dir + "/camera_params.yaml";
-        cv::FileStorage fs(cam_file, cv::FileStorage::WRITE);
-        fs << "camera_matrix" << camera_matrix;
-        fs << "distortion_coefficients" << dist_coeffs;
-        std::cout << "[eyeToHand] 相机内参已保存到: " << cam_file << std::endl;
-    }
-
-    // ---- Phase 3.75: 用标定后的内参计算每帧标定板位姿 ----
-    std::vector<cv::Mat> camera_poses;
-    if (!computeBoardPosesFromImages(save_dir, detector, camera_matrix, dist_coeffs, camera_poses, robot_poses)) {
-        result.message = "计算标定板位姿失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // robot_poses 与 camera_poses 必须一一对应
-    if (robot_poses.size() != camera_poses.size()) {
-        result.message = "机器人位姿数 (" + std::to_string(robot_poses.size()) +
-                         ") 与标定板位姿数 (" + std::to_string(camera_poses.size()) + ") 不匹配";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- Phase 4: 标定 ----
-    return eyeToHandCalibrate(robot_poses, camera_poses, result);
-}
-
-// ============================================================
-// 离线标定入口：读磁盘数据 → 标定相机 → 标定手眼
-// ============================================================
-bool calibrateEyeToHandFromDisk(const std::string& save_dir,
-                                 EyeToHandResult& result) {
-
-    std::cout << "\n========== 离线眼在手外标定 ==========" << std::endl;
-    std::cout << "[eyeToHand] 数据目录: " << save_dir << std::endl;
-
-    // ---- 创建检测器（默认标定板参数，与采集时一致） ----
-    CharucoBoardConfig board_cfg;
-    CharucoDetector detector(board_cfg);
-
-    // ---- 从图像标定相机内参（复用眼在手上的逐层筛选方法） ----
-    if (!calibrateCameraFromDisk(save_dir, detector,
-                                  result.camera_matrix, result.dist_coeffs)) {
-        result.message = "相机标定失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-     // ---- 加载机器人位姿（优先读轴角文件，否则尝试转换欧拉文件） ----
-    std::vector<cv::Mat> robot_poses;
-    std::string axis_csv = save_dir + "/rob_pos.csv";
-    std::string euler_csv = save_dir + "/rob_eule.csv";
-    if (loadRobotPosesFromCSV(axis_csv, robot_poses)) {
-        // 已有轴角文件
-    } else if (convertEulerCsvToAxisCsv(save_dir) &&
-               loadRobotPosesFromCSV(axis_csv, robot_poses)) {
-        // 转换成功后再加载
-    } else {
-        result.message = "加载机器人位姿失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- 计算每帧标定板位姿 ----
-    std::vector<cv::Mat> camera_poses;
-    if (!computeBoardPosesFromImages(save_dir, detector,
-                                      result.camera_matrix, result.dist_coeffs,
-                                      camera_poses, robot_poses)) {
-        result.message = "计算标定板位姿失败";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-   
-
-    // robot_poses 与 camera_poses 必须一一对应
-    if (robot_poses.size() != camera_poses.size()) {
-        result.message = "机器人位姿数 (" + std::to_string(robot_poses.size()) +
-                         ") 与标定板位姿数 (" + std::to_string(camera_poses.size()) + ") 不匹配";
-        std::cerr << "[eyeToHand] " << result.message << std::endl;
-        return false;
-    }
-
-    // ---- 手眼标定 ----
-    if (!eyeToHandCalibrate(robot_poses, camera_poses, result))
-        return false;
-
-    // ---- 保存结果 ----
-    {
-        std::string out_file = save_dir + "/eye_to_hand_result.yaml";
-        if (!saveCalibrationResult(out_file, "T_base_camera",
-                                   result.T_base_camera, result.camera_matrix, result.dist_coeffs,
-                                   result.reproj_error * 1000.0, result.valid_frames)) {
-            result.success = false;
-            result.message = "标定结果 YAML 写入失败: " + out_file;
+    const int minimum_frames = std::max(12, pose_config.min_valid_frames);
+    try {
+        if (robotMotionCancellationRequested()) {
+            result.message = "标定已取消";
             return false;
         }
+        if (!camera || save_dir.empty()) {
+            result.message = "相机未初始化或保存目录为空";
+            return false;
+        }
+        for (const auto* offsets : {&pose_config.offset_x, &pose_config.offset_y,
+                                   &pose_config.offset_z, &pose_config.offset_rx,
+                                   &pose_config.offset_ry, &pose_config.offset_rz}) {
+            if (offsets->empty() || !std::all_of(offsets->begin(), offsets->end(),
+                                  [](double value) { return std::isfinite(value); })) {
+                result.message = "候选偏移必须非空且为有限值";
+                return false;
+            }
+        }
+        namespace fs = std::filesystem;
+        const auto parent = fs::absolute(save_dir);
+        fs::create_directories(parent);
+        const auto stamp = std::chrono::duration_cast<std::chrono::microseconds>(
+            std::chrono::system_clock::now().time_since_epoch()).count();
+        // Atomic directory creation also handles simultaneous runs and clock collisions.
+        for (unsigned int suffix = 0; ; ++suffix) {
+            const auto path = parent / ("run_" + std::to_string(stamp) + "_" + std::to_string(suffix));
+            if (fs::create_directory(path)) {
+                result.data_directory = path.string();
+                break;
+            }
+        }
+        const std::string directory = result.data_directory;
+        std::cout << "[eyeToHand] 本次数据目录: " << directory << std::endl;
+        const auto marker = fs::path(directory) / ".collection_incomplete";
+        {
+            std::ofstream incomplete(marker);
+            incomplete.exceptions(std::ios::failbit | std::ios::badbit);
+            incomplete << "Collection has not completed successfully.\n";
+            incomplete.close();
+        }
+        double tcp_aa[6]{}, flange_euler[6]{};
+        if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
+            !convertTcpAxisPos2FlangeEule(robot_handle, tcp_aa, flange_euler)) {
+            result.message = "获取示教原点法兰位姿失败";
+            return false;
+        }
+        std::vector<PoseCandidate> candidates;
+        if (!generateEyeToHandCandidates(robot_handle, flange_euler, pose_config,
+                                         candidates, result.message)) {
+            if (result.message.empty()) result.message = "无 IK 可达位姿";
+            return false;
+        }
+        std::vector<cv::Mat> robot_poses;
+        const int captured = executeEyeToHandCollection(
+            robot_handle, camera, detector, candidates, directory, robot_poses,
+            pose_config.min_corners, pose_config.maximum_joint_step_degrees,
+            result.message, callback);
+        if (captured == -2) return false; // Preserve the concrete failure, even if cancellation follows.
+        if (captured == -1) {
+            result.message = "标定已取消";
+            return false;
+        }
+        if (!fs::remove(marker)) {
+            result.message = "无法完成采集写入标记";
+            return false;
+        }
+        if (robotMotionCancellationRequested()) {
+            result.message = "标定已取消";
+            return false;
+        }
+        if (captured < minimum_frames) {
+            result.message = "有效帧数不足: " + std::to_string(captured) +
+                " (need >= " + std::to_string(minimum_frames) + ")" +
+                (result.message.empty() ? "" : "; " + result.message);
+            return false;
+        }
+        if (!validateImagePoseMatching(directory, robot_poses.size(), result.message))
+            return false;
+        if (!calibrateCameraFromDisk(directory, detector,
+                                     result.camera_matrix, result.dist_coeffs)) {
+            result.message = "相机标定失败";
+            return false;
+        }
+        // Use a checked stream for actual disk writes; FileStorage serializes in memory.
+        {
+            cv::FileStorage yaml("", cv::FileStorage::WRITE |
+                                     cv::FileStorage::MEMORY | cv::FileStorage::FORMAT_YAML);
+            yaml << "camera_matrix" << result.camera_matrix;
+            yaml << "distortion_coefficients" << result.dist_coeffs;
+            std::ofstream output(directory + "/camera_params.yaml");
+            output.exceptions(std::ios::failbit | std::ios::badbit);
+            output << yaml.releaseAndGetString();
+            output.close();
+        }
+        std::vector<cv::Mat> camera_poses;
+        if (!computeBoardPosesFromImages(directory, detector, result.camera_matrix,
+                                        result.dist_coeffs, camera_poses, robot_poses,
+                                        result.message))
+            return false;
+        if (robotMotionCancellationRequested()) {
+            result.message = "标定已取消";
+            return false;
+        }
+        if (robot_poses.size() < static_cast<std::size_t>(minimum_frames)) {
+            result.message = "PnP有效配对帧数不足: " + std::to_string(robot_poses.size()) +
+                             " (need >= " + std::to_string(minimum_frames) + ")";
+            return false;
+        }
+        // Wrapper returns T_base_camera directly and populates the shared quality report.
+        if (!solveEyeToHandPoses(robot_poses, camera_poses, result)) return false;
+        // Publication cutoff: honor cancellation through this pre-save check,
+        // including requests received during the solve. Once saving starts,
+        // let the checked write finish; a later cancellation does not retract it.
+        if (robotMotionCancellationRequested()) {
+            result.success = false;
+            result.T_base_camera.release();
+            result.message = "标定已取消";
+            return false;
+        }
+        return saveEyeToHandResult(directory, result);
+    } catch (const std::exception& exception) {
+        result.success = false;
+        result.T_base_camera.release();
+        result.message = "自动眼在手外标定失败: " + std::string(exception.what());
+        return false;
     }
+}
 
-    std::cout << "\n========== 标定结果 ==========" << std::endl;
-    std::cout << "T_base_camera:\n" << result.T_base_camera << std::endl;
-    std::cout << "有效帧数: " << result.valid_frames << std::endl;
-    std::cout << "平均误差: " << (result.reproj_error * 1000.0) << " mm" << std::endl;
-
-    return true;
+bool calibrateEyeToHandFromDisk(const std::string& save_dir, EyeToHandResult& result) {
+    result = EyeToHandResult{};
+    try {
+        if (save_dir.empty()) {
+            result.message = "数据目录为空";
+            return false;
+        }
+        result.data_directory = std::filesystem::absolute(save_dir).string();
+        std::vector<cv::Mat> robot_poses;
+        if (!loadMatchedRobotPoses(save_dir, robot_poses, result.message) ||
+            !validateImagePoseMatching(save_dir, robot_poses.size(), result.message))
+            return false;
+        if (robot_poses.size() < 12) {
+            result.message = "有效配对帧少于12";
+            return false;
+        }
+        CharucoBoardConfig board_config;
+        CharucoDetector detector(board_config);
+        if (!calibrateCameraFromDisk(save_dir, detector,
+                                     result.camera_matrix, result.dist_coeffs)) {
+            result.message = "相机标定失败";
+            return false;
+        }
+        std::vector<cv::Mat> camera_poses;
+        if (!computeBoardPosesFromImages(save_dir, detector, result.camera_matrix,
+                                        result.dist_coeffs, camera_poses, robot_poses,
+                                        result.message))
+            return false;
+        if (!solveEyeToHandPoses(robot_poses, camera_poses, result)) return false;
+        return saveEyeToHandResult(save_dir, result);
+    } catch (const std::exception& exception) {
+        result.success = false;
+        result.T_base_camera.release();
+        result.message = "离线眼在手外标定失败: " + std::string(exception.what());
+        return false;
+    }
 }
