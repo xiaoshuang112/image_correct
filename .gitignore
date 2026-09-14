@@ -26,6 +26,7 @@ build_qt/
 build_mvs/
 build_orb/
 build_release_orb/
+offline_results/
 hand-eye-orb/
 hand-eye-mvs/
 hand-eye-mvs
