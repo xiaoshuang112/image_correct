@@ -23,6 +23,149 @@
 
 using namespace calib_transform;
 
+namespace {
+
+struct RigidTransformDistance {
+    double translation_mm = std::numeric_limits<double>::quiet_NaN();
+    double rotation_deg = std::numeric_limits<double>::quiet_NaN();
+};
+
+bool isValidRigidTransform(const cv::Mat& input) {
+    if (input.rows != 4 || input.cols != 4 || input.channels() != 1 ||
+        !cv::checkRange(input))
+        return false;
+    cv::Mat transform;
+    input.convertTo(transform, CV_64F);
+    const cv::Mat rotation = transform(cv::Rect(0, 0, 3, 3));
+    const cv::Mat identity = cv::Mat::eye(3, 3, CV_64F);
+    const cv::Mat bottom = (cv::Mat_<double>(1, 4) << 0, 0, 0, 1);
+    return cv::norm(rotation.t() * rotation - identity) < 1e-6 &&
+        std::abs(cv::determinant(rotation) - 1.0) < 1e-6 &&
+        cv::norm(transform.row(3) - bottom) < 1e-9;
+}
+
+RigidTransformDistance rigidTransformDistance(const cv::Mat& left_input,
+                                              const cv::Mat& right_input) {
+    RigidTransformDistance distance;
+    if (!isValidRigidTransform(left_input) || !isValidRigidTransform(right_input))
+        return distance;
+    cv::Mat left, right;
+    left_input.convertTo(left, CV_64F);
+    right_input.convertTo(right, CV_64F);
+    distance.translation_mm = cv::norm(
+        right(cv::Rect(3, 0, 1, 3)) - left(cv::Rect(3, 0, 1, 3))) * 1000.0;
+    const cv::Mat relative_rotation =
+        left(cv::Rect(0, 0, 3, 3)).t() * right(cv::Rect(0, 0, 3, 3));
+    const double cosine = std::clamp(
+        (cv::trace(relative_rotation)[0] - 1.0) * 0.5, -1.0, 1.0);
+    distance.rotation_deg = std::acos(cosine) * 180.0 / CV_PI;
+    return distance;
+}
+
+}  // namespace
+
+EyeToHandPublicationCheck checkEyeToHandPublication(
+    const EyeToHandResult& candidate,
+    const std::string& reference_yaml,
+    const PoseGenerationConfig& config) {
+    EyeToHandPublicationCheck check;
+    auto reject = [&](const std::string& reason) {
+        check.passed = false;
+        check.message = "眼在手外结果禁止发布: " + reason;
+        return check;
+    };
+    if (!candidate.success || !isValidRigidTransform(candidate.T_base_camera))
+        return reject("候选标定结果无效");
+    if (candidate.valid_frames < config.minimum_publish_frames)
+        return reject("有效帧数 " + std::to_string(candidate.valid_frames) +
+                      " 小于门限 " + std::to_string(config.minimum_publish_frames));
+
+    const double translation_rms_mm = candidate.reproj_error * 1000.0;
+    const double translation_p95_mm = candidate.quality.translation_p95_mm;
+    const double rotation_rms_deg = candidate.quality.rotation_rms_deg;
+    if (!std::isfinite(translation_rms_mm) || !std::isfinite(translation_p95_mm) ||
+        !std::isfinite(rotation_rms_deg))
+        return reject("质量指标缺失或非有限值");
+    if (translation_rms_mm > config.maximum_publish_translation_rms_mm)
+        return reject("平移 RMS " + std::to_string(translation_rms_mm) +
+                      " mm 超过门限 " +
+                      std::to_string(config.maximum_publish_translation_rms_mm) + " mm");
+    if (translation_p95_mm > config.maximum_publish_translation_p95_mm)
+        return reject("平移 P95 " + std::to_string(translation_p95_mm) +
+                      " mm 超过门限 " +
+                      std::to_string(config.maximum_publish_translation_p95_mm) + " mm");
+    if (rotation_rms_deg > config.maximum_publish_rotation_rms_degrees)
+        return reject("旋转 RMS " + std::to_string(rotation_rms_deg) +
+                      " deg 超过门限 " +
+                      std::to_string(config.maximum_publish_rotation_rms_degrees) + " deg");
+    if (!candidate.quality.consensus_available || !candidate.quality.consensus_passed)
+        return reject("求解器共识未通过");
+
+    namespace fs = std::filesystem;
+    if (!fs::exists(reference_yaml)) {
+        if (config.require_reference_result)
+            return reject("缺少受保护参考结果 " + reference_yaml);
+        check.passed = true;
+        check.message = "发布质量门通过（未配置参考结果）";
+        return check;
+    }
+
+    cv::Mat reference;
+    try {
+        cv::FileStorage storage(reference_yaml, cv::FileStorage::READ);
+        if (!storage.isOpened())
+            return reject("无法打开参考结果 " + reference_yaml);
+        storage["T_base_camera"] >> reference;
+        storage.release();
+    } catch (const cv::Exception& exception) {
+        return reject("参考结果读取失败 " + reference_yaml + ": " + exception.what());
+    }
+    if (!isValidRigidTransform(reference))
+        return reject("参考结果不是有效刚体变换 " + reference_yaml);
+    check.reference_loaded = true;
+    const RigidTransformDistance drift =
+        rigidTransformDistance(reference, candidate.T_base_camera);
+    check.translation_drift_mm = drift.translation_mm;
+    check.rotation_drift_deg = drift.rotation_deg;
+    if (drift.translation_mm > config.maximum_publish_translation_drift_mm)
+        return reject("相对参考结果平移漂移 " + std::to_string(drift.translation_mm) +
+                      " mm 超过门限 " +
+                      std::to_string(config.maximum_publish_translation_drift_mm) + " mm");
+    if (drift.rotation_deg > config.maximum_publish_rotation_drift_degrees)
+        return reject("相对参考结果旋转漂移 " + std::to_string(drift.rotation_deg) +
+                      " deg 超过门限 " +
+                      std::to_string(config.maximum_publish_rotation_drift_degrees) + " deg");
+    check.passed = true;
+    check.message = "发布门通过: 相对参考结果平移漂移 " +
+        std::to_string(drift.translation_mm) + " mm, 旋转漂移 " +
+        std::to_string(drift.rotation_deg) + " deg";
+    return check;
+}
+
+bool publishEyeToHandResult(
+    const EyeToHandResult& candidate,
+    const std::string& reference_yaml,
+    const std::string& production_yaml,
+    const PoseGenerationConfig& config,
+    EyeToHandPublicationCheck& check,
+    std::string& error) {
+    error.clear();
+    check = checkEyeToHandPublication(candidate, reference_yaml, config);
+    if (!check.passed) {
+        error = check.message;
+        return false;
+    }
+    if (!saveCalibrationResult(production_yaml, "T_base_camera",
+                               candidate.T_base_camera, candidate.camera_matrix,
+                               candidate.dist_coeffs,
+                               candidate.reproj_error * 1000.0,
+                               candidate.valid_frames)) {
+        error = "眼在手外生产结果保存失败: " + production_yaml;
+        return false;
+    }
+    return true;
+}
+
 // ============================================================
 // Phase 2: 位姿生成 + IK 过滤
 // ============================================================
@@ -127,6 +270,14 @@ static bool waitForSettling() {
     return !robotMotionCancellationRequested();
 }
 
+static bool readActualFlangeAxisAngle(int robot_handle, double flange_axis[6]) {
+    double tcp_axis[6]{};
+    return cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_axis) == sucess &&
+        convertTcpAxisPos2FlangPos(robot_handle, tcp_axis, flange_axis) &&
+        std::all_of(flange_axis, flange_axis + 6,
+                    [](double value) { return std::isfinite(value); });
+}
+
 // Return -1 for cancellation, -2 for a fatal motion/read/write failure.
 static int executeEyeToHandCollection(
     int robot_handle,
@@ -137,13 +288,16 @@ static int executeEyeToHandCollection(
     std::vector<cv::Mat>& robot_poses,
     int min_corners,
     double maximum_joint_step_degrees,
+    double maximum_capture_translation_drift_mm,
+    double maximum_capture_rotation_drift_degrees,
     std::string& error,
     AI_det_callback callback = nullptr) {
 
     robot_poses.clear();
     const int total = static_cast<int>(candidates.size());
     int captured = 0;
-    int empty_frames = 0, rejected_frames = 0, missed_candidates = 0;
+    int empty_frames = 0, rejected_frames = 0, unstable_frames = 0;
+    int missed_candidates = 0;
     try {
         std::ofstream poses(save_dir + "/rob_pos.csv");
         std::ofstream joints(save_dir + "/rob_joint.csv");
@@ -182,10 +336,36 @@ static int executeEyeToHandCollection(
             }
             cv::Mat frame;
             bool detected = false;
+            double flange_aa[6]{}, actual_joint[6]{}, euler[6]{};
             for (int attempt = 0; attempt < 3; ++attempt) {
                 if (robotMotionCancellationRequested()) return -1;
+                double before_flange[6]{}, after_flange[6]{}, after_joint[6]{};
+                if (!readActualFlangeAxisAngle(robot_handle, before_flange)) {
+                    error = "拍照前读取实际法兰位姿失败";
+                    return -2;
+                }
                 frame = camera->captureOneFrame(1500);
                 if (robotMotionCancellationRequested()) return -1;
+                if (!readActualFlangeAxisAngle(robot_handle, after_flange) ||
+                    cr_get_jointActualPos((RobotHandle)robot_handle, after_joint) != sucess ||
+                    !std::all_of(after_joint, after_joint + 6,
+                                 [](double value) { return std::isfinite(value); })) {
+                    error = "拍照后读取实际机器人位姿失败";
+                    return -2;
+                }
+                const RigidTransformDistance capture_drift = rigidTransformDistance(
+                    axisAnglePoseToTransform(before_flange),
+                    axisAnglePoseToTransform(after_flange));
+                if (!std::isfinite(capture_drift.translation_mm) ||
+                    !std::isfinite(capture_drift.rotation_deg) ||
+                    capture_drift.translation_mm > maximum_capture_translation_drift_mm ||
+                    capture_drift.rotation_deg > maximum_capture_rotation_drift_degrees) {
+                    ++unstable_frames;
+                    std::cout << "[eyeToHand] 拍照期间机器人位姿不稳定，重拍: Δt="
+                              << capture_drift.translation_mm << " mm, ΔR="
+                              << capture_drift.rotation_deg << " deg" << std::endl;
+                    continue;
+                }
                 if (frame.empty()) {
                     ++empty_frames;
                     continue;
@@ -195,6 +375,14 @@ static int executeEyeToHandCollection(
                 if (detector.detectCorners(frame, corners, ids) &&
                     ids.size() == corners.size() &&
                     static_cast<int>(ids.size()) >= std::max(12, min_corners)) {
+                    std::copy(after_flange, after_flange + 6, flange_aa);
+                    std::copy(after_joint, after_joint + 6, actual_joint);
+                    if (cr_AxisAngle2Eule(flange_aa, euler) != sucess ||
+                        !std::all_of(euler, euler + 6,
+                                     [](double value) { return std::isfinite(value); })) {
+                        error = "法兰轴角转欧拉位姿失败";
+                        return -2;
+                    }
                     detected = true;
                     break;
                 }
@@ -204,16 +392,8 @@ static int executeEyeToHandCollection(
                 ++missed_candidates;
                 continue;
             }
-
-            // Preserve TCP -> flange semantics; joints are measured, not commanded.
-            double tcp_aa[6]{}, flange_aa[6]{}, actual_joint[6]{}, euler[6]{};
-            if (cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_aa) != sucess ||
-                !convertTcpAxisPos2FlangPos(robot_handle, tcp_aa, flange_aa) ||
-                cr_get_jointActualPos((RobotHandle)robot_handle, actual_joint) != sucess ||
-                cr_AxisAngle2Eule(flange_aa, euler) != sucess) {
-                error = "读取实际关节/法兰位姿失败";
-                return -2;
-            }
+            // Preserve TCP -> flange semantics; use the measured pose immediately
+            // after the exposure only when the bracketing poses prove stability.
             for (const double* values : {flange_aa, actual_joint, euler}) {
                 if (!std::all_of(values, values + 6,
                                  [](double value) { return std::isfinite(value); })) {
@@ -253,6 +433,7 @@ static int executeEyeToHandCollection(
     error = "采集统计: 有效=" + std::to_string(captured) +
             ", 未检出合格标定板候选=" + std::to_string(missed_candidates) +
             ", 空帧=" + std::to_string(empty_frames) +
+            ", 拍照期间位姿不稳定=" + std::to_string(unstable_frames) +
             ", 检测失败或角点不足=" + std::to_string(rejected_frames);
     std::cout << "[eyeToHand] " << error << std::endl;
     return captured;
@@ -365,8 +546,11 @@ static bool computeBoardPosesFromImages(
     return true;
 }
 
-static bool saveEyeToHandResult(const std::string& directory, EyeToHandResult& result) {
-    const std::string path = directory + "/eye_to_hand_result.yaml";
+static bool saveEyeToHandResult(const std::string& directory, EyeToHandResult& result,
+                                const std::string& output_yaml = "") {
+    const std::string path = output_yaml.empty()
+        ? directory + "/eye_to_hand_result.yaml"
+        : output_yaml;
     if (!saveCalibrationResult(path, "T_base_camera", result.T_base_camera,
                                result.camera_matrix, result.dist_coeffs,
                                result.reproj_error * 1000.0, result.valid_frames)) {
@@ -444,6 +628,8 @@ bool autoEyeToHandCharucoCalibration(
         const int captured = executeEyeToHandCollection(
             robot_handle, camera, detector, candidates, directory, robot_poses,
             pose_config.min_corners, pose_config.maximum_joint_step_degrees,
+            pose_config.maximum_capture_translation_drift_mm,
+            pose_config.maximum_capture_rotation_drift_degrees,
             result.message, callback);
         if (captured == -2) return false; // Preserve the concrete failure, even if cancellation follows.
         if (captured == -1) {
@@ -466,10 +652,20 @@ bool autoEyeToHandCharucoCalibration(
         }
         if (!validateImagePoseMatching(directory, robot_poses.size(), result.message))
             return false;
-        if (!calibrateCameraFromDisk(directory, detector,
-                                     result.camera_matrix, result.dist_coeffs)) {
-            result.message = "相机标定失败";
-            return false;
+        const bool use_fixed_intrinsics =
+            !detector.getCameraMatrix().empty() && !detector.getDistCoeffs().empty();
+        if (use_fixed_intrinsics) {
+            result.camera_matrix = detector.getCameraMatrix().clone();
+            result.dist_coeffs = detector.getDistCoeffs().clone();
+            result.reused_intrinsics = true;
+            std::cout << "[eyeToHand] 使用身份校验通过的固定相机内参" << std::endl;
+        } else {
+            result.reused_intrinsics = false;
+            if (!calibrateCameraFromDisk(directory, detector,
+                                         result.camera_matrix, result.dist_coeffs)) {
+                result.message = "相机标定失败";
+                return false;
+            }
         }
         // Use a checked stream for actual disk writes; FileStorage serializes in memory.
         {
@@ -516,7 +712,9 @@ bool autoEyeToHandCharucoCalibration(
     }
 }
 
-bool calibrateEyeToHandFromDisk(const std::string& save_dir, EyeToHandResult& result) {
+bool calibrateEyeToHandFromDisk(const std::string& save_dir, EyeToHandResult& result,
+                                const std::string& camera_params_file,
+                                const std::string& output_yaml) {
     result = EyeToHandResult{};
     try {
         if (save_dir.empty()) {
@@ -534,10 +732,37 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir, EyeToHandResult& re
         }
         CharucoBoardConfig board_config;
         CharucoDetector detector(board_config);
-        if (!calibrateCameraFromDisk(save_dir, detector,
-                                     result.camera_matrix, result.dist_coeffs)) {
-            result.message = "相机标定失败";
-            return false;
+        if (!camera_params_file.empty()) {
+            cv::FileStorage storage(camera_params_file, cv::FileStorage::READ);
+            if (!storage.isOpened()) {
+                result.message = "无法打开相机内参: " + camera_params_file;
+                return false;
+            }
+            storage["camera_matrix"] >> result.camera_matrix;
+            storage["distortion_coefficients"] >> result.dist_coeffs;
+            storage.release();
+            if (!result.camera_matrix.empty() && result.camera_matrix.depth() != CV_64F)
+                result.camera_matrix.convertTo(result.camera_matrix, CV_64F);
+            if (!result.dist_coeffs.empty() && result.dist_coeffs.depth() != CV_64F)
+                result.dist_coeffs.convertTo(result.dist_coeffs, CV_64F);
+            if (result.camera_matrix.rows != 3 || result.camera_matrix.cols != 3 ||
+                result.dist_coeffs.empty() ||
+                !cv::checkRange(result.camera_matrix) || !cv::checkRange(result.dist_coeffs) ||
+                result.camera_matrix.at<double>(0, 0) <= 0.0 ||
+                result.camera_matrix.at<double>(1, 1) <= 0.0) {
+                result.camera_matrix.release();
+                result.dist_coeffs.release();
+                result.message = "相机内参格式无效: " + camera_params_file;
+                return false;
+            }
+            std::cout << "[eyeToHand] 使用固定相机内参: "
+                      << camera_params_file << std::endl;
+        } else {
+            if (!calibrateCameraFromDisk(save_dir, detector,
+                                         result.camera_matrix, result.dist_coeffs)) {
+                result.message = "相机标定失败";
+                return false;
+            }
         }
         std::vector<cv::Mat> camera_poses;
         if (!computeBoardPosesFromImages(save_dir, detector, result.camera_matrix,
@@ -545,7 +770,7 @@ bool calibrateEyeToHandFromDisk(const std::string& save_dir, EyeToHandResult& re
                                         result.message))
             return false;
         if (!solveEyeToHandPoses(robot_poses, camera_poses, result)) return false;
-        return saveEyeToHandResult(save_dir, result);
+        return saveEyeToHandResult(save_dir, result, output_yaml);
     } catch (const std::exception& exception) {
         result.success = false;
         result.T_base_camera.release();

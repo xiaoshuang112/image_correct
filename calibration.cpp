@@ -961,7 +961,43 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     if (open_camera() != 0) return;
 
     CharucoBoardConfig board_cfg;
-    CharucoDetector detector(board_cfg);  // 不加载相机内参，采图后从图像标定而来
+    CharucoDetector detector(board_cfg);
+    const std::string camera_params_file = g_paramPath + "camera_params.yaml";
+    cv::Mat fixed_camera_matrix, fixed_dist_coeffs;
+    intrinsic_gate::IntrinsicIdentity intrinsic_identity;
+    std::string intrinsic_error;
+    const bool intrinsic_loaded = intrinsic_gate::loadCameraParamsWithIdentity(
+        camera_params_file, fixed_camera_matrix, fixed_dist_coeffs,
+        intrinsic_identity, intrinsic_error);
+    if (g_camera && g_camera->backendName() == "mvs") {
+        const CameraDeviceAuditInfo device = g_camera->getDeviceAuditInfo();
+        std::string decision_reason;
+        const auto decision = intrinsic_gate::decideMvsIntrinsics(
+            camera_params_file, fixed_camera_matrix, fixed_dist_coeffs,
+            device.serial, device.actual_width, device.actual_height,
+            g_cfg.allow_legacy_intrinsics, intrinsic_identity, decision_reason);
+        if (decision == intrinsic_gate::MvsIntrinsicDecision::Block) {
+            std::cerr << "[eyeToHand] MVS 内参身份校验失败: "
+                      << decision_reason << std::endl;
+            return;
+        }
+        if (decision == intrinsic_gate::MvsIntrinsicDecision::UseProvided)
+            detector.setCameraParams(fixed_camera_matrix, fixed_dist_coeffs);
+        else
+            std::cout << "[eyeToHand] 将从本次采集重新标定内参: "
+                      << decision_reason << std::endl;
+    } else if (intrinsic_loaded) {
+        const CameraDeviceAuditInfo device = g_camera->getDeviceAuditInfo();
+        std::string validation_reason;
+        if (intrinsic_gate::validateIntrinsicsShape(
+                fixed_camera_matrix, fixed_dist_coeffs,
+                device.actual_width, device.actual_height, validation_reason)) {
+            detector.setCameraParams(fixed_camera_matrix, fixed_dist_coeffs);
+        } else {
+            std::cout << "[eyeToHand] 已有内参无效，将从本次采集重新标定: "
+                      << validation_reason << std::endl;
+        }
+    }
 
     // 预览：用户将标定板移到视野中央后按 s
     double flangEule[] = {-398.817, 45.0551, -307.713, -102.154, -77.578, 109.514};
@@ -979,10 +1015,36 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
         pose_config, result, save_dir);
 
     if (ok) {
-        if (!saveCalibrationResult(g_paramPath + "eye_to_hand_result.yaml", "T_base_camera",
-                               result.T_base_camera, result.camera_matrix, result.dist_coeffs,
-                               result.reproj_error * 1000.0, result.valid_frames)) {
-            std::cerr << "[eyeToHand] 标定结果保存失败" << std::endl;
+        fs::path reference_path = pose_config.reference_result_file;
+        if (reference_path.is_relative())
+            reference_path = fs::path(pose_config.source_file).parent_path() / reference_path;
+        EyeToHandPublicationCheck publication;
+        std::string publication_error;
+        if (!publishEyeToHandResult(
+                result, reference_path.lexically_normal().string(),
+                g_paramPath + "eye_to_hand_result.yaml", pose_config,
+                publication, publication_error)) {
+            result.success = false;
+            result.message = publication_error;
+            std::cerr << "[eyeToHand] " << publication_error
+                      << "; 候选结果保留在 " << result.data_directory << std::endl;
+            return;
+        }
+        std::cout << "[eyeToHand] " << publication.message << std::endl;
+        if (!result.reused_intrinsics && g_camera) {
+            const CameraDeviceAuditInfo device = g_camera->getDeviceAuditInfo();
+            intrinsic_gate::IntrinsicIdentity identity;
+            identity.serial = device.serial;
+            identity.width = device.actual_width;
+            identity.height = device.actual_height;
+            identity.pixel_format = device.pixel_format;
+            std::string save_error;
+            if (!intrinsic_gate::saveCameraParamsWithIdentity(
+                    camera_params_file, result.camera_matrix, result.dist_coeffs,
+                    identity, "eye_to_hand_bootstrap", save_error)) {
+                std::cerr << "[eyeToHand] 主结果已发布，但固定内参保存失败: "
+                          << save_error << std::endl;
+            }
         }
     } else {
         std::cerr << "\n[eyeToHand] 标定失败: " << result.message << std::endl;
@@ -1164,36 +1226,46 @@ static void singularity_test() {
 }
 
 // ============================================================
-// CLI 命令处理（返回 true 表示已处理，main 应退出）
+// CLI 命令处理（-1 表示未处理，否则返回 main 应使用的退出码）
 // ============================================================
-static bool handleCLI(int argc, char** argv) {
-    if (argc < 2) return false;
+static int handleCLI(int argc, char** argv) {
+    constexpr int not_handled = -1;
+    if (argc < 2) return not_handled;
 
     // --collect-test <config_path> [--dry-run]
     if (strcmp(argv[1], "--collect-test") == 0) {
         circle_test_collection(argc, argv);
-        return true;
+        return EXIT_SUCCESS;
     }
 
     // --depth-test <config_path>
     if (strcmp(argv[1], "--depth-test") == 0) {
         if (argc >= 3) depth_test(argv[2]);
-        return true;
+        return EXIT_SUCCESS;
     }
 
     // --piece-sampler
     if (strcmp(argv[1], "--piece-sampler") == 0) {
         piece_sampling();
-        return true;
+        return EXIT_SUCCESS;
     }
 
-    // --calibrate-eye-to-hand <save_dir>
+    // --calibrate-eye-to-hand <save_dir> [camera_params.yaml] [output.yaml]
     if (strcmp(argv[1], "--calibrate-eye-to-hand") == 0) {
         EyeToHandResult result;
-        if (argc < 3 || !calibrateEyeToHandFromDisk(argv[2], result)) {
-            std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
+        if (argc < 3) {
+            std::cerr << "用法: " << argv[0]
+                      << " --calibrate-eye-to-hand <save_dir>"
+                         " [camera_params.yaml] [output.yaml]" << std::endl;
+            return EXIT_FAILURE;
         }
-        return true;
+        const std::string intrinsics = argc >= 4 ? argv[3] : "";
+        const std::string output = argc >= 5 ? argv[4] : "";
+        if (!calibrateEyeToHandFromDisk(argv[2], result, intrinsics, output)) {
+            std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
+            return EXIT_FAILURE;
+        }
+        return EXIT_SUCCESS;
     }
 
     // --calibrate-eye-in-hand <save_dir> [camera_params.yaml] [output.yaml]
@@ -1205,7 +1277,7 @@ static bool handleCLI(int argc, char** argv) {
             std::cerr << "用法: " << argv[0]
                       << " --calibrate-eye-in-hand <save_dir>"
                          " [camera_params.yaml] [output.yaml]" << std::endl;
-            return true;
+            return EXIT_FAILURE;
         }
 
         fs::path intrinsics_path;
@@ -1225,7 +1297,7 @@ static bool handleCLI(int argc, char** argv) {
             if (camera_matrix.empty() || dist_coeffs.empty()) {
                 std::cerr << "[main] 相机内参读取失败: "
                           << intrinsics_path << std::endl;
-                return true;
+                return EXIT_FAILURE;
             }
             std::cout << "[main] 使用相机内参: " << intrinsics_path << std::endl;
         } else {
@@ -1237,22 +1309,24 @@ static bool handleCLI(int argc, char** argv) {
         if (!calibrateEyeInHandFromDisk(argv[2], board_cfg,
                 camera_matrix, dist_coeffs, result, output_yaml)) {
             std::cerr << "\n[main] 离线标定失败: " << result.message << std::endl;
+            return EXIT_FAILURE;
         } else if (!output_yaml.empty()) {
             std::cout << "[main] 离线标定结果: " << output_yaml << std::endl;
         }
-        return true;
+        return EXIT_SUCCESS;
     }
 
     // --convert-eye-to-hand-poses <save_dir>
     if (strcmp(argv[1], "--convert-eye-to-hand-poses") == 0) {
-        if (argc >= 3 && convertEulerCsvToAxisCsv(argv[2]))
+        if (argc >= 3 && convertEulerCsvToAxisCsv(argv[2])) {
             std::cout << "[main] 转换成功!" << std::endl;
-        else
-            std::cerr << "[main] 转换失败" << std::endl;
-        return true;
+            return EXIT_SUCCESS;
+        }
+        std::cerr << "[main] 转换失败" << std::endl;
+        return EXIT_FAILURE;
     }
 
-    return false;
+    return not_handled;
 }
 
 int main(int argc, char** argv) {
@@ -1278,8 +1352,9 @@ int main(int argc, char** argv) {
             std::cout << "[main] 已恢复未完成标定 Session: " << session << std::endl;
     }
 
-    if (handleCLI(argc, argv))
-        return 0;
+    const int cli_exit_code = handleCLI(argc, argv);
+    if (cli_exit_code >= 0)
+        return cli_exit_code;
 
     int choice = 0;
 

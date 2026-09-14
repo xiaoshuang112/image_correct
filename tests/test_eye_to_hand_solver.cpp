@@ -173,6 +173,134 @@ int main() {
         return 1;
     }
 
+    run("publication gate accepts reference-consistent result", [&] {
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << baseline.T_base_camera;
+        out.release();
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+            baseline, reference.string(), config);
+        require(check.passed && check.reference_loaded,
+                "reference-consistent result was blocked: " + check.message);
+        require(check.translation_drift_mm < 1e-9 && check.rotation_drift_deg < 1e-9,
+                "identical reference reported drift");
+    });
+    run("publication gate blocks excessive reference drift", [&] {
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << baseline.T_base_camera;
+        out.release();
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        EyeToHandResult shifted = baseline;
+        shifted.T_base_camera = baseline.T_base_camera.clone();
+        shifted.T_base_camera.at<double>(0, 3) += 0.021;
+        const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+            shifted, reference.string(), config);
+        require(!check.passed && check.translation_drift_mm > 20.0,
+                "21 mm reference drift was not blocked");
+    });
+    run("blocked publication preserves existing production bytes", [&] {
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        const auto production = temporary.path / "production.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << baseline.T_base_camera;
+        out.release();
+        writeFile(production, "known-good-production\n");
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        EyeToHandResult shifted = baseline;
+        shifted.T_base_camera = baseline.T_base_camera.clone();
+        shifted.T_base_camera.at<double>(1, 3) += 0.025;
+        EyeToHandPublicationCheck check;
+        std::string error;
+        require(!publishEyeToHandResult(
+                    shifted, reference.string(), production.string(), config,
+                    check, error),
+                "excessive drift unexpectedly published");
+        std::ifstream input(production, std::ios::binary);
+        const std::string bytes((std::istreambuf_iterator<char>(input)),
+                                std::istreambuf_iterator<char>());
+        require(bytes == "known-good-production\n",
+                "blocked publication modified production result");
+    });
+    run("publication gate requires protected reference", [&] {
+        TempDirectory temporary;
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+            baseline, (temporary.path / "missing.yaml").string(), config);
+        require(!check.passed && check.message.find("缺少受保护参考结果") != std::string::npos,
+                "missing protected reference was not blocked");
+    });
+    run("publication gate blocks all September field drifts from June reference", [&] {
+        const cv::Mat june = (cv::Mat_<double>(4, 4) <<
+            0.99986113048138547, -0.011420704821709197, -0.012136196021096583, 0.2294065352798664,
+            -0.010909309238003425, -0.99908309208772517, 0.041400025077042046, 1.0394282948566971,
+            -0.012597885712956178, -0.041261878360121775, -0.99906894190028639, 0.97401898922113117,
+            0, 0, 0, 1);
+        const std::vector<cv::Mat> september{
+            (cv::Mat_<double>(4, 4) <<
+                0.99976425974715022, 0.019259799900111282, 0.010024222665158096, 0.18103239407758903,
+                0.019334652929527994, -0.99978549991061816, -0.0074246457538376066, 1.1650557416967207,
+                0.0098790752769523128, 0.0076167103320894164, -0.99992219177063446, 0.90934362945690173,
+                0, 0, 0, 1),
+            (cv::Mat_<double>(4, 4) <<
+                0.99977897855553355, 0.019200422202143262, 0.0085637506802915143, 0.18743505085038614,
+                0.019232296840059504, -0.99980836024746933, -0.0036553436941572123, 1.164080670944619,
+                0.0084919253830086482, 0.0038192363799615351, -0.99995664937874351, 0.90660297943195156,
+                0, 0, 0, 1),
+            (cv::Mat_<double>(4, 4) <<
+                0.99979890150703465, 0.018295808933456285, 0.008210963451210444, 0.19077413961114018,
+                0.018340727242780488, -0.999817055227048, -0.0054289779259130665, 1.1639668271209793,
+                0.0081101337555296877, 0.0055784812076929147, -0.99995155196533547, 0.8974886663655115,
+                0, 0, 0, 1)};
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << june;
+        out.release();
+        PoseGenerationConfig config;
+        for (const cv::Mat& transform : september) {
+            EyeToHandResult candidate;
+            candidate.success = true;
+            candidate.T_base_camera = transform;
+            candidate.valid_frames = 69;
+            candidate.reproj_error = 0.0025;
+            candidate.quality.translation_p95_mm = 4.5;
+            candidate.quality.rotation_rms_deg = 0.35;
+            candidate.quality.consensus_available = true;
+            candidate.quality.consensus_passed = true;
+            const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+                candidate, reference.string(), config);
+            require(!check.passed && check.reference_loaded &&
+                        check.translation_drift_mm > 140.0,
+                    "September field drift was not blocked");
+        }
+    });
+    run("publication gate does not trade rotation quality for lower translation RMS", [&] {
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << baseline.T_base_camera;
+        out.release();
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        EyeToHandResult candidate = baseline;
+        candidate.reproj_error = 0.001079184;
+        candidate.quality.translation_p95_mm = 1.81872;
+        candidate.quality.rotation_rms_deg = 0.574243;
+        const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+            candidate, reference.string(), config);
+        require(!check.passed && check.message.find("旋转 RMS") != std::string::npos,
+                "low-translation/high-rotation candidate was not blocked");
+    });
+
     run("minimum 12 diverse poses succeed", [&] {
         EyeToHandResult result;
         const bool ok = solveEyeToHandPoses(
@@ -410,6 +538,20 @@ int main() {
                 "zero-byte images unexpectedly calibrated");
         require(!result.success && result.T_base_camera.empty(),
                 "unreadable image failure kept stale success");
+    });
+    run("disk replay rejects missing fixed intrinsics", [&] {
+        TempDirectory temporary;
+        makeDiskFixture(temporary.path);
+        EyeToHandResult result = baseline;
+        result.T_base_camera = baseline.T_base_camera.clone();
+        const auto missing = temporary.path / "missing_camera_params.yaml";
+        require(!calibrateEyeToHandFromDisk(temporary.path.string(), result,
+                                             missing.string()),
+                "missing fixed intrinsics unexpectedly accepted");
+        require(!result.success && result.T_base_camera.empty(),
+                "fixed-intrinsics failure kept stale success");
+        require(result.message.find("无法打开相机内参") != std::string::npos,
+                "missing fixed intrinsics reported wrong failure");
     });
     std::cout << failures << " failed test(s)\n";
     return failures == 0 ? 0 : 1;

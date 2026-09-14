@@ -32,7 +32,17 @@ int test_pose_generation_config()
                << "min_corners: 16\n"
                << "min_valid_frames: 20\n"
                << "maximum_candidates: 90\n"
-               << "maximum_joint_step_degrees: 60.0\n";
+               << "maximum_joint_step_degrees: 60.0\n"
+               << "maximum_capture_translation_drift_mm: 0.2\n"
+               << "maximum_capture_rotation_drift_degrees: 0.1\n"
+               << "reference_result_file: reference.yaml\n"
+               << "require_reference_result: 0\n"
+               << "minimum_publish_frames: 30\n"
+               << "maximum_publish_translation_rms_mm: 2.5\n"
+               << "maximum_publish_translation_p95_mm: 4.5\n"
+               << "maximum_publish_rotation_rms_degrees: 0.4\n"
+               << "maximum_publish_translation_drift_mm: 15.0\n"
+               << "maximum_publish_rotation_drift_degrees: 1.5\n";
     }
     {
         PoseGenerationConfig config;
@@ -47,6 +57,13 @@ int test_pose_generation_config()
                    "pose config loads planning gates");
         TEST_CHECK(config.source_file == path,
                    "pose config records source file");
+        TEST_CHECK(config.maximum_capture_translation_drift_mm == 0.2 &&
+                   config.maximum_capture_rotation_drift_degrees == 0.1 &&
+                   config.reference_result_file == "reference.yaml" &&
+                   !config.require_reference_result &&
+                   config.minimum_publish_frames == 30 &&
+                   config.maximum_publish_translation_drift_mm == 15.0,
+                   "pose config loads capture and publication gates");
     }
     std::remove(path);
 

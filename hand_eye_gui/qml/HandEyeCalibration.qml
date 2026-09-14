@@ -610,6 +610,7 @@ ApplicationWindow {
                                     font.bold: true
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "候选姿态: " +
                                           root.fmtCount(calibrationController.candidateProcessed) + " / " +
                                           root.fmtCount(calibrationController.candidateReachable) +
@@ -618,12 +619,14 @@ ApplicationWindow {
                                     font.pixelSize: 18
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "成功采集: " + root.fmtCount(calibrationController.capturedFrames) +
                                           "    跳过: " + root.fmtCount(calibrationController.skippedFrames)
                                     color: textDim
                                     font.pixelSize: 18
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "PnP有效: " + root.fmtCount(calibrationController.pnpValidFrames) +
                                           "    MAD剔除: " + root.fmtCount(calibrationController.madRejectedFrames) +
                                           "    最终内点: " + root.fmtCount(calibrationController.finalInliers)
@@ -631,6 +634,7 @@ ApplicationWindow {
                                     font.pixelSize: 18
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "平移 RMS/P95/MAX: " +
                                           root.fmtMetric(calibrationController.translationRmsMm) + " / " +
                                           root.fmtMetric(calibrationController.translationP95Mm) + " / " +
@@ -639,6 +643,7 @@ ApplicationWindow {
                                     font.pixelSize: 17
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "旋转 RMS/P95/MAX: " +
                                           root.fmtMetric(calibrationController.rotationRmsDeg) + " / " +
                                           root.fmtMetric(calibrationController.rotationP95Deg) + " / " +
@@ -647,6 +652,7 @@ ApplicationWindow {
                                     font.pixelSize: 17
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "Solver: " + (calibrationController.selectedSolver || "--") +
                                           "  共识: " + (calibrationController.consensusAvailable
                                               ? (calibrationController.consensusPassed ? "PASS" : "FAIL")
@@ -655,6 +661,7 @@ ApplicationWindow {
                                     font.pixelSize: 17
                                 }
                                 Label {
+                                    visible: calibrationController.calibrationType !== "eye_to_hand"
                                     text: "发布: " + (calibrationController.publicationState || "not_started")
                                     color: textDim
                                     font.pixelSize: 17
@@ -672,6 +679,7 @@ ApplicationWindow {
 
                             ColumnLayout {
                                 id: resultCol
+                                property bool showDetails: calibrationController.calibrationType !== "eye_to_hand"
                                 width: parent.width
                                 spacing: 10
 
@@ -680,6 +688,12 @@ ApplicationWindow {
                                     horizontalAlignment: Text.AlignHCenter
                                     text: {
                                         var o = calibrationController.calibrationOutcome
+                                        if (calibrationController.calibrationType === "eye_to_hand") {
+                                            if (o === "PASS") return "标定成功"
+                                            if (o === "FAIL") return "标定失败"
+                                            if (o === "CANCELLED") return "标定已取消"
+                                            return calibrationController.running ? "标定中" : "—"
+                                        }
                                         if (o === "PASS" || o === "FAIL" || o === "CANCELLED")
                                             return o
                                         return calibrationController.running ? "RUNNING" : "—"
@@ -694,6 +708,12 @@ ApplicationWindow {
                                     font.pixelSize: 36
                                     font.bold: true
                                 }
+
+                                ColumnLayout {
+                                id: resultDetails
+                                Layout.fillWidth: true
+                                spacing: 10
+                                visible: resultCol.showDetails
 
                                 // TCP 偏移
                                 RowLayout {
@@ -870,6 +890,7 @@ ApplicationWindow {
                                         border.color: borderColor
                                         radius: 4
                                     }
+                                }
                                 }
                             }
                         }

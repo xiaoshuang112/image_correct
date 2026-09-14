@@ -171,6 +171,10 @@ configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_to_hand_config.yaml"
     "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_config.yaml"
     COPYONLY)
+configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_to_hand_reference.yaml"
+    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_reference.yaml"
+    COPYONLY)
 
 SET(SRC_LISTS
 calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp

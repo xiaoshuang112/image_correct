@@ -29,6 +29,15 @@ struct EyeToHandResult {
     std::string message;
     std::string data_directory; // 本次采集目录，或离线重放的输入目录
     CalibrationRuntimeStatus quality;
+    bool reused_intrinsics = false; // true: 使用身份校验通过的生产 K/D
+};
+
+struct EyeToHandPublicationCheck {
+    bool passed = false;
+    bool reference_loaded = false;
+    double translation_drift_mm = std::numeric_limits<double>::quiet_NaN();
+    double rotation_drift_deg = std::numeric_limits<double>::quiet_NaN();
+    std::string message;
 };
 
 // 无硬件求解：G=T_base_flange, C=T_camera_board（平移单位 m）。
@@ -52,6 +61,18 @@ struct PoseGenerationConfig {
     int min_valid_frames = 10;
     int maximum_candidates = 90;
     double maximum_joint_step_degrees = 60.0;
+    double maximum_capture_translation_drift_mm = 0.10;
+    double maximum_capture_rotation_drift_degrees = 0.05;
+
+    // 生产发布门。reference_result_file 相对 eye_to_hand_config.yaml 所在目录解析。
+    std::string reference_result_file = "eye_to_hand_reference.yaml";
+    bool require_reference_result = true;
+    int minimum_publish_frames = 60;
+    double maximum_publish_translation_rms_mm = 3.0;
+    double maximum_publish_translation_p95_mm = 5.0;
+    double maximum_publish_rotation_rms_degrees = 0.5;
+    double maximum_publish_translation_drift_mm = 20.0;
+    double maximum_publish_rotation_drift_degrees = 2.0;
     std::string source_file;
 };
 
@@ -78,6 +99,30 @@ inline bool tryLoadPoseGenerationConfig(const std::string& yaml_path,
         fn = fs["maximum_candidates"]; if (!fn.empty()) fn >> cfg.maximum_candidates;
         fn = fs["maximum_joint_step_degrees"];
         if (!fn.empty()) fn >> cfg.maximum_joint_step_degrees;
+        fn = fs["maximum_capture_translation_drift_mm"];
+        if (!fn.empty()) fn >> cfg.maximum_capture_translation_drift_mm;
+        fn = fs["maximum_capture_rotation_drift_degrees"];
+        if (!fn.empty()) fn >> cfg.maximum_capture_rotation_drift_degrees;
+        fn = fs["reference_result_file"];
+        if (!fn.empty()) fn >> cfg.reference_result_file;
+        fn = fs["require_reference_result"];
+        if (!fn.empty()) {
+            int required = cfg.require_reference_result ? 1 : 0;
+            fn >> required;
+            cfg.require_reference_result = required != 0;
+        }
+        fn = fs["minimum_publish_frames"];
+        if (!fn.empty()) fn >> cfg.minimum_publish_frames;
+        fn = fs["maximum_publish_translation_rms_mm"];
+        if (!fn.empty()) fn >> cfg.maximum_publish_translation_rms_mm;
+        fn = fs["maximum_publish_translation_p95_mm"];
+        if (!fn.empty()) fn >> cfg.maximum_publish_translation_p95_mm;
+        fn = fs["maximum_publish_rotation_rms_degrees"];
+        if (!fn.empty()) fn >> cfg.maximum_publish_rotation_rms_degrees;
+        fn = fs["maximum_publish_translation_drift_mm"];
+        if (!fn.empty()) fn >> cfg.maximum_publish_translation_drift_mm;
+        fn = fs["maximum_publish_rotation_drift_degrees"];
+        if (!fn.empty()) fn >> cfg.maximum_publish_rotation_drift_degrees;
         fs.release();
     } catch (const cv::Exception& exception) {
         error = "invalid pose generation config " + yaml_path + ": " +
@@ -110,10 +155,39 @@ inline bool tryLoadPoseGenerationConfig(const std::string& yaml_path,
         error = "maximum_joint_step_degrees must be in (0, 180]";
         return false;
     }
+    const std::vector<double> positive_limits{
+        cfg.maximum_capture_translation_drift_mm,
+        cfg.maximum_capture_rotation_drift_degrees,
+        cfg.maximum_publish_translation_rms_mm,
+        cfg.maximum_publish_translation_p95_mm,
+        cfg.maximum_publish_rotation_rms_degrees,
+        cfg.maximum_publish_translation_drift_mm,
+        cfg.maximum_publish_rotation_drift_degrees};
+    if (cfg.reference_result_file.empty() || cfg.minimum_publish_frames <= 0 ||
+        !std::all_of(positive_limits.begin(), positive_limits.end(),
+                     [](double value) { return std::isfinite(value) && value > 0.0; })) {
+        error = "eye-to-hand capture/publication limits must be positive and finite";
+        return false;
+    }
     std::cout << "加载配置: " << yaml_path << std::endl;
     cfg.source_file = yaml_path;
     return true;
 }
+
+// 求解成功后、覆盖生产 eye_to_hand_result.yaml 之前调用。候选结果始终保留在
+// 本次 run 目录；发布门失败不得修改生产结果或固定内参。
+EyeToHandPublicationCheck checkEyeToHandPublication(
+    const EyeToHandResult& candidate,
+    const std::string& reference_yaml,
+    const PoseGenerationConfig& config);
+
+bool publishEyeToHandResult(
+    const EyeToHandResult& candidate,
+    const std::string& reference_yaml,
+    const std::string& production_yaml,
+    const PoseGenerationConfig& config,
+    EyeToHandPublicationCheck& check,
+    std::string& error);
 
 inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_path) {
     PoseGenerationConfig cfg;
@@ -148,18 +222,22 @@ bool autoEyeToHandCharucoCalibration(
     AI_det_callback callback = nullptr);
 
 /**
- * @brief 从已采集的本地数据标定相机内参 + 眼在手外手眼矩阵
+ * @brief 从已采集的本地数据标定眼在手外手眼矩阵
  *
  * 读取 save_dir 下的采集数据（图像、机器人位姿），依次执行：
- *   Phase 3.5 — 从 ChArUco 图像标定相机内参
+ *   Phase 3.5 — 读取指定内参，或从 ChArUco 图像标定相机内参
  *   Phase 3.75 — 用标定后的内参计算每帧标定板位姿
  *   Phase 4   — 手眼标定
  *
- * @param save_dir  采集数据目录（包含 000.jpg、rob_pos.csv 等）
- * @param result    标定结果
+ * @param save_dir          采集数据目录（包含 000.jpg、rob_pos.csv 等）
+ * @param result            标定结果
+ * @param camera_params_file 可选的固定内参 YAML；为空时从采集图像标定
+ * @param output_yaml       可选的结果路径；为空时写入 save_dir/eye_to_hand_result.yaml
  * @return true/false
  */
 bool calibrateEyeToHandFromDisk(const std::string& save_dir,
-                                 EyeToHandResult& result);
+                                 EyeToHandResult& result,
+                                 const std::string& camera_params_file = "",
+                                 const std::string& output_yaml = "");
 
 #endif // EYE_TO_HAND_CALIBRATION_HPP

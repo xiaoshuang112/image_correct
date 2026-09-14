@@ -22,3 +22,17 @@ min_corners: 12
 min_valid_frames: 12
 # 相邻采集位姿的最大关节步长 (deg)
 maximum_joint_step_degrees: 60
+
+# 拍照前后机器人位姿最大允许变化；超限自动重拍
+maximum_capture_translation_drift_mm: 0.10
+maximum_capture_rotation_drift_degrees: 0.05
+
+# 生产发布保护。参考文件相对此配置所在目录解析，自动程序不得覆盖参考文件。
+reference_result_file: "eye_to_hand_reference.yaml"
+require_reference_result: 1
+minimum_publish_frames: 60
+maximum_publish_translation_rms_mm: 3.0
+maximum_publish_translation_p95_mm: 5.0
+maximum_publish_rotation_rms_degrees: 0.5
+maximum_publish_translation_drift_mm: 20.0
+maximum_publish_rotation_drift_degrees: 2.0
