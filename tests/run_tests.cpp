@@ -10,6 +10,7 @@ int test_intrinsic_identity();
 int test_config_resolver();
 int test_candidate_planner();
 int test_pose_generation_config();
+int test_solver_consensus();
 }  // namespace suite
 
 int main() {
@@ -20,6 +21,7 @@ int main() {
     failures += suite::test_config_resolver();
     failures += suite::test_candidate_planner();
     failures += suite::test_pose_generation_config();
+    failures += suite::test_solver_consensus();
     if (failures == 0) {
         std::cout << "\n[caitu_tests] ALL PASS\n";
         return 0;

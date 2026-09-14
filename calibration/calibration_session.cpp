@@ -1222,6 +1222,10 @@ bool CalibrationSession::writeReport(const std::string& status,
             out << "rotation_p95_deg" << solver.raw_rotation_p95_deg;
             out << "}";
             out << "selected_medoid" << static_cast<int>(solver.selected_medoid);
+            out << "in_consensus_cluster"
+                << static_cast<int>(solver.in_consensus_cluster);
+            out << "consensus_exclusion_reason"
+                << solver.consensus_exclusion_reason;
             out << "medoid_normalized_distance_sum"
                 << solver.medoid_normalized_distance_sum;
             out << "}";
@@ -1244,11 +1248,33 @@ bool CalibrationSession::writeReport(const std::string& status,
             out << "{";
             out << "phase" << consensus.phase;
             out << "successful_solvers" << consensus.successful_solvers;
+            out << "cluster_size" << consensus.cluster_size;
+            out << "cluster_members" << consensus.cluster_members;
+            out << "excluded_solvers" << consensus.excluded_solvers;
+            out << "exclusion_reasons" << consensus.exclusion_reasons;
+            out << "largest_cluster_candidates"
+                << consensus.largest_cluster_candidates;
             out << "medoid_method" << consensus.medoid_method;
+            out << "cluster_max_translation_mm"
+                << consensus.cluster_max_translation_mm;
+            out << "cluster_p95_translation_mm"
+                << consensus.cluster_p95_translation_mm;
+            out << "cluster_max_rotation_deg"
+                << consensus.cluster_max_rotation_deg;
+            out << "cluster_p95_rotation_deg"
+                << consensus.cluster_p95_rotation_deg;
             out << "max_pair_translation_mm" << consensus.max_pair_translation_mm;
             out << "max_pair_rotation_deg" << consensus.max_pair_rotation_deg;
+            out << "max_normalized_pair_distance"
+                << consensus.max_normalized_pair_distance;
+            out << "normalized_pair_distance_sum"
+                << consensus.normalized_pair_distance_sum;
             out << "translation_limit_mm" << consensus.translation_limit_mm;
             out << "rotation_limit_deg" << consensus.rotation_limit_deg;
+            out << "ambiguous" << static_cast<int>(consensus.ambiguous);
+            out << "tight_core_available"
+                << static_cast<int>(consensus.tight_core_available);
+            out << "tight_core_members" << consensus.tight_core_members;
             out << "passed" << static_cast<int>(consensus.passed);
             out << "failure_reason" << consensus.failure_reason;
             out << "}";
@@ -1265,6 +1291,10 @@ bool CalibrationSession::writeReport(const std::string& status,
             out << "optimized_transform" << optimization.optimized_transform;
             out << "delta_translation_mm" << optimization.delta_translation_mm;
             out << "delta_rotation_deg" << optimization.delta_rotation_deg;
+            out << "large_refinement_delta"
+                << static_cast<int>(optimization.large_refinement_delta);
+            out << "requires_manual_confirmation"
+                << static_cast<int>(optimization.requires_manual_confirmation);
             out << "before_translation_rms_mm"
                 << optimization.before_translation_rms_mm;
             out << "after_translation_rms_mm"

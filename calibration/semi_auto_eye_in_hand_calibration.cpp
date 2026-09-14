@@ -3,6 +3,7 @@
 #include "camera_calibration.hpp"           // calibrateCameraFromDisk, loadImagesFromDisk
 #include "calibration_utils.hpp"            // executeCollection, PoseCandidate
 #include "calibration_session.hpp"
+#include "solver_consensus.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 
 #include <opencv2/calib3d.hpp>
@@ -593,6 +594,7 @@ constexpr double kMaxRotationP95Degrees = 2.0;
 constexpr int kMinimumConsensusSolvers = 3;
 constexpr double kMaxSolverPairTranslationMeters = 0.010;  // 10 mm
 constexpr double kMaxSolverPairRotationDegrees = 1.0;
+constexpr double kLargeRefinementTranslationMeters = 0.010;  // 10 mm
 
 static double percentile(std::vector<double> values, double quantile) {
     if (values.empty())
@@ -866,13 +868,22 @@ static TransformDistance measureTransformDistance(const cv::Mat& left,
 
 struct SolverConsensusResult {
     size_t medoid_index = 0;
+    std::vector<size_t> cluster_indices;
+    std::vector<size_t> excluded_indices;
     double max_pair_translation_meters = 0.0;
     double max_pair_rotation_degrees = 0.0;
+    double global_max_pair_translation_meters = 0.0;
+    double global_max_pair_rotation_degrees = 0.0;
+    double cluster_p95_translation_meters = 0.0;
+    double cluster_p95_rotation_degrees = 0.0;
+    bool ambiguous = false;
+    bool tight_core_available = false;
+    std::vector<size_t> tight_core_indices;
     bool passed = false;
     std::string failure_reason;
 };
 
-static SolverConsensusResult evaluateSolverConsensus(
+static SolverConsensusResult evaluateSolverConsensusMaxPair(
     const std::vector<HandEyeMethodResult>& results,
     const char* phase,
     HandEyePhase2Audit* audit,
@@ -995,9 +1006,226 @@ static SolverConsensusResult evaluateSolverConsensus(
     return consensus;
 }
 
+static std::string joinMethodNames(
+    const std::vector<HandEyeMethodResult>& results,
+    const std::vector<size_t>& indices) {
+    std::ostringstream stream;
+    for (size_t position = 0; position < indices.size(); ++position) {
+        if (position > 0)
+            stream << "+";
+        stream << results[indices[position]].name;
+    }
+    return stream.str();
+}
+
+static SolverConsensusResult evaluateSolverConsensus(
+    const std::vector<HandEyeMethodResult>& results,
+    const char* phase,
+    HandEyePhase2Audit* audit,
+    bool emit_diagnostics = true) {
+    SolverConsensusResult consensus;
+    std::vector<std::vector<solver_consensus::PairDistance>> distances(
+        results.size(),
+        std::vector<solver_consensus::PairDistance>(results.size()));
+    bool invalid_distance = false;
+    for (size_t left = 0; left < results.size(); ++left) {
+        for (size_t right = left + 1; right < results.size(); ++right) {
+            const TransformDistance measured = measureTransformDistance(
+                results[left].transform, results[right].transform);
+            if (!std::isfinite(measured.translation_meters) ||
+                !std::isfinite(measured.rotation_degrees)) {
+                invalid_distance = true;
+                continue;
+            }
+            distances[left][right] = {
+                measured.translation_meters, measured.rotation_degrees};
+            distances[right][left] = distances[left][right];
+            if (audit) {
+                HandEyeSolverPairAuditRecord pair;
+                pair.phase = phase;
+                pair.left_method = results[left].name;
+                pair.right_method = results[right].name;
+                pair.delta_translation_mm = measured.translation_meters * 1000.0;
+                pair.delta_rotation_deg = measured.rotation_degrees;
+                audit->pairs.push_back(std::move(pair));
+            }
+            if (emit_diagnostics) {
+                APP_LOG_EVENT_INFO(
+                    "calibration.hand_eye", "solver_consensus_pair", "measured",
+                    {{"phase", phase},
+                     {"left_method", QString::fromStdString(results[left].name)},
+                     {"right_method", QString::fromStdString(results[right].name)},
+                     {"delta_translation_mm", QString::number(
+                          measured.translation_meters * 1000.0, 'f', 6)},
+                     {"delta_rotation_deg", QString::number(
+                          measured.rotation_degrees, 'f', 6)}});
+            }
+        }
+    }
+
+    solver_consensus::Selection selected;
+    solver_consensus::Selection tight_core;
+    if (invalid_distance) {
+        selected.failure_reason = "invalid_solver_distance";
+    } else {
+        selected = solver_consensus::selectCompleteLinkCluster(
+            distances, kMaxSolverPairTranslationMeters,
+            kMaxSolverPairRotationDegrees, kMinimumConsensusSolvers);
+        tight_core = solver_consensus::selectCompleteLinkCluster(
+            distances, 0.003, 0.5, kMinimumConsensusSolvers);
+    }
+    consensus.medoid_index = selected.medoid_index;
+    consensus.cluster_indices = selected.members;
+    consensus.excluded_indices = selected.excluded;
+    consensus.max_pair_translation_meters = selected.cluster_max_translation;
+    consensus.max_pair_rotation_degrees = selected.cluster_max_rotation;
+    consensus.global_max_pair_translation_meters = selected.global_max_translation;
+    consensus.global_max_pair_rotation_degrees = selected.global_max_rotation;
+    consensus.cluster_p95_translation_meters = selected.cluster_p95_translation;
+    consensus.cluster_p95_rotation_degrees = selected.cluster_p95_rotation;
+    consensus.ambiguous = selected.ambiguous;
+    consensus.tight_core_available = tight_core.passed;
+    consensus.tight_core_indices = tight_core.members;
+    consensus.passed = selected.passed;
+    consensus.failure_reason = selected.failure_reason;
+
+    std::vector<double> cluster_distance_sums(results.size(), 0.0);
+    for (size_t left_pos = 0; left_pos < selected.members.size(); ++left_pos) {
+        for (size_t right_pos = left_pos + 1;
+             right_pos < selected.members.size(); ++right_pos) {
+            const size_t left = selected.members[left_pos];
+            const size_t right = selected.members[right_pos];
+            const double normalized =
+                distances[left][right].translation /
+                    kMaxSolverPairTranslationMeters +
+                distances[left][right].rotation /
+                    kMaxSolverPairRotationDegrees;
+            cluster_distance_sums[left] += normalized;
+            cluster_distance_sums[right] += normalized;
+        }
+    }
+
+    if (audit) {
+        for (HandEyeSolverAuditRecord& record : audit->solvers) {
+            if (record.phase != phase || !record.success)
+                continue;
+            for (size_t index = 0; index < results.size(); ++index) {
+                if (record.method != results[index].name)
+                    continue;
+                record.in_consensus_cluster = std::find(
+                    selected.members.begin(), selected.members.end(), index) !=
+                    selected.members.end();
+                record.selected_medoid = !selected.members.empty() &&
+                    index == selected.medoid_index;
+                record.medoid_normalized_distance_sum =
+                    cluster_distance_sums[index];
+                if (!record.in_consensus_cluster) {
+                    std::ostringstream reason;
+                    reason << "outside_complete_link_cluster";
+                    bool first = true;
+                    for (const size_t member : selected.members) {
+                        const auto& distance = distances[index][member];
+                        if (distance.translation <= kMaxSolverPairTranslationMeters &&
+                            distance.rotation <= kMaxSolverPairRotationDegrees)
+                            continue;
+                        reason << (first ? ":conflicts_with=" : ",")
+                               << results[member].name;
+                        first = false;
+                    }
+                    record.consensus_exclusion_reason = reason.str();
+                }
+                break;
+            }
+        }
+        HandEyeConsensusAuditRecord record;
+        record.phase = phase;
+        record.successful_solvers = static_cast<int>(results.size());
+        record.cluster_size = static_cast<int>(selected.members.size());
+        for (const size_t index : selected.members)
+            record.cluster_members.push_back(results[index].name);
+        for (const size_t index : selected.excluded) {
+            record.excluded_solvers.push_back(results[index].name);
+            for (const HandEyeSolverAuditRecord& solver : audit->solvers) {
+                if (solver.phase == phase && solver.method == results[index].name) {
+                    record.exclusion_reasons.push_back(
+                        solver.consensus_exclusion_reason);
+                    break;
+                }
+            }
+        }
+        for (const auto& candidate : selected.largest_clusters)
+            record.largest_cluster_candidates.push_back(
+                joinMethodNames(results, candidate));
+        if (!selected.members.empty())
+            record.medoid_method = results[selected.medoid_index].name;
+        record.cluster_max_translation_mm =
+            selected.cluster_max_translation * 1000.0;
+        record.cluster_p95_translation_mm =
+            selected.cluster_p95_translation * 1000.0;
+        record.cluster_max_rotation_deg = selected.cluster_max_rotation;
+        record.cluster_p95_rotation_deg = selected.cluster_p95_rotation;
+        record.max_pair_translation_mm = selected.global_max_translation * 1000.0;
+        record.max_pair_rotation_deg = selected.global_max_rotation;
+        record.max_normalized_pair_distance =
+            selected.max_normalized_pair_distance;
+        record.normalized_pair_distance_sum =
+            selected.normalized_pair_distance_sum;
+        record.translation_limit_mm = kMaxSolverPairTranslationMeters * 1000.0;
+        record.rotation_limit_deg = kMaxSolverPairRotationDegrees;
+        record.ambiguous = selected.ambiguous;
+        record.tight_core_available = tight_core.passed;
+        for (const size_t index : tight_core.members)
+            record.tight_core_members.push_back(results[index].name);
+        record.passed = selected.passed;
+        record.failure_reason = selected.failure_reason;
+        audit->consensus.push_back(std::move(record));
+    }
+
+    const std::string medoid = selected.members.empty()
+        ? "none" : results[selected.medoid_index].name;
+    const std::string members = joinMethodNames(results, selected.members);
+    const std::string excluded = joinMethodNames(results, selected.excluded);
+    if (emit_diagnostics) {
+        APP_LOG_EVENT(
+            Info, "calibration.hand_eye", "solver_consensus_cluster",
+            selected.passed ? "success" : "fail",
+            {"phase", phase},
+            {"successful_solvers", QString::number(results.size())},
+            {"cluster_members", QString::fromStdString(members)},
+            {"excluded_solvers", QString::fromStdString(excluded)},
+            {"medoid_method", QString::fromStdString(medoid)},
+            {"cluster_max_translation_mm", QString::number(
+                 selected.cluster_max_translation * 1000.0, 'f', 6)},
+            {"cluster_p95_translation_mm", QString::number(
+                 selected.cluster_p95_translation * 1000.0, 'f', 6)},
+            {"cluster_max_rotation_deg", QString::number(
+                 selected.cluster_max_rotation, 'f', 6)},
+            {"cluster_p95_rotation_deg", QString::number(
+                 selected.cluster_p95_rotation, 'f', 6)},
+            {"raw_global_max_translation_mm", QString::number(
+                 selected.global_max_translation * 1000.0, 'f', 6)},
+            {"raw_global_max_rotation_deg", QString::number(
+                 selected.global_max_rotation, 'f', 6)},
+            {"tight_core_members", QString::fromStdString(
+                 joinMethodNames(results, tight_core.members))},
+            {"failure_reason", QString::fromStdString(selected.failure_reason)});
+        std::cout << "[autoCalib] Solver consensus [" << phase
+                  << "]: cluster=" << members << ", excluded=" << excluded
+                  << ", medoid=" << medoid << ", cluster max Δt="
+                  << selected.cluster_max_translation * 1000.0
+                  << " mm, cluster max ΔR=" << selected.cluster_max_rotation
+                  << " deg, raw global max Δt="
+                  << selected.global_max_translation * 1000.0
+                  << " mm, gate=" << (selected.passed ? "PASS" : "FAIL")
+                  << std::endl;
+    }
+    return consensus;
+}
+
 struct OptimizedMedoidResult {
     cv::Mat transform;
     HandEyeConsistencyStats stats;
+    bool large_refinement_delta = false;
 };
 
 static OptimizedMedoidResult optimizeMedoidOnce(
@@ -1014,6 +1242,9 @@ static OptimizedMedoidResult optimizeMedoidOnce(
         optimized.transform, robot_poses, camera_poses);
     const TransformDistance delta = measureTransformDistance(
         medoid.transform, optimized.transform);
+    optimized.large_refinement_delta =
+        std::isfinite(delta.translation_meters) &&
+        delta.translation_meters > kLargeRefinementTranslationMeters;
 
     HandEyeOptimizationAuditRecord record;
     record.performed = true;
@@ -1023,6 +1254,8 @@ static OptimizedMedoidResult optimizeMedoidOnce(
     record.optimized_transform = optimized.transform.clone();
     record.delta_translation_mm = delta.translation_meters * 1000.0;
     record.delta_rotation_deg = delta.rotation_degrees;
+    record.large_refinement_delta = optimized.large_refinement_delta;
+    record.requires_manual_confirmation = optimized.large_refinement_delta;
     record.before_translation_rms_mm = medoid.stats.translation_rms * 1000.0;
     record.after_translation_rms_mm = optimized.stats.translation_rms * 1000.0;
     record.before_rotation_rms_deg = medoid.stats.rotation_rms_degrees;
@@ -1031,57 +1264,34 @@ static OptimizedMedoidResult optimizeMedoidOnce(
         audit->optimizations.push_back(record);
 
     if (emit_diagnostics) {
-        APP_LOG_EVENT_INFO(
-            "calibration.hand_eye", "medoid_refinement", "complete",
-            {{"phase", phase},
-             {"method", QString::fromStdString(medoid.name)},
-             {"delta_translation_mm", QString::number(
-                  delta.translation_meters * 1000.0, 'f', 6)},
-             {"delta_rotation_deg", QString::number(delta.rotation_degrees, 'f', 6)},
-             {"before_translation_rms_mm", QString::number(
-                  medoid.stats.translation_rms * 1000.0, 'f', 6)},
-             {"after_translation_rms_mm", QString::number(
-                  optimized.stats.translation_rms * 1000.0, 'f', 6)},
-             {"before_rotation_rms_deg", QString::number(
-                  medoid.stats.rotation_rms_degrees, 'f', 6)},
-             {"after_rotation_rms_deg", QString::number(
-                  optimized.stats.rotation_rms_degrees, 'f', 6)}});
+        if (optimized.large_refinement_delta) {
+            APP_LOG_EVENT_WARNING(
+                "calibration.hand_eye", "medoid_refinement", "complete",
+                {"phase", phase},
+                {"method", QString::fromStdString(medoid.name)},
+                {"delta_translation_mm", QString::number(
+                     delta.translation_meters * 1000.0, 'f', 6)},
+                {"delta_rotation_deg", QString::number(
+                     delta.rotation_degrees, 'f', 6)},
+                {"large_refinement_delta", "1"},
+                {"publication_policy", "manual_confirmation_required"});
+        } else {
+            APP_LOG_EVENT_INFO(
+                "calibration.hand_eye", "medoid_refinement", "complete",
+                {"phase", phase},
+                {"method", QString::fromStdString(medoid.name)},
+                {"delta_translation_mm", QString::number(
+                     delta.translation_meters * 1000.0, 'f', 6)},
+                {"delta_rotation_deg", QString::number(
+                     delta.rotation_degrees, 'f', 6)},
+                {"large_refinement_delta", "0"},
+                {"publication_policy", "automatic_allowed"});
+        }
         std::cout << "[autoCalib] Medoid refinement [" << phase << "] "
                   << medoid.name << ": Δt=" << delta.translation_meters * 1000.0
                   << " mm, ΔR=" << delta.rotation_degrees << " deg" << std::endl;
     }
     return optimized;
-}
-
-// Closed-form hand-eye methods react differently to noisy, long-baseline
-// eye-to-hand data.  Compare them only after applying the same physical
-// consistency refinement; otherwise one raw method (commonly TSAI) can veto a
-// solution even though every method converges to the same SE(3) optimum.
-static std::vector<HandEyeMethodResult> refineMethodsForConsensus(
-    const std::vector<HandEyeMethodResult>& methods,
-    const std::vector<cv::Mat>& robot_poses,
-    const std::vector<cv::Mat>& camera_poses,
-    const char* phase,
-    HandEyePhase2Audit* audit,
-    bool emit_diagnostics = false) {
-    std::vector<HandEyeMethodResult> refined;
-    refined.reserve(methods.size());
-    for (const HandEyeMethodResult& method : methods) {
-        const OptimizedMedoidResult optimized = optimizeMedoidOnce(
-            method, robot_poses, camera_poses, phase, audit,
-            emit_diagnostics);
-        if (optimized.transform.empty() ||
-            !cv::checkRange(optimized.transform) ||
-            !std::isfinite(optimized.stats.translation_rms) ||
-            !std::isfinite(optimized.stats.rotation_rms_degrees)) {
-            continue;
-        }
-        HandEyeMethodResult result = method;
-        result.transform = optimized.transform.clone();
-        result.stats = optimized.stats;
-        refined.push_back(std::move(result));
-    }
-    return refined;
 }
 
 struct LooConsensusStageResult {
@@ -1122,6 +1332,10 @@ static LooConsensusStageResult solveLooConsensusStage(
         return stage;
     }
     stage.consensus = evaluateSolverConsensus(methods, phase, nullptr, false);
+    if (!stage.consensus.passed) {
+        stage.failure_reason = stage.consensus.failure_reason;
+        return stage;
+    }
     if (stage.consensus.medoid_index >= methods.size()) {
         stage.failure_reason = "invalid_medoid_index";
         return stage;
@@ -1567,8 +1781,7 @@ static bool estimateHandEyeTrans(
     HandEyeSolveAudit* audit,
     CalibrationRuntimeStatus* runtime_status = nullptr,
     const CalibrationRuntimeCallback& runtime_callback = {},
-    const char* transform_name = "T_flange_camera",
-    bool refine_all_methods_for_consensus = false) {
+    const char* transform_name = "T_flange_camera") {
     result.success = false;
     result.valid_frames = 0;
     result.reproj_error = 0.0;
@@ -1623,33 +1836,19 @@ static bool estimateHandEyeTrans(
         return false;
     }
 
-    SolverConsensusResult final_consensus;
-    size_t medoid_index = 0;
-    OptimizedMedoidResult final_optimized;
-    if (refine_all_methods_for_consensus) {
-        method_results = refineMethodsForConsensus(
-            method_results, robot_poses, camera_poses, "initial_refined",
-            audit ? &audit->phase2 : nullptr);
-        if (method_results.empty()) {
-            result.message = "所有手眼标定方法精化均失败";
-            publishSolve(CalibrationRuntimeStage::Failed,
-                         "all_method_refinements_failed");
-            return false;
-        }
-        final_consensus = evaluateSolverConsensus(
-            method_results, "initial_refined",
-            audit ? &audit->phase2 : nullptr);
-        medoid_index = final_consensus.medoid_index;
-        final_optimized.transform = method_results[medoid_index].transform.clone();
-        final_optimized.stats = method_results[medoid_index].stats;
-    } else {
-        final_consensus = evaluateSolverConsensus(
-            method_results, "initial", audit ? &audit->phase2 : nullptr);
-        medoid_index = final_consensus.medoid_index;
-        final_optimized = optimizeMedoidOnce(
-            method_results[medoid_index], robot_poses, camera_poses, "initial",
-            audit ? &audit->phase2 : nullptr);
+    SolverConsensusResult final_consensus = evaluateSolverConsensus(
+        method_results, "initial", audit ? &audit->phase2 : nullptr);
+    if (!final_consensus.passed) {
+        result.message = "原始 solver 多数共识未通过: " +
+                         final_consensus.failure_reason;
+        publishSolve(CalibrationRuntimeStage::Failed,
+                     final_consensus.failure_reason);
+        return false;
     }
+    size_t medoid_index = final_consensus.medoid_index;
+    OptimizedMedoidResult final_optimized = optimizeMedoidOnce(
+        method_results[medoid_index], robot_poses, camera_poses, "initial",
+        audit ? &audit->phase2 : nullptr);
     if (final_optimized.stats.translation_errors.size() != robot_poses.size() ||
         !std::isfinite(final_optimized.stats.translation_rms)) {
         result.message = "初始 medoid 精化结果无效";
@@ -1748,32 +1947,20 @@ static bool estimateHandEyeTrans(
             publishSolve(CalibrationRuntimeStage::Failed, "refit_failed");
             return false;
         }
-        if (refine_all_methods_for_consensus) {
-            method_results = refineMethodsForConsensus(
-                method_results, filtered_robot_poses, filtered_camera_poses,
-                "refit_refined", audit ? &audit->phase2 : nullptr);
-            if (method_results.empty()) {
-                result.message = "离群过滤后所有手眼标定方法精化均失败";
-                publishSolve(CalibrationRuntimeStage::Failed,
-                             "all_refit_method_refinements_failed");
-                return false;
-            }
-            final_consensus = evaluateSolverConsensus(
-                method_results, "refit_refined",
-                audit ? &audit->phase2 : nullptr);
-            medoid_index = final_consensus.medoid_index;
-            final_optimized.transform =
-                method_results[medoid_index].transform.clone();
-            final_optimized.stats = method_results[medoid_index].stats;
-        } else {
-            final_consensus = evaluateSolverConsensus(
-                method_results, "refit", audit ? &audit->phase2 : nullptr);
-            medoid_index = final_consensus.medoid_index;
-            final_optimized = optimizeMedoidOnce(
-                method_results[medoid_index], filtered_robot_poses,
-                filtered_camera_poses, "refit",
-                audit ? &audit->phase2 : nullptr);
+        final_consensus = evaluateSolverConsensus(
+            method_results, "refit", audit ? &audit->phase2 : nullptr);
+        if (!final_consensus.passed) {
+            result.message = "MAD 后原始 solver 多数共识未通过: " +
+                             final_consensus.failure_reason;
+            publishSolve(CalibrationRuntimeStage::Failed,
+                         final_consensus.failure_reason);
+            return false;
         }
+        medoid_index = final_consensus.medoid_index;
+        final_optimized = optimizeMedoidOnce(
+            method_results[medoid_index], filtered_robot_poses,
+            filtered_camera_poses, "refit",
+            audit ? &audit->phase2 : nullptr);
         publishSolve(CalibrationRuntimeStage::HandEyeRefit, "refit_complete");
     }
 
@@ -1787,6 +1974,8 @@ static bool estimateHandEyeTrans(
         failure_reason = "invalid_optimized_quality_metrics";
     else if (!final_consensus.passed)
         failure_reason = final_consensus.failure_reason;
+    else if (final_optimized.large_refinement_delta)
+        failure_reason = "large_refinement_delta_requires_manual_confirmation";
     else if (quality.translation_rms > kMaxTranslationRmsMeters)
         failure_reason = "translation_rms_exceeded";
     else if (quality.translation_p95 > kMaxTranslationP95Meters)
@@ -1962,7 +2151,7 @@ bool solveEyeToHandPoses(const std::vector<cv::Mat>& robot_poses,
     result.quality.pnp_valid_frames = static_cast<int>(robot_poses.size());
     const bool ok = estimateHandEyeTrans(result.camera_matrix, result.dist_coeffs,
         inverse_robot, cameras, solved, &audit, &result.quality, {},
-        "T_eye_to_hand_internal", true);
+        "T_eye_to_hand_internal");
     result.message = solved.message;
     if (!ok) return false;
     if (!validTransform(solved.T_flange_camera)) {

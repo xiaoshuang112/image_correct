@@ -181,6 +181,7 @@ configure_file(
 
 SET(SRC_LISTS
 calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
+    calibration/solver_consensus.cpp
     calibration.cpp utils/exposure_fusion.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
@@ -280,6 +281,7 @@ set(OFFLINE_HAND_EYE_SOURCES
     calibration/candidate_planner.cpp
     calibration/calibration_session.cpp
     calibration/semi_auto_eye_in_hand_calibration.cpp
+    calibration/solver_consensus.cpp
     utils/calib_transform.cpp
     utils/robot_util.cpp
 )
@@ -332,11 +334,13 @@ if(BUILD_TESTS)
         tests/test_config_resolver.cpp
         tests/test_candidate_planner.cpp
         tests/test_pose_generation_config.cpp
+        tests/test_solver_consensus.cpp
         cameras/mvs_device_selector.cpp
         cameras/mvs_error.cpp
         calibration/intrinsic_identity.cpp
         hand_eye_gui/config_resolver.cpp
         calibration/candidate_planner.cpp
+        calibration/solver_consensus.cpp
     )
     target_include_directories(caitu_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

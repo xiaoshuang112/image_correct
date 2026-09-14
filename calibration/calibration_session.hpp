@@ -47,6 +47,8 @@ struct HandEyeSolverAuditRecord {
     double raw_rotation_rms_deg = 0.0;
     double raw_rotation_p95_deg = 0.0;
     bool selected_medoid = false;
+    bool in_consensus_cluster = false;
+    std::string consensus_exclusion_reason;
     double medoid_normalized_distance_sum = 0.0;
 };
 
@@ -61,11 +63,25 @@ struct HandEyeSolverPairAuditRecord {
 struct HandEyeConsensusAuditRecord {
     std::string phase;
     int successful_solvers = 0;
+    int cluster_size = 0;
+    std::vector<std::string> cluster_members;
+    std::vector<std::string> excluded_solvers;
+    std::vector<std::string> exclusion_reasons;
+    std::vector<std::string> largest_cluster_candidates;
     std::string medoid_method;
+    double cluster_max_translation_mm = 0.0;
+    double cluster_p95_translation_mm = 0.0;
+    double cluster_max_rotation_deg = 0.0;
+    double cluster_p95_rotation_deg = 0.0;
     double max_pair_translation_mm = 0.0;
     double max_pair_rotation_deg = 0.0;
+    double max_normalized_pair_distance = 0.0;
+    double normalized_pair_distance_sum = 0.0;
     double translation_limit_mm = 0.0;
     double rotation_limit_deg = 0.0;
+    bool ambiguous = false;
+    bool tight_core_available = false;
+    std::vector<std::string> tight_core_members;
     bool passed = false;
     std::string failure_reason;
 };
@@ -78,6 +94,8 @@ struct HandEyeOptimizationAuditRecord {
     cv::Mat optimized_transform;
     double delta_translation_mm = 0.0;
     double delta_rotation_deg = 0.0;
+    bool large_refinement_delta = false;
+    bool requires_manual_confirmation = false;
     double before_translation_rms_mm = 0.0;
     double after_translation_rms_mm = 0.0;
     double before_rotation_rms_deg = 0.0;
