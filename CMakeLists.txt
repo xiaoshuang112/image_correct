@@ -1,5 +1,8 @@
 cmake_minimum_required(VERSION 3.10)
-project(caitu)
+project(caitu VERSION 1.0.0)
+
+# 对外发布的软件版本号。提交号和工作区状态用于追溯，版本号用于现场界面和日志。
+set(CAITU_VERSION "${PROJECT_VERSION}" CACHE STRING "Caitu application version")
 
 # Set C++ standard to C++17
 set(CMAKE_CXX_STANDARD 17)
@@ -246,6 +249,7 @@ add_custom_target(calibration_build_info ALL
         -DOUTPUT_FILE=${CALIBRATION_BUILD_INFO_HEADER}
         -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
+        -DAPP_VERSION=${CAITU_VERSION}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui/GenerateBuildInfo.cmake
     BYPRODUCTS ${CALIBRATION_BUILD_INFO_HEADER}
     COMMENT "Refreshing calibration audit build metadata"

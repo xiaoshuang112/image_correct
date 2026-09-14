@@ -42,13 +42,15 @@ int main(int argc, char* argv[])
     QGuiApplication app(argc, argv);
     app.setApplicationName("hand-eye-app");
     app.setOrganizationName("caitu");
+    app.setApplicationVersion(QStringLiteral(APP_VERSION));
 
     DiagnosticLogger& logger = DiagnosticLogger::instance();
     logger.initialize();
     APP_LOG_EVENT_INFO("lifecycle",
                        "application",
                        "start",
-                       {{"build_type", QStringLiteral(APP_BUILD_TYPE)},
+                       {{"version", QStringLiteral(APP_VERSION)},
+                        {"build_type", QStringLiteral(APP_BUILD_TYPE)},
                         {"build_time", QStringLiteral(APP_BUILD_TIMESTAMP)},
                         {"git", QStringLiteral(APP_GIT_COMMIT)},
                         {"git_state", QStringLiteral(APP_GIT_WORKTREE_STATE)},
@@ -111,6 +113,7 @@ int main(int argc, char* argv[])
         controller->init(imageProvider);
 
         engine.rootContext()->setContextProperty("calibrationController", controller.get());
+        engine.rootContext()->setContextProperty("appVersion", QStringLiteral(APP_VERSION));
         engine.addImageProvider("camera", imageProvider);
         APP_LOG_EVENT_INFO("qml", "qml", "loading",
                            {{"source", "qrc:///qml/HandEyeCalibration.qml"}});

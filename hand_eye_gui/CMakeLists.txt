@@ -249,6 +249,7 @@ add_custom_target(hand_eye_app_build_info ALL
         -DOUTPUT_FILE=${APP_BUILD_INFO_HEADER}
         -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
+        -DAPP_VERSION=${CAITU_VERSION}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/GenerateBuildInfo.cmake
     BYPRODUCTS ${APP_BUILD_INFO_HEADER}
     COMMENT "Refreshing hand-eye build metadata"

@@ -28,6 +28,9 @@
 #ifndef APP_BUILD_TYPE
 #define APP_BUILD_TYPE "unknown"
 #endif
+#ifndef APP_VERSION
+#define APP_VERSION "unknown"
+#endif
 #ifndef APP_BUILD_TIMESTAMP
 #define APP_BUILD_TIMESTAMP "unknown"
 #endif
@@ -1131,6 +1134,7 @@ bool CalibrationSession::writeSessionYaml(const std::string& lifecycle_status,
         out << "mode" << options_.mode;
         out << "source_data_directory" << options_.source_data_directory;
         out << "software" << "{";
+        out << "version" << APP_VERSION;
         out << "build_type" << APP_BUILD_TYPE;
         out << "build_timestamp" << APP_BUILD_TIMESTAMP;
         out << "git_commit" << APP_GIT_COMMIT;

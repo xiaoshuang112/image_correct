@@ -8,7 +8,7 @@ ApplicationWindow {
     width: 1280
     height: 800
     title: "手眼标定 — " + (calibrationController.calibrationType === "eye_in_hand"
-           ? "眼在手内" : "眼在手外")
+           ? "眼在手内" : "眼在手外") + "  | 版本 " + appVersion
     color: "#1a1e24"
     visibility: "Maximized"
 
@@ -193,6 +193,13 @@ ApplicationWindow {
                             verticalAlignment: Text.AlignVCenter
                         }
                         onClicked: calibrationController.calibrationType = "eye_to_hand"
+                    }
+
+                    Label {
+                        text: "版本 " + appVersion
+                        color: textDim
+                        font.pixelSize: 18
+                        Layout.leftMargin: 8
                     }
                 }
 
