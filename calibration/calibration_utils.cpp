@@ -1,5 +1,6 @@
 #include "calibration_utils.hpp"
 #include "calibration_session.hpp"
+#include "mechanical_settling_config.hpp"
 
 #include "robotapi.h"
 #include "basestruct.h"
@@ -24,7 +25,6 @@
 
 namespace {
 
-constexpr int kPostMotionSettlingMs = 1200;
 constexpr int kPostMotionDiscardFrames = 1;
 constexpr int kSettlingPollMs = 20;
 
@@ -35,14 +35,14 @@ std::uint64_t hostRealtimeNowNs()
             std::chrono::system_clock::now().time_since_epoch()).count());
 }
 
-bool waitForMechanicalSettling(int& waited_ms)
+bool waitForMechanicalSettling(int requested_ms, int& waited_ms)
 {
     waited_ms = 0;
-    while (waited_ms < kPostMotionSettlingMs) {
+    while (waited_ms < requested_ms) {
         if (robotMotionCancellationRequested())
             return false;
         const int slice_ms = std::min(kSettlingPollMs,
-                                      kPostMotionSettlingMs - waited_ms);
+                                      requested_ms - waited_ms);
         std::this_thread::sleep_for(std::chrono::milliseconds(slice_ms));
         waited_ms += slice_ms;
     }
@@ -465,14 +465,16 @@ bool executeCollection(int robot_handle,
         // 标定采集还需要给机械结构额外的衰减时间，避免“控制器已停止但末端仍在微振”时
         // 将旧图像与稍后的机器人反馈位姿配成一组。
         const std::uint64_t motion_completed_timestamp_ns = hostRealtimeNowNs();
+        const int settling_requested_ms = mechanicalSettlingWaitMs();
         APP_LOG_EVENT_DEBUG("calibration.collection",
                            "mechanical_settling",
                            "start",
                            {{"index", QString::number(i)},
-                            {"requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"requested_ms", QString::number(settling_requested_ms)},
                             {"discard_frames", QString::number(kPostMotionDiscardFrames)}});
         int settling_waited_ms = 0;
-        if (!waitForMechanicalSettling(settling_waited_ms)) {
+        if (!waitForMechanicalSettling(settling_requested_ms,
+                                       settling_waited_ms)) {
             if (session)
                 session->appendEvent("collection_frame", "cancelled",
                     "candidate=" + std::to_string(i) + " phase=mechanical_settling");
@@ -517,7 +519,7 @@ bool executeCollection(int robot_handle,
                            "mechanical_settling",
                            "complete",
                            {{"index", QString::number(i)},
-                            {"requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"requested_ms", QString::number(settling_requested_ms)},
                             {"discarded_frames", QString::number(discarded_frames)},
                             {"empty_discard_frames", QString::number(empty_discard_frames)}});
 
@@ -761,7 +763,7 @@ bool executeCollection(int robot_handle,
             std::string audit_error;
             if (!session->writeRawRobotPose(captured, i, actual_joint, flange_pose,
                                             motion_completed_timestamp_ns,
-                                            kPostMotionSettlingMs,
+                                            settling_requested_ms,
                                             discarded_frames,
                                             image_timestamp_ns, robot_timestamp_ns,
                                             audit_error)) {
@@ -797,7 +799,7 @@ bool executeCollection(int robot_handle,
                             {"total", QString::number(total)},
                             {"corners", QString::number(ids.size())},
                             {"capture_attempts", QString::number(capture_attempts)},
-                            {"settling_requested_ms", QString::number(kPostMotionSettlingMs)},
+                            {"settling_requested_ms", QString::number(settling_requested_ms)},
                             {"discarded_frames", QString::number(discarded_frames)},
                             {"motion_to_image_ms", QString::number(
                                 static_cast<double>(image_timestamp_ns -

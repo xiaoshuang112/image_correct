@@ -27,7 +27,7 @@ struct MvsDeviceDescriptor {
     MvsTransport transport = MvsTransport::kOther;
     std::string serial;
     std::string model;
-    unsigned int ip = 0;        // 仅 GigE 有效，主机序（0xC0A8030A = 192.168.3.10）
+    unsigned int ip = 0;        // 仅 GigE 有效，主机序（例如 192.168.0.10）
 };
 
 enum class MvsSelectionStatus {

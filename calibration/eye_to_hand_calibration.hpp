@@ -209,6 +209,7 @@ inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_pat
  * @param pose_config   位姿生成配置（偏移量、过滤参数）
  * @param result        标定结果
  * @param save_dir      数据保存目录（为空则不保存）
+ * @param output_yaml   生产结果路径；非空时通过发布保护后直接写入
  * @return true/false
  */
 bool autoEyeToHandCharucoCalibration(
@@ -219,7 +220,8 @@ bool autoEyeToHandCharucoCalibration(
     const PoseGenerationConfig& pose_config,
     EyeToHandResult& result,
     const std::string& save_dir = "",
-    AI_det_callback callback = nullptr);
+    AI_det_callback callback = nullptr,
+    const std::string& output_yaml = "");
 
 /**
  * @brief 从已采集的本地数据标定眼在手外手眼矩阵

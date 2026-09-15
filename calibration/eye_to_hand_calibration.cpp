@@ -1,4 +1,5 @@
 #include "eye_to_hand_calibration.hpp"
+#include "mechanical_settling_config.hpp"
 #include "calibration_utils.hpp"
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 #include "camera_calibration.hpp"
@@ -262,7 +263,9 @@ static std::string imagePath(const std::string& directory, std::size_t index) {
 }
 
 static bool waitForSettling() {
-    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(1200);
+    const int requested_ms = mechanicalSettlingWaitMs();
+    const auto deadline = std::chrono::steady_clock::now() +
+        std::chrono::milliseconds(requested_ms);
     while (std::chrono::steady_clock::now() < deadline) {
         if (robotMotionCancellationRequested()) return false;
         std::this_thread::sleep_for(std::chrono::milliseconds(20));
@@ -564,7 +567,8 @@ static bool saveEyeToHandResult(const std::string& directory, EyeToHandResult& r
 bool autoEyeToHandCharucoCalibration(
     int robot_handle, char* pchRobotIP, std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector, const PoseGenerationConfig& pose_config,
-    EyeToHandResult& result, const std::string& save_dir, AI_det_callback callback) {
+    EyeToHandResult& result, const std::string& save_dir,
+    AI_det_callback callback, const std::string& output_yaml) {
     result = EyeToHandResult{};
     (void)pchRobotIP;
     if (pose_config.min_corners <= 0 || pose_config.min_valid_frames <= 0) {
@@ -703,7 +707,26 @@ bool autoEyeToHandCharucoCalibration(
             result.message = "标定已取消";
             return false;
         }
-        return saveEyeToHandResult(directory, result);
+        if (output_yaml.empty())
+            return true;
+
+        fs::path reference_path = pose_config.reference_result_file;
+        if (reference_path.is_relative()) {
+            reference_path = fs::path(pose_config.source_file).parent_path() /
+                             reference_path;
+        }
+        EyeToHandPublicationCheck publication;
+        std::string publication_error;
+        if (!publishEyeToHandResult(
+                result, reference_path.lexically_normal().string(), output_yaml,
+                pose_config, publication, publication_error)) {
+            result.success = false;
+            result.message = publication_error +
+                "; 候选数据保留在 " + result.data_directory;
+            return false;
+        }
+        result.message += "; " + publication.message;
+        return true;
     } catch (const std::exception& exception) {
         result.success = false;
         result.T_base_camera.release();

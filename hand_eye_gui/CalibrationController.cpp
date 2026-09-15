@@ -5,6 +5,7 @@
 #include "calibration/calibration_utils.hpp"
 #include "calibration/eye_to_hand_calibration.hpp"
 #include "calibration/intrinsic_identity.hpp"
+#include "calibration/mechanical_settling_config.hpp"
 #include "utils/robot_util.hpp"
 #include "DiagnosticLogger.hpp"
 #include "config_resolver.hpp"
@@ -230,6 +231,10 @@ void CalibrationController::loadConfigYaml()
 
     const config_resolver::CameraConfig resolved =
         config_resolver::resolveCameraConfig(fs, defaults);
+    int configuredSettlingMs = m_mechanicalSettlingMs;
+    const cv::FileNode settlingNode = fs["mechanical_settling_ms"];
+    if (!settlingNode.empty())
+        settlingNode >> configuredSettlingMs;
     fs.release();
 
     m_cameraIp = QString::fromStdString(resolved.cam_ip);
@@ -239,6 +244,18 @@ void CalibrationController::loadConfigYaml()
     m_cameraSn = QString::fromStdString(resolved.cam_sn);
     m_allowLegacyIntrinsics = resolved.allow_legacy_intrinsics;
     m_cameraProfile = QString::fromStdString(resolved.profile);
+    if (setMechanicalSettlingWaitMs(configuredSettlingMs)) {
+        m_mechanicalSettlingMs = configuredSettlingMs;
+    } else {
+        APP_LOG_EVENT_WARNING(
+            "config", "config_load", "invalid_value",
+            {{"field", "mechanical_settling_ms"},
+             {"value", QString::number(configuredSettlingMs)},
+             {"valid_range", QString("%1..%2")
+                  .arg(kMinimumMechanicalSettlingMs)
+                  .arg(kMaximumMechanicalSettlingMs)},
+             {"using_default", QString::number(m_mechanicalSettlingMs)}});
+    }
 
     if (!resolved.profile.empty() && !resolved.profile_found) {
         APP_LOG_EVENT_WARNING("config",
@@ -261,6 +278,7 @@ void CalibrationController::loadConfigYaml()
                         {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
                         {"resolution_h", QString::number(m_previewHeight)},
+                        {"mechanical_settling_ms", QString::number(m_mechanicalSettlingMs)},
                         {"allow_legacy_intrinsics", m_allowLegacyIntrinsics ? "true" : "false"},
                         {"resolved", sources.join(", ")}});
 }
@@ -458,6 +476,43 @@ void CalibrationController::setPreviewHeight(int v) {
                             {"to", QString::number(v)}});
         m_previewHeight = v; emit previewHeightChanged();
     }
+}
+
+void CalibrationController::updateMechanicalSettlingMs(int milliseconds) {
+    if (m_running) {
+        APP_LOG_EVENT_WARNING("config",
+                              "config_update",
+                              "skip",
+                              {{"field", "mechanical_settling_ms"},
+                               {"reason", "calibration_running"}});
+        setStatus("标定进行中，不能更新姿态等待时间");
+        return;
+    }
+    if (!setMechanicalSettlingWaitMs(milliseconds)) {
+        APP_LOG_EVENT_WARNING(
+            "config", "config_update", "invalid_value",
+            {{"field", "mechanical_settling_ms"},
+             {"value", QString::number(milliseconds)},
+             {"valid_range", QString("%1..%2")
+                  .arg(kMinimumMechanicalSettlingMs)
+                  .arg(kMaximumMechanicalSettlingMs)}});
+        setStatus(QString("姿态等待时间必须在 %1～%2 ms 之间")
+                      .arg(kMinimumMechanicalSettlingMs)
+                      .arg(kMaximumMechanicalSettlingMs));
+        return;
+    }
+
+    const int previous = m_mechanicalSettlingMs;
+    m_mechanicalSettlingMs = milliseconds;
+    if (previous != milliseconds)
+        emit mechanicalSettlingMsChanged();
+    APP_LOG_EVENT_INFO("config",
+                       "config_update",
+                       "success",
+                       {{"field", "mechanical_settling_ms"},
+                        {"from", QString::number(previous)},
+                        {"to", QString::number(milliseconds)}});
+    setStatus(QString("姿态等待时间已更新为 %1 ms").arg(milliseconds));
 }
 
 QString CalibrationController::diagnosticLogPath() const
@@ -1704,6 +1759,7 @@ void CalibrationController::calibrationThreadFunc(
                             {"maximum_joint_step_degrees", QString::number(pose_config.maximum_joint_step_degrees)}});
 
         std::string save_dir = m_calibrationPath + "eye_to_hand/";
+        const std::string out_file = m_paramPath + "eye_to_hand_result.yaml";
 
         {
             setStatus("眼在手外标定 — 采集中...");
@@ -1718,7 +1774,8 @@ void CalibrationController::calibrationThreadFunc(
                 pose_config,
                 result,
                 save_dir,
-                calibrationCallback);
+                calibrationCallback,
+                out_file);
 
             APP_LOG_EVENT_INFO("calibration",
                                "calibration_pipeline",
@@ -1729,9 +1786,9 @@ void CalibrationController::calibrationThreadFunc(
                                 {"error_mm", QString::number(result.reproj_error * 1000.0, 'f', 6)},
                                 {"message", QString::fromStdString(result.message)}});
 
-            // 发布前的最后取消检查；此后进入提交，发布成功即按已提交报告成功。
-            // 提交期间的新取消请求不撤销已发布结果；保存失败仍报告失败。
-            if (m_cancelRequested) {
+            // 自动标定内部在写生产 YAML 前执行最后一次取消检查。若结果已经
+            // 发布成功，之后才到达的取消请求不能撤销这次成功提交。
+            if (!ok && m_cancelRequested) {
                 APP_LOG_EVENT_WARNING("calibration",
                                       "calibration_pipeline",
                                       "cancelled",
@@ -1740,42 +1797,6 @@ void CalibrationController::calibrationThreadFunc(
                 setRuntimeStage(CalibrationRuntimeStage::Cancelled,
                                 "eye_to_hand_cancelled");
                 goto done;
-            }
-
-            const std::string out_file = m_paramPath + "eye_to_hand_result.yaml";
-            if (ok) {
-                fs::path referencePath = pose_config.reference_result_file;
-                if (referencePath.is_relative())
-                    referencePath = fs::path(pose_config.source_file).parent_path() /
-                        referencePath;
-                EyeToHandPublicationCheck publication;
-                std::string publicationError;
-                if (!publishEyeToHandResult(
-                        result, referencePath.lexically_normal().string(), out_file,
-                        pose_config, publication, publicationError)) {
-                    ok = false;
-                    result.success = false;
-                    result.message = publicationError +
-                        "; 候选结果保留在 " + result.data_directory;
-                    APP_LOG_EVENT_ERROR(
-                        "calibration", "publication_gate", "blocked",
-                        {{"type", "eye_to_hand"},
-                         {"reference", QString::fromStdString(referencePath.string())},
-                         {"translation_drift_mm", QString::number(
-                              publication.translation_drift_mm, 'f', 6)},
-                         {"rotation_drift_deg", QString::number(
-                              publication.rotation_drift_deg, 'f', 6)},
-                         {"message", QString::fromStdString(publication.message)}});
-                } else {
-                    APP_LOG_EVENT_INFO(
-                        "calibration", "publication_gate", "passed",
-                        {{"type", "eye_to_hand"},
-                         {"reference", QString::fromStdString(referencePath.string())},
-                         {"translation_drift_mm", QString::number(
-                              publication.translation_drift_mm, 'f', 6)},
-                         {"rotation_drift_deg", QString::number(
-                              publication.rotation_drift_deg, 'f', 6)}});
-                }
             }
 
             if (ok) {

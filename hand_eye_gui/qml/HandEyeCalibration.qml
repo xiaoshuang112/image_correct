@@ -267,6 +267,36 @@ ApplicationWindow {
                         }
                     }
 
+                    Label { text: "姿态等待(ms):"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        id: settlingWaitField
+                        text: calibrationController.mechanicalSettlingMs
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 90
+                        validator: IntValidator { bottom: 0; top: 60000 }
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
+                    }
+                    Button {
+                        text: "更新等待时间"
+                        font.pixelSize: 20; font.bold: true
+                        background: Rectangle {
+                            radius: 6
+                            color: parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : accent
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: "#ffffff"; font: parent.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: {
+                            var v = parseInt(settlingWaitField.text)
+                            if (!isNaN(v)) {
+                                calibrationController.updateMechanicalSettlingMs(v)
+                                settlingWaitField.text = calibrationController.mechanicalSettlingMs
+                            }
+                        }
+                    }
+
                     Item { Layout.fillWidth: true }
                 }
 

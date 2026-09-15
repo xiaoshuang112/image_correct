@@ -1012,25 +1012,11 @@ static void auto_eye_to_hand_calibration(char* pchRobotIP) {
     EyeToHandResult result;
     bool ok = autoEyeToHandCharucoCalibration(
         robotHandle, pchRobotIP, g_camera, detector,
-        pose_config, result, save_dir);
+        pose_config, result, save_dir, nullptr,
+        g_paramPath + "eye_to_hand_result.yaml");
 
     if (ok) {
-        fs::path reference_path = pose_config.reference_result_file;
-        if (reference_path.is_relative())
-            reference_path = fs::path(pose_config.source_file).parent_path() / reference_path;
-        EyeToHandPublicationCheck publication;
-        std::string publication_error;
-        if (!publishEyeToHandResult(
-                result, reference_path.lexically_normal().string(),
-                g_paramPath + "eye_to_hand_result.yaml", pose_config,
-                publication, publication_error)) {
-            result.success = false;
-            result.message = publication_error;
-            std::cerr << "[eyeToHand] " << publication_error
-                      << "; 候选结果保留在 " << result.data_directory << std::endl;
-            return;
-        }
-        std::cout << "[eyeToHand] " << publication.message << std::endl;
+        std::cout << "[eyeToHand] " << result.message << std::endl;
         if (!result.reused_intrinsics && g_camera) {
             const CameraDeviceAuditInfo device = g_camera->getDeviceAuditInfo();
             intrinsic_gate::IntrinsicIdentity identity;

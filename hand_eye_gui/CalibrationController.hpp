@@ -39,6 +39,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString cameraSn       READ cameraSn       WRITE setCameraSn       NOTIFY cameraSnChanged)
     Q_PROPERTY(int     previewWidth   READ previewWidth   WRITE setPreviewWidth   NOTIFY previewWidthChanged)
     Q_PROPERTY(int     previewHeight  READ previewHeight  WRITE setPreviewHeight  NOTIFY previewHeightChanged)
+    Q_PROPERTY(int     mechanicalSettlingMs READ mechanicalSettlingMs NOTIFY mechanicalSettlingMsChanged)
     // 相机后端与实际设备信息（只读审计，打开相机后刷新）
     Q_PROPERTY(QString cameraBackend     READ cameraBackend     CONSTANT)
     Q_PROPERTY(bool    cameraPortRelevant READ cameraPortRelevant CONSTANT)
@@ -105,6 +106,7 @@ public:
     QString cameraSn() const        { return m_cameraSn; }
     int     previewWidth() const    { return m_previewWidth; }
     int     previewHeight() const   { return m_previewHeight; }
+    int     mechanicalSettlingMs() const { return m_mechanicalSettlingMs; }
     QString cameraBackend() const;
     bool    cameraPortRelevant() const;
     QString cameraModel() const     { return m_camDeviceModel; }
@@ -180,6 +182,9 @@ public slots:
     void startCalibration();
     void stopCalibration();
 
+    /// 更新每个采集姿态在机器人停止后的机械稳定等待时间。
+    void updateMechanicalSettlingMs(int milliseconds);
+
 signals:
     void robotIpChanged();
     void robotPortChanged();
@@ -192,6 +197,7 @@ signals:
     void cameraDeviceInfoChanged();
     void previewWidthChanged();
     void previewHeightChanged();
+    void mechanicalSettlingMsChanged();
     void robotConnectedChanged();
     void cameraOpenedChanged();
     void previewActiveChanged();
@@ -251,12 +257,12 @@ private:
     // ==================== 数据成员 ====================
 
     // 配置
-    QString  m_robotIp      = "192.168.3.6";
+    QString  m_robotIp      = "192.168.0.6";
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
     int      m_cameraToTcpEnd = 150;
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
-    QString  m_cameraIp     = "192.168.3.10";
+    QString  m_cameraIp     = "192.168.0.10";
     int      m_cameraPort   = 8090;
     QString  m_cameraSn;                        // 可选；配置后优先于 IP
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
@@ -264,6 +270,7 @@ private:
     bool     m_allowLegacyIntrinsics = false;
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;
+    int      m_mechanicalSettlingMs = 1200;
 
     // 打开相机后回读的实际设备信息（只读审计）
     QString  m_camDeviceModel;

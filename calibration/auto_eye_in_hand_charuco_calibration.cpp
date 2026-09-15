@@ -35,6 +35,7 @@
 #include "calibration_session.hpp"
 #include "intrinsic_identity.hpp"
 #include "semi_auto_eye_in_hand_calibration.hpp"
+#include "mechanical_settling_config.hpp"
 
 using namespace calib_transform;
 
@@ -54,7 +55,6 @@ struct CapturedFrame {
 
 namespace {
 
-constexpr int kPoseSearchSettlingMs = 1200;
 constexpr int kPoseSearchDiscardFrames = 1;
 constexpr int kMinimumObservationCorners = 12;
 constexpr double kTargetBoardAreaRatio = 0.275;
@@ -82,11 +82,12 @@ static bool waitForPoseSearchSettling(
     const std::shared_ptr<AICamera>& camera,
     int* discarded_frames = nullptr) {
     constexpr int pollMs = 20;
+    const int requestedMs = mechanicalSettlingWaitMs();
     int waitedMs = 0;
-    while (waitedMs < kPoseSearchSettlingMs) {
+    while (waitedMs < requestedMs) {
         if (robotMotionCancellationRequested())
             return false;
-        const int sliceMs = std::min(pollMs, kPoseSearchSettlingMs - waitedMs);
+        const int sliceMs = std::min(pollMs, requestedMs - waitedMs);
         std::this_thread::sleep_for(std::chrono::milliseconds(sliceMs));
         waitedMs += sliceMs;
     }
@@ -452,7 +453,7 @@ static VisualAlignmentCandidateResult moveAndMeasureVisualAlignment(
                         {{"target_rx", QString::number(target[3], 'f', 3)},
                          {"target_ry", QString::number(target[4], 'f', 3)},
                          {"target_rz", QString::number(target[5], 'f', 3)},
-                         {"settling_ms", QString::number(kPoseSearchSettlingMs)},
+                         {"settling_ms", QString::number(mechanicalSettlingWaitMs())},
                          {"discarded_frames", QString::number(discardedFrames)},
                          {"metrics", QString::fromStdString(
                              formatVisualAlignmentMetrics(metrics))}});

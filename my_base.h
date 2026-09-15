@@ -12,11 +12,11 @@
 #ifdef useMVS
 struct CONFIG {
     std::string cam_sn = "";
-    std::string cam_ip = "192.168.1.12";
+    std::string cam_ip = "192.168.0.10";
     uint16_t cam_port = 8090;
 
     // 机器人连接参数
-    std::string robot_ip = "192.168.1.6";
+    std::string robot_ip = "192.168.0.6";
     int robot_port = 2323;
     std::string robot_pwd = "123";
 
