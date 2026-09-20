@@ -39,6 +39,8 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString cameraSn       READ cameraSn       WRITE setCameraSn       NOTIFY cameraSnChanged)
     Q_PROPERTY(int     previewWidth   READ previewWidth   WRITE setPreviewWidth   NOTIFY previewWidthChanged)
     Q_PROPERTY(int     previewHeight  READ previewHeight  WRITE setPreviewHeight  NOTIFY previewHeightChanged)
+    Q_PROPERTY(int     cameraExposureUs READ cameraExposureUs NOTIFY cameraExposureUsChanged)
+    Q_PROPERTY(int     cameraActualExposureUs READ cameraActualExposureUs NOTIFY cameraActualExposureUsChanged)
     Q_PROPERTY(int     mechanicalSettlingMs READ mechanicalSettlingMs NOTIFY mechanicalSettlingMsChanged)
     // 相机后端与实际设备信息（只读审计，打开相机后刷新）
     Q_PROPERTY(QString cameraBackend     READ cameraBackend     CONSTANT)
@@ -106,6 +108,8 @@ public:
     QString cameraSn() const        { return m_cameraSn; }
     int     previewWidth() const    { return m_previewWidth; }
     int     previewHeight() const   { return m_previewHeight; }
+    int     cameraExposureUs() const { return m_cameraExposureUs; }
+    int     cameraActualExposureUs() const { return m_cameraActualExposureUs; }
     int     mechanicalSettlingMs() const { return m_mechanicalSettlingMs; }
     QString cameraBackend() const;
     bool    cameraPortRelevant() const;
@@ -185,6 +189,9 @@ public slots:
     /// 更新每个采集姿态在机器人停止后的机械稳定等待时间。
     void updateMechanicalSettlingMs(int milliseconds);
 
+    /// 热更新相机曝光，并将设备回读值持久化到 config.yaml。
+    void adjustCameraExposure(int exposureUs);
+
 signals:
     void robotIpChanged();
     void robotPortChanged();
@@ -197,6 +204,8 @@ signals:
     void cameraDeviceInfoChanged();
     void previewWidthChanged();
     void previewHeightChanged();
+    void cameraExposureUsChanged();
+    void cameraActualExposureUsChanged();
     void mechanicalSettlingMsChanged();
     void robotConnectedChanged();
     void cameraOpenedChanged();
@@ -270,6 +279,8 @@ private:
     bool     m_allowLegacyIntrinsics = false;
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;
+    int      m_cameraExposureUs = 30000;
+    int      m_cameraGain = 3;
     int      m_mechanicalSettlingMs = 1200;
 
     // 打开相机后回读的实际设备信息（只读审计）
@@ -279,6 +290,7 @@ private:
     QString  m_camDeviceTransport;
     int      m_camActualWidth  = 0;
     int      m_camActualHeight = 0;
+    int      m_cameraActualExposureUs = -1;
 
     // 状态
     bool     m_robotConnected = false;

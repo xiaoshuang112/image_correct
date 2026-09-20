@@ -9,7 +9,7 @@
 // config.yaml 相机配置三级解析（纯 C++ + OpenCV，无 Qt，可无硬件单测）。
 //
 // 逐键回退顺序：
-//   1. 平铺键 cam_ip/cam_port/cam_width/cam_height/cam_sn/allow_legacy_intrinsics
+//   1. 平铺键 cam_ip/cam_port/cam_width/cam_height/cam_sn、曝光/增益等
 //   2. camera_profile 显式选择的嵌套节（如 camera_mvs_130/camera_mvs_500）
 //   3. 调用方提供的默认值（通常为编译期默认）
 //
@@ -21,6 +21,8 @@ struct CameraConfig {
     int cam_port = 0;
     int cam_width = 0;
     int cam_height = 0;
+    int exposure_us = 30000;
+    int gain = 3;
     std::string cam_sn;
     bool allow_legacy_intrinsics = false;
 
@@ -41,6 +43,13 @@ bool resolveCameraConfigFile(const std::string& path,
                              const CameraConfig& defaults,
                              CameraConfig& out,
                              std::string& error);
+
+// 保留原文件注释与排版，只更新顶层整数键。目标文件通过同目录临时文件
+// 校验后原子替换；键不存在时插入到 YAML 文档头之后。
+bool updateFlatIntegerConfigFile(const std::string& path,
+                                 const std::string& key,
+                                 int value,
+                                 std::string& error);
 
 }  // namespace config_resolver
 

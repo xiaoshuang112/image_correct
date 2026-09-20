@@ -42,6 +42,9 @@ namespace fs = std::filesystem;
 
 namespace {
 
+constexpr int kMinimumConfiguredExposureUs = 1;
+constexpr int kMaximumConfiguredExposureUs = 10000000;
+
 QString formatDoubleVector(const std::vector<double>& values)
 {
     QStringList parts;
@@ -226,6 +229,8 @@ void CalibrationController::loadConfigYaml()
     defaults.cam_port = m_cameraPort;
     defaults.cam_width = m_previewWidth;
     defaults.cam_height = m_previewHeight;
+    defaults.exposure_us = m_cameraExposureUs;
+    defaults.gain = m_cameraGain;
     defaults.cam_sn = m_cameraSn.toStdString();
     defaults.allow_legacy_intrinsics = m_allowLegacyIntrinsics;
 
@@ -241,6 +246,8 @@ void CalibrationController::loadConfigYaml()
     m_cameraPort = resolved.cam_port;
     m_previewWidth = resolved.cam_width;
     m_previewHeight = resolved.cam_height;
+    m_cameraExposureUs = resolved.exposure_us;
+    m_cameraGain = resolved.gain;
     m_cameraSn = QString::fromStdString(resolved.cam_sn);
     m_allowLegacyIntrinsics = resolved.allow_legacy_intrinsics;
     m_cameraProfile = QString::fromStdString(resolved.profile);
@@ -278,6 +285,8 @@ void CalibrationController::loadConfigYaml()
                         {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
                         {"resolution_h", QString::number(m_previewHeight)},
+                        {"camera_exposure_us", QString::number(m_cameraExposureUs)},
+                        {"camera_gain", QString::number(m_cameraGain)},
                         {"mechanical_settling_ms", QString::number(m_mechanicalSettlingMs)},
                         {"allow_legacy_intrinsics", m_allowLegacyIntrinsics ? "true" : "false"},
                         {"resolved", sources.join(", ")}});
@@ -918,6 +927,8 @@ void CalibrationController::openCamera()
     cfg.cam_sn   = m_cameraSn.toStdString();
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
+    cfg.exposure_us = m_cameraExposureUs;
+    cfg.gain = m_cameraGain;
     cfg.allow_legacy_intrinsics = m_allowLegacyIntrinsics;
 
     APP_LOG_EVENT_INFO("camera",
@@ -925,7 +936,9 @@ void CalibrationController::openCamera()
                        "instance_create",
                        {{"endpoint", QString("%1:%2").arg(QString::fromStdString(cfg.cam_ip)).arg(cfg.cam_port)},
                         {"cam_sn", QString::fromStdString(cfg.cam_sn)},
-                        {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)}});
+                        {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)},
+                        {"exposure_us", QString::number(cfg.exposure_us)},
+                        {"gain", QString::number(cfg.gain)}});
 
 #ifdef useORB
     m_camera = std::make_shared<OrbbecCameraV2>(cfg);
@@ -965,7 +978,11 @@ void CalibrationController::openCamera()
         m_camDeviceTransport = QString::fromStdString(audit.transport);
         m_camActualWidth = audit.actual_width;
         m_camActualHeight = audit.actual_height;
+        const int actualExposure = m_camera->getColorExposureTime();
+        m_cameraActualExposureUs = actualExposure > 0
+            ? actualExposure : audit.exposure_us;
         emit cameraDeviceInfoChanged();
+        emit cameraActualExposureUsChanged();
         APP_LOG_EVENT_INFO("camera",
                            "camera_open",
                            "device_identity",
@@ -1088,12 +1105,141 @@ void CalibrationController::closeCamera()
         m_camera->close();
     }
     m_cameraOpened = false;
+    if (m_cameraActualExposureUs != -1) {
+        m_cameraActualExposureUs = -1;
+        emit cameraActualExposureUsChanged();
+    }
     emit cameraOpenedChanged();
     setStatus("相机关闭");
     APP_LOG_EVENT_INFO("camera",
                        "camera_close",
                        "complete",
                        {{"opened", "false"}});
+}
+
+void CalibrationController::adjustCameraExposure(int exposureUs)
+{
+    if (m_running) {
+        APP_LOG_EVENT_WARNING("camera", "exposure_update", "skip",
+                              {{"reason", "calibration_running"},
+                               {"requested_us", QString::number(exposureUs)}});
+        setStatus("标定运行中，不能调整曝光");
+        return;
+    }
+    if (exposureUs < kMinimumConfiguredExposureUs ||
+        exposureUs > kMaximumConfiguredExposureUs) {
+        APP_LOG_EVENT_WARNING(
+            "camera", "exposure_update", "invalid_value",
+            {{"requested_us", QString::number(exposureUs)},
+             {"valid_range", QString("%1..%2")
+                  .arg(kMinimumConfiguredExposureUs)
+                  .arg(kMaximumConfiguredExposureUs)}});
+        setStatus(QString("曝光值无效，有效范围为 %1–%2 μs")
+                      .arg(kMinimumConfiguredExposureUs)
+                      .arg(kMaximumConfiguredExposureUs));
+        return;
+    }
+
+    const bool cameraReady = m_cameraOpened && static_cast<bool>(m_camera);
+    const int previousConfigured = m_cameraExposureUs;
+    int previousDevice = -1;
+    int actualExposure = exposureUs;
+    bool deviceChanged = false;
+
+    if (cameraReady) {
+        int minimumUs = 0;
+        int maximumUs = 0;
+        if (m_camera->getExposureRange(minimumUs, maximumUs) &&
+            (exposureUs < minimumUs || exposureUs > maximumUs)) {
+            APP_LOG_EVENT_WARNING(
+                "camera", "exposure_update", "out_of_device_range",
+                {{"requested_us", QString::number(exposureUs)},
+                 {"device_min_us", QString::number(minimumUs)},
+                 {"device_max_us", QString::number(maximumUs)}});
+            setStatus(QString("曝光超出相机范围：%1–%2 μs")
+                          .arg(minimumUs).arg(maximumUs));
+            return;
+        }
+
+        previousDevice = m_camera->getColorExposureTime();
+        if (m_camera->getAutoExposure() && !m_camera->setAutoExposure(false)) {
+            const CameraErrorDetail error = m_camera->lastError();
+            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
+                                {{"step", "disable_auto_exposure"},
+                                 {"detail", QString::fromStdString(error.message)}});
+            setStatus("关闭自动曝光失败，曝光未更新");
+            return;
+        }
+        if (!m_camera->setColorExposureTime(exposureUs)) {
+            const CameraErrorDetail error = m_camera->lastError();
+            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
+                                {{"step", "apply_device"},
+                                 {"requested_us", QString::number(exposureUs)},
+                                 {"detail", QString::fromStdString(error.message)}});
+            setStatus("相机曝光更新失败");
+            return;
+        }
+        deviceChanged = true;
+        actualExposure = m_camera->getColorExposureTime();
+        if (actualExposure <= 0) {
+            if (previousDevice > 0)
+                m_camera->setColorExposureTime(previousDevice);
+            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
+                                {{"step", "device_readback"},
+                                 {"requested_us", QString::number(exposureUs)}});
+            setStatus("相机曝光回读失败，已尝试恢复原值");
+            return;
+        }
+    }
+
+    const std::string configPath = m_appPath + "config.yaml";
+    std::string persistError;
+    if (!config_resolver::updateFlatIntegerConfigFile(
+            configPath, "camera_exposure_us", actualExposure, persistError)) {
+        if (deviceChanged && previousDevice > 0)
+            m_camera->setColorExposureTime(previousDevice);
+        const int restoredActual = cameraReady
+            ? m_camera->getColorExposureTime() : -1;
+        if (m_cameraActualExposureUs != restoredActual) {
+            m_cameraActualExposureUs = restoredActual;
+            emit cameraActualExposureUsChanged();
+        }
+        APP_LOG_EVENT_ERROR(
+            "config", "exposure_persist", "fail",
+            {{"path", QString::fromStdString(configPath)},
+             {"requested_us", QString::number(exposureUs)},
+             {"actual_us", QString::number(actualExposure)},
+             {"rollback_us", QString::number(previousDevice)},
+             {"error", QString::fromStdString(persistError)}});
+        setStatus("曝光配置保存失败，相机已尝试恢复原值");
+        return;
+    }
+
+    if (m_cameraExposureUs != actualExposure) {
+        m_cameraExposureUs = actualExposure;
+        emit cameraExposureUsChanged();
+    }
+    const int newActual = cameraReady ? actualExposure : -1;
+    if (m_cameraActualExposureUs != newActual) {
+        m_cameraActualExposureUs = newActual;
+        emit cameraActualExposureUsChanged();
+    }
+
+    APP_LOG_EVENT_INFO(
+        "camera", "exposure_update", "success",
+        {{"requested_us", QString::number(exposureUs)},
+         {"actual_us", QString::number(actualExposure)},
+         {"previous_configured_us", QString::number(previousConfigured)},
+         {"camera_opened", cameraReady ? "true" : "false"},
+         {"preview_active", m_previewActive ? "true" : "false"},
+         {"config_path", QString::fromStdString(configPath)}});
+    if (cameraReady) {
+        setStatus(QString("曝光已调整为 %1 μs，并已保存")
+                      .arg(actualExposure));
+    } else {
+        setStatus(QString("曝光已保存为 %1 μs，下次打开相机生效")
+                      .arg(actualExposure));
+    }
 }
 
 // ===================================================================

@@ -300,7 +300,62 @@ ApplicationWindow {
                     Item { Layout.fillWidth: true }
                 }
 
-                // ---- 第 3 行：实际设备信息（只读审计，打开相机后刷新） ----
+                // ---- 第 3 行：MVS 曝光调节 ----
+                RowLayout {
+                    Layout.fillWidth: true
+                    spacing: 10
+                    visible: calibrationController.cameraBackend === "mvs"
+
+                    Label { text: "曝光时间(μs):"; color: textDim; font.pixelSize: 22 }
+                    TextField {
+                        id: exposureField
+                        text: calibrationController.cameraExposureUs
+                        font.pixelSize: 22; color: textPrimary
+                        Layout.preferredWidth: 150
+                        validator: IntValidator { bottom: 1; top: 10000000 }
+                        enabled: !calibrationController.running
+                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
+                    }
+                    Button {
+                        text: "调整曝光"
+                        font.pixelSize: 20; font.bold: true
+                        enabled: !calibrationController.running && exposureField.acceptableInput
+                        background: Rectangle {
+                            radius: 6
+                            color: parent.enabled
+                                   ? (parent.down ? "#1565c0" : parent.hovered ? "#1976d2" : accent)
+                                   : "#30363d"
+                        }
+                        contentItem: Text {
+                            text: parent.text; color: parent.enabled ? "#ffffff" : textDim; font: parent.font
+                            horizontalAlignment: Text.AlignHCenter
+                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: {
+                            var value = parseInt(exposureField.text)
+                            if (!isNaN(value))
+                                calibrationController.adjustCameraExposure(value)
+                        }
+                    }
+                    Label {
+                        text: calibrationController.cameraOpened
+                              ? "相机实际值: " + calibrationController.cameraActualExposureUs + " μs"
+                              : "相机未打开：保存后下次打开生效"
+                        color: textDim; font.pixelSize: 20
+                    }
+
+                    Item { Layout.fillWidth: true }
+                }
+
+                Connections {
+                    target: calibrationController
+                    function onCameraExposureUsChanged() {
+                        if (!exposureField.activeFocus)
+                            exposureField.text = calibrationController.cameraExposureUs
+                    }
+                }
+
+                // ---- 第 4 行：实际设备信息（只读审计，打开相机后刷新） ----
                 RowLayout {
                     Layout.fillWidth: true
                     spacing: 10

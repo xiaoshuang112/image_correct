@@ -24,6 +24,8 @@ struct CONFIG {
     int cam_width = 1280;
     int cam_height = 1024;
     int fps = 15;
+    int exposure_us = 30000;
+    int gain = 3;
     bool enableDepth = false;
     int grid_num_heng = 9; // # 棋盘格 横向格子数
     int grid_num_shu = 9;  // # 棋盘格 竖向格子数
@@ -56,6 +58,8 @@ struct CONFIG {
     int cam_width = 1280;
     int cam_height = 800;
     int fps = 30;
+    int exposure_us = 30000;
+    int gain = 3;
     bool enableDepth = true;
     int grid_num_heng = 9; // # 棋盘格 横向格子数
     int grid_num_shu = 9;  // # 棋盘格 竖向格子数

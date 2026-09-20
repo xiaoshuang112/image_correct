@@ -6,6 +6,7 @@
 
 #include <cstdio>
 #include <fstream>
+#include <sstream>
 #include <string>
 
 using config_resolver::CameraConfig;
@@ -20,9 +21,18 @@ CameraConfig makeDefaults() {
     d.cam_port = 8090;
     d.cam_width = 1280;
     d.cam_height = 800;
+    d.exposure_us = 30000;
+    d.gain = 3;
     d.cam_sn = "";
     d.allow_legacy_intrinsics = false;
     return d;
+}
+
+std::string readFile() {
+    std::ifstream f(kCfgPath, std::ios::binary);
+    std::ostringstream contents;
+    contents << f.rdbuf();
+    return contents.str();
 }
 
 void writeFile(const std::string& content) {
@@ -53,6 +63,8 @@ int test_config_resolver() {
         "cam_port: 8090\n"
         "cam_width: 2448\n"
         "cam_height: 2048\n"
+        "camera_exposure_us: 28000\n"
+        "camera_gain: 0\n"
         "fps: 15\n");
     TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
                                                         makeDefaults(), out,
@@ -61,6 +73,8 @@ int test_config_resolver() {
     TEST_CHECK(out.cam_ip == "192.168.1.11" && out.cam_port == 8090 &&
                    out.cam_width == 2448 && out.cam_height == 2048,
                "legacy_flat_values");
+    TEST_CHECK(out.exposure_us == 28000 && out.gain == 0,
+               "legacy_flat_exposure_gain");
     TEST_CHECK(out.cam_sn.empty() && !out.allow_legacy_intrinsics,
                "legacy_flat_new_keys_default");
     TEST_CHECK(out.profile.empty() && !out.profile_found,
@@ -78,6 +92,8 @@ int test_config_resolver() {
         "  cam_port: 9000\n"
         "  cam_width: 2448\n"
         "  cam_height: 2048\n"
+        "  camera_exposure_us: 32000\n"
+        "  camera_gain: 4\n"
         "  cam_sn: \"DA1234567\"\n");
     TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
                                                         makeDefaults(), out,
@@ -86,6 +102,8 @@ int test_config_resolver() {
     TEST_CHECK(out.cam_ip == "192.168.3.10", "flat_beats_profile_ip");
     TEST_CHECK(out.cam_port == 9000, "profile_fills_missing_port");
     TEST_CHECK(out.cam_sn == "DA1234567", "profile_fills_missing_sn");
+    TEST_CHECK(out.exposure_us == 32000 && out.gain == 4,
+               "profile_fills_exposure_gain");
     TEST_CHECK(out.profile == "cam_mvs_a" && out.profile_found,
                "profile_found_flag");
     TEST_CHECK(hasSource(out, "cam_ip=192.168.3.10(flat)") &&
@@ -137,6 +155,51 @@ int test_config_resolver() {
                                                         err),
                "bool_flat_zero_loads");
     TEST_CHECK(!out.allow_legacy_intrinsics, "bool_flat_zero_wins");
+
+    // ---- 顶层曝光写回：保留注释和其他配置 ----
+    writeFile(
+        "%YAML:1.0\n---\n"
+        "camera_exposure_us: 30000 # production default\n"
+        "cam_ip: \"192.168.3.10\"\n");
+    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(
+                   kCfgPath, "camera_exposure_us", 45000, err),
+               "update_existing_exposure");
+    TEST_CHECK(readFile().find("camera_exposure_us: 45000 # production default") !=
+                   std::string::npos &&
+                   readFile().find("cam_ip: \"192.168.3.10\"") != std::string::npos,
+               "update_preserves_comment_and_other_keys");
+    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
+                                                        makeDefaults(), out,
+                                                        err) &&
+                   out.exposure_us == 45000,
+               "updated_exposure_readback");
+
+    // ---- 缺少曝光键时插入顶层键，覆盖 profile 值 ----
+    writeFile(
+        "%YAML:1.0\n---\n"
+        "camera_profile: \"cam_mvs_a\"\n"
+        "cam_mvs_a:\n"
+        "  camera_exposure_us: 32000\n");
+    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(
+                   kCfgPath, "camera_exposure_us", 51000, err),
+               "insert_missing_exposure");
+    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
+                                                        makeDefaults(), out,
+                                                        err) &&
+                   out.exposure_us == 51000 &&
+                   hasSource(out, "camera_exposure_us=51000(flat)"),
+               "inserted_flat_exposure_wins");
+
+    // ---- 重复顶层键拒绝修改，避免静默写错目标 ----
+    writeFile(
+        "%YAML:1.0\n---\n"
+        "camera_exposure_us: 30000\n"
+        "camera_exposure_us: 40000\n");
+    const std::string duplicateBefore = readFile();
+    TEST_CHECK(!config_resolver::updateFlatIntegerConfigFile(
+                   kCfgPath, "camera_exposure_us", 50000, err),
+               "duplicate_exposure_rejected");
+    TEST_CHECK(readFile() == duplicateBefore, "duplicate_file_unchanged");
 
     // ---- 非法/缺失文件 ----
     TEST_CHECK(!config_resolver::resolveCameraConfigFile(

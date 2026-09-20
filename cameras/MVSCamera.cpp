@@ -262,6 +262,33 @@ bool MVSCamera::configureDeviceLocked() {
         setError("configure", nRet, "node=ExposureAuto value=off");
         return false;
     }
+    nRet = MV_CC_SetFloatValue(m_handle, "ExposureTime",
+                               static_cast<float>(m_config.exposure_us));
+    if (MV_OK != nRet) {
+        setError("configure", nRet,
+                 "node=ExposureTime value_us=" +
+                 std::to_string(m_config.exposure_us));
+        return false;
+    }
+
+    // 增益保持手动，与配置文件一致。部分型号没有 GainAuto，关闭失败只记录告警。
+    nRet = MV_CC_SetEnumValue(m_handle, "GainAuto", 0);
+    if (MV_OK != nRet) {
+        APP_LOG_EVENT_WARNING("camera.mvs", "configure", "gain_auto_off_failed",
+                              {{"code", QString("0x%1").arg(nRet, 0, 16)}});
+    }
+    nRet = MV_CC_SetFloatValue(m_handle, "Gain",
+                               static_cast<float>(m_config.gain));
+    if (MV_OK != nRet) {
+        setError("configure", nRet,
+                 "node=Gain value=" + std::to_string(m_config.gain));
+        return false;
+    }
+    APP_LOG_EVENT_INFO("camera.mvs",
+                       "manual_image_parameters",
+                       "configured",
+                       {{"exposure_us", QString::number(m_config.exposure_us)},
+                        {"gain", QString::number(m_config.gain)}});
 
     // 分辨率：设置后必须回读实际值。设备按步进取整时不算失败，
     // 但必须记录实际值，绝不能继续假装使用请求分辨率。
