@@ -103,6 +103,11 @@ EyeToHandPublicationCheck checkEyeToHandPublication(
         return reject("求解器共识未通过");
 
     namespace fs = std::filesystem;
+    if (!config.reference_check_enabled) {
+        check.passed = true;
+        check.message = "发布质量门通过（已禁用参考结果比对）";
+        return check;
+    }
     if (!fs::exists(reference_yaml)) {
         if (config.require_reference_result)
             return reject("缺少受保护参考结果 " + reference_yaml);
@@ -273,12 +278,43 @@ static bool waitForSettling() {
     return !robotMotionCancellationRequested();
 }
 
-static bool readActualFlangeAxisAngle(int robot_handle, double flange_axis[6]) {
+// detail 记录失败阶段和可获得的 SDK 返回码：机械臂 RPC 的偶发失败与配置
+// 问题必须能区分开，否则只剩一句无信息量的"读取失败"。
+static bool readActualFlangeAxisAngle(int robot_handle, double flange_axis[6],
+                                      std::string& detail) {
     double tcp_axis[6]{};
-    return cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_axis) == sucess &&
-        convertTcpAxisPos2FlangPos(robot_handle, tcp_axis, flange_axis) &&
-        std::all_of(flange_axis, flange_axis + 6,
-                    [](double value) { return std::isfinite(value); });
+    const CRresult tcp_result = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_axis);
+    if (tcp_result != sucess) {
+        detail = "cr_get_tcpActualPose ret=" +
+                 std::to_string(static_cast<int>(tcp_result));
+        return false;
+    }
+    if (!convertTcpAxisPos2FlangPos(robot_handle, tcp_axis, flange_axis)) {
+        detail = "convertTcpAxisPos2FlangPos failed";
+        return false;
+    }
+    if (!std::all_of(flange_axis, flange_axis + 6,
+                     [](double value) { return std::isfinite(value); })) {
+        detail = "flange_pose_non_finite";
+        return false;
+    }
+    return true;
+}
+
+// 机械臂通讯的瞬时失败不应该终止整轮采集：重试若干次后放弃本帧即可。
+// 真正断线会在下一次 moveToJointPos 上照常以 -2 终止，不需要在这里兜底。
+static constexpr int kFlangeReadAttempts = 3;
+static constexpr int kFlangeReadRetryDelayMs = 100;
+
+static bool readActualFlangeAxisAngleWithRetry(int robot_handle, double flange_axis[6],
+                                               std::string& detail) {
+    for (int attempt = 0; attempt < kFlangeReadAttempts; ++attempt) {
+        if (readActualFlangeAxisAngle(robot_handle, flange_axis, detail)) return true;
+        if (attempt + 1 < kFlangeReadAttempts)
+            std::this_thread::sleep_for(
+                std::chrono::milliseconds(kFlangeReadRetryDelayMs));
+    }
+    return false;
 }
 
 // Return -1 for cancellation, -2 for a fatal motion/read/write failure.
@@ -301,6 +337,7 @@ static int executeEyeToHandCollection(
     int captured = 0;
     int empty_frames = 0, rejected_frames = 0, unstable_frames = 0;
     int missed_candidates = 0;
+    int pose_read_failures = 0;
     try {
         std::ofstream poses(save_dir + "/rob_pos.csv");
         std::ofstream joints(save_dir + "/rob_joint.csv");
@@ -343,18 +380,30 @@ static int executeEyeToHandCollection(
             for (int attempt = 0; attempt < 3; ++attempt) {
                 if (robotMotionCancellationRequested()) return -1;
                 double before_flange[6]{}, after_flange[6]{}, after_joint[6]{};
-                if (!readActualFlangeAxisAngle(robot_handle, before_flange)) {
-                    error = "拍照前读取实际法兰位姿失败";
-                    return -2;
+                std::string read_detail;
+                if (!readActualFlangeAxisAngleWithRetry(robot_handle, before_flange,
+                                                        read_detail)) {
+                    std::cout << "[eyeToHand] 拍照前读取实际法兰位姿失败, 跳过本帧: "
+                              << read_detail << std::endl;
+                    ++pose_read_failures;
+                    break;
                 }
                 frame = camera->captureOneFrame(1500);
                 if (robotMotionCancellationRequested()) return -1;
-                if (!readActualFlangeAxisAngle(robot_handle, after_flange) ||
-                    cr_get_jointActualPos((RobotHandle)robot_handle, after_joint) != sucess ||
+                if (!readActualFlangeAxisAngleWithRetry(robot_handle, after_flange,
+                                                        read_detail)) {
+                    std::cout << "[eyeToHand] 拍照后读取实际法兰位姿失败, 跳过本帧: "
+                              << read_detail << std::endl;
+                    ++pose_read_failures;
+                    break;
+                }
+                if (cr_get_jointActualPos((RobotHandle)robot_handle, after_joint) != sucess ||
                     !std::all_of(after_joint, after_joint + 6,
                                  [](double value) { return std::isfinite(value); })) {
-                    error = "拍照后读取实际机器人位姿失败";
-                    return -2;
+                    std::cout << "[eyeToHand] 拍照后读取实际关节位姿失败, 跳过本帧"
+                              << std::endl;
+                    ++pose_read_failures;
+                    break;
                 }
                 const RigidTransformDistance capture_drift = rigidTransformDistance(
                     axisAnglePoseToTransform(before_flange),
@@ -437,7 +486,8 @@ static int executeEyeToHandCollection(
             ", 未检出合格标定板候选=" + std::to_string(missed_candidates) +
             ", 空帧=" + std::to_string(empty_frames) +
             ", 拍照期间位姿不稳定=" + std::to_string(unstable_frames) +
-            ", 检测失败或角点不足=" + std::to_string(rejected_frames);
+            ", 检测失败或角点不足=" + std::to_string(rejected_frames) +
+            ", 位姿读取失败跳过=" + std::to_string(pose_read_failures);
     std::cout << "[eyeToHand] " << error << std::endl;
     return captured;
 }

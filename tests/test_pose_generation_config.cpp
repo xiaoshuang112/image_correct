@@ -17,6 +17,9 @@ int test_pose_generation_config()
                        "caitu_missing_pose_generation_config.yaml",
                        config, error) && !error.empty(),
                    "pose config rejects missing file");
+        // 未配置时必须保持历史行为：参考比对默认启用
+        TEST_CHECK(config.reference_check_enabled && config.require_reference_result,
+                   "pose config defaults to enabling the reference check");
     }
 
     const char* path = "caitu_test_pose_generation_config.yaml";
@@ -37,6 +40,7 @@ int test_pose_generation_config()
                << "maximum_capture_rotation_drift_degrees: 0.1\n"
                << "reference_result_file: reference.yaml\n"
                << "require_reference_result: 0\n"
+               << "reference_check_enabled: 0\n"
                << "minimum_publish_frames: 30\n"
                << "maximum_publish_translation_rms_mm: 2.5\n"
                << "maximum_publish_translation_p95_mm: 4.5\n"
@@ -61,6 +65,7 @@ int test_pose_generation_config()
                    config.maximum_capture_rotation_drift_degrees == 0.1 &&
                    config.reference_result_file == "reference.yaml" &&
                    !config.require_reference_result &&
+                   !config.reference_check_enabled &&
                    config.minimum_publish_frames == 30 &&
                    config.maximum_publish_translation_drift_mm == 15.0,
                    "pose config loads capture and publication gates");

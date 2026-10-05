@@ -238,6 +238,26 @@ int main() {
         require(!check.passed && check.message.find("缺少受保护参考结果") != std::string::npos,
                 "missing protected reference was not blocked");
     });
+    run("disabled reference check publishes despite stale reference", [&] {
+        TempDirectory temporary;
+        const auto reference = temporary.path / "reference.yaml";
+        cv::FileStorage out(reference.string(), cv::FileStorage::WRITE);
+        out << "T_base_camera" << baseline.T_base_camera;
+        out.release();
+        PoseGenerationConfig config;
+        config.minimum_publish_frames = 12;
+        // 参考文件存在但已失效（例如换过相机），比对必须被完全跳过
+        config.reference_check_enabled = false;
+        EyeToHandResult shifted = baseline;
+        shifted.T_base_camera = baseline.T_base_camera.clone();
+        shifted.T_base_camera.at<double>(0, 3) += 0.5;
+        const EyeToHandPublicationCheck check = checkEyeToHandPublication(
+            shifted, reference.string(), config);
+        require(check.passed, "disabled reference check still blocked publication");
+        require(check.message.find("已禁用参考结果比对") != std::string::npos,
+                "disabled reference check did not report its mode");
+        require(!check.reference_loaded, "disabled reference check still loaded the reference");
+    });
     run("publication gate blocks all September field drifts from June reference", [&] {
         const cv::Mat june = (cv::Mat_<double>(4, 4) <<
             0.99986113048138547, -0.011420704821709197, -0.012136196021096583, 0.2294065352798664,

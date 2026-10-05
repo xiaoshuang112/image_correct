@@ -67,6 +67,9 @@ struct PoseGenerationConfig {
     // 生产发布门。reference_result_file 相对 eye_to_hand_config.yaml 所在目录解析。
     std::string reference_result_file = "eye_to_hand_reference.yaml";
     bool require_reference_result = true;
+    // 置 false 时完全跳过参考结果比对（含文件已存在的情况）。换相机等
+    // 改动会让旧参考必然失效，此时仍强制比对只会拦住正确的新标定。
+    bool reference_check_enabled = true;
     int minimum_publish_frames = 60;
     double maximum_publish_translation_rms_mm = 3.0;
     double maximum_publish_translation_p95_mm = 5.0;
@@ -110,6 +113,12 @@ inline bool tryLoadPoseGenerationConfig(const std::string& yaml_path,
             int required = cfg.require_reference_result ? 1 : 0;
             fn >> required;
             cfg.require_reference_result = required != 0;
+        }
+        fn = fs["reference_check_enabled"];
+        if (!fn.empty()) {
+            int enabled = cfg.reference_check_enabled ? 1 : 0;
+            fn >> enabled;
+            cfg.reference_check_enabled = enabled != 0;
         }
         fn = fs["minimum_publish_frames"];
         if (!fn.empty()) fn >> cfg.minimum_publish_frames;
