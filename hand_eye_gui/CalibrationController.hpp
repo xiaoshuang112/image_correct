@@ -301,7 +301,7 @@ private:
     bool     m_allowLegacyIntrinsics = false;
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;
-    int      m_cameraExposureUs = 30000;
+    int      m_cameraExposureUs = 12000;
     int      m_cameraGain = 3;
     int      m_mechanicalSettlingMs = 1200;
 
@@ -356,7 +356,7 @@ private:
     bool m_collectionBusy = false;
     bool m_collectionWasPreviewing = false;
     QString m_outputDirectory;
-    QString m_exposureList = "7500,15000,30000,60000";
+    QString m_exposureList = "5000,8500,14500,25000";
     QString m_handEyePath;
     QString m_lastCapturePath;
     int m_savedImageCount = 0;

@@ -21,7 +21,7 @@ struct CameraConfig {
     int cam_port = 0;
     int cam_width = 0;
     int cam_height = 0;
-    int exposure_us = 30000;
+    int exposure_us = 12000;
     int gain = 3;
     std::string cam_sn;
     bool allow_legacy_intrinsics = false;
