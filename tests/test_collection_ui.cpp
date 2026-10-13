@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QDir>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
 #include <QQmlContext>
@@ -133,7 +134,15 @@ QtObject {
             require(QRectF(0, 0, window->width(), window->height()).contains(bounds), "action clipped at minimum window size");
         }
         if (argc > 1) {
+            controller->setProperty("cameraOpened", false);
+            controller->setProperty("previewActive", false);
+            controller->setProperty("robotConnected", false);
+            controller->setProperty("savedImageCount", 0);
+            controller->setProperty("statusMessage", "就绪 — 打开相机即可预览和拍照");
+            controller->setProperty("outputDirectory", QDir::homePath() + "/Pictures/caitu-collect");
+            controller->setProperty("handEyePath", QCoreApplication::applicationDirPath() + "/param/hand_eye_result.yaml");
             input->setProperty("text", "7500,15000,30000,60000");
+            input->setFocus(false);
             window->contentItem()->forceActiveFocus();
             window->resize(1280, 850);
             QTest::qWait(50);

@@ -2,5 +2,9 @@
     <qresource prefix="/">
         <file>qml/HandEyeCalibration.qml</file>
         <file>qml/Collection.qml</file>
+        <file>qml/CollectIcon.qml</file>
+        <file>qml/CollectButton.qml</file>
+        <file>qml/CollectField.qml</file>
+        <file>qml/CollectCard.qml</file>
     </qresource>
 </RCC>
