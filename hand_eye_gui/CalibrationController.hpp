@@ -62,7 +62,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionMode READ collectionMode CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
-    Q_PROPERTY(QString outputDirectory READ outputDirectory WRITE setOutputDirectory NOTIFY collectionChanged)
+    Q_PROPERTY(QString outputDirectory READ outputDirectory CONSTANT)
     Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
     Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
@@ -109,8 +109,8 @@ public:
     QString exposureList() const { return m_exposureList; }
     QString lastCapturePath() const { return m_lastCapturePath; }
     int savedImageCount() const { return m_savedImageCount; }
-    void setOutputDirectory(const QString& value);
     void setExposureList(const QString& value);
+    Q_INVOKABLE void openCollectionFolder();
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }

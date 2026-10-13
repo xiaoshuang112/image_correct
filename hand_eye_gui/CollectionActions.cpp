@@ -5,12 +5,14 @@
 #include "utils/robot_util.hpp"
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
 #include <QSettings>
 #include <QUuid>
+#include <QUrl>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
@@ -20,17 +22,23 @@
 
 void CalibrationController::initializeCollection() {
     QSettings settings;
-    m_outputDirectory = settings.value("collection/output", QDir::homePath() + "/Pictures/caitu-collect").toString();
+    m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
     m_exposureList = settings.value("collection/exposures", m_exposureList).toString();
     m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
 }
 
-void CalibrationController::setOutputDirectory(const QString& value) {
-    if (m_collectionBusy || m_running || value.trimmed().isEmpty()) return;
-    m_outputDirectory = QDir::cleanPath(QFileInfo(value.trimmed()).absoluteFilePath());
-    QSettings().setValue("collection/output", m_outputDirectory);
-    emit collectionChanged();
+void CalibrationController::openCollectionFolder() {
+    if (!QDir().mkpath(m_outputDirectory)) {
+        setStatus("无法创建默认图片文件夹");
+        return;
+    }
+    if (!QDesktopServices::openUrl(QUrl::fromLocalFile(m_outputDirectory))) {
+        setStatus("无法打开图片文件夹");
+        return;
+    }
+    setStatus("已打开图片文件夹");
 }
+
 void CalibrationController::setExposureList(const QString& value) {
     if (m_collectionBusy || m_running) return;
     m_exposureList = value.trimmed();
@@ -55,7 +63,7 @@ void CalibrationController::finishCollectionOperation(const QString& message, co
     if (m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
         m_previewTimer->start();
     emit collectionChanged();
-    setStatus(message);
+    setStatus(savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount));
     APP_LOG_EVENT_INFO("collection", "operation", "finished", {{"message", message}, {"image", savedPath}});
 }
 
@@ -89,13 +97,16 @@ void CalibrationController::capturePhoto() {
         return;
     }
     const auto camera = m_camera;
-    const QString directory = m_outputDirectory;
+    // Freeze the date at shutter time so a bracket crossing midnight stays in
+    // one daily folder, with a filename that uses the same timestamp.
+    const QDateTime captureTime = QDateTime::currentDateTime();
+    const QString directory = QDir(m_outputDirectory).filePath(captureTime.toString("yyyy-MM-dd"));
     const RobotHandle handle = m_robotHandle;
     const bool hasRobot = m_robotConnected;
     beginCollectionOperation();
     setStatus(QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, directory, exposures, handle, hasRobot]() {
+        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, handle, hasRobot]() {
             QString message, path;
             try {
                 if (hasRobot) {
@@ -122,7 +133,7 @@ void CalibrationController::capturePhoto() {
                 if (!QDir().mkpath(directory))
                     throw std::runtime_error("无法创建图片保存目录");
                 path = QDir(directory).filePath("capture_" +
-                    QDateTime::currentDateTime().toString("yyyyMMdd_HHmmss_zzz") + "_" +
+                    captureTime.toString("yyyyMMdd_HHmmss_zzz") + "_" +
                     QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png");
                 std::vector<uchar> encoded;
                 if (!cv::imencode(".png", fused, encoded))
@@ -133,7 +144,7 @@ void CalibrationController::capturePhoto() {
                     file.write(reinterpret_cast<const char*>(encoded.data()), encoded.size()) != static_cast<qint64>(encoded.size()) ||
                     !file.commit())
                     throw std::runtime_error(("图片保存失败: " + file.errorString()).toStdString());
-                message = "已保存多曝光融合图片: " + path;
+                message = "多曝光融合完成，图片已保存";
             } catch (const std::exception& error) {
                 path.clear();
                 message = QString::fromUtf8(error.what());

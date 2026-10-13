@@ -19,17 +19,33 @@ ApplicationWindow {
     readonly property bool editing: activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined
     readonly property color ink: "#dce3ed"
     readonly property color muted: "#8693a4"
+    readonly property int infoWidth: width < 1100 ? 270 : 290
+    property string today: Qt.formatDate(new Date(), "yyyy-MM-dd")
+    readonly property string archiveDate: controller.lastCapturePath
+        ? controller.lastCapturePath.split("/").slice(-2, -1).join("") : today
     function takePhoto() {
-        controller.outputDirectory = outputField.text
         controller.exposureList = exposuresField.text
         controller.capturePhoto()
     }
+    function recordStatus(message) {
+        if (!message) return
+        var follow = operationLog.atYEnd || activityLog.count === 0
+        var failed = /失败|异常|无效|超出|超时|不可达|无法/.test(message)
+        activityLog.append({stamp: Qt.formatTime(new Date(), "hh:mm:ss"), message: message,
+                            tone: failed ? "#cc9191" : "#b7c3d2"})
+        if (activityLog.count > 200) activityLog.remove(0, activityLog.count - 200)
+        if (follow) Qt.callLater(function() { operationLog.positionViewAtEnd() })
+    }
+    Component.onCompleted: recordStatus(controller.statusMessage)
+    Timer { interval: 60000; running: true; repeat: true; onTriggered: root.today = Qt.formatDate(new Date(), "yyyy-MM-dd") }
+    ListModel { id: activityLog }
     Shortcut { sequence: "Space"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready && !root.editing; onActivated: root.takePhoto() }
     Shortcut { sequence: "S"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready && !root.editing; onActivated: root.takePhoto() }
     Shortcut { sequence: "Ctrl+S"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready; onActivated: root.takePhoto() }
     Connections {
         target: root.controller
         function onFrameUpdated() { cameraImage.source = "image://camera/current#" + Date.now() }
+        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage) }
     }
 
     ColumnLayout {
@@ -37,7 +53,6 @@ ApplicationWindow {
         anchors.margins: 20
         spacing: 12
 
-        // A quiet instrument header; connection state and session count are live.
         RowLayout {
             Layout.fillWidth: true
             Layout.preferredHeight: 48
@@ -53,10 +68,9 @@ ApplicationWindow {
                 Text { text: "图像采集工作台"; color: root.muted; font.pixelSize: 12 }
             }
             Item { Layout.fillWidth: true }
+            Text { text: "多曝光融合  /  PNG"; color: root.muted; font.pixelSize: 11; Layout.rightMargin: 10 }
             Rectangle {
-                implicitWidth: headerState.implicitWidth + 30
-                implicitHeight: 30
-                radius: 15
+                implicitWidth: headerState.implicitWidth + 30; implicitHeight: 30; radius: 15
                 color: root.controller.previewActive ? "#22332e" : "#232a34"
                 Row {
                     id: headerState
@@ -68,17 +82,160 @@ ApplicationWindow {
                     }
                 }
             }
-            Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 30; color: "#303845"; Layout.leftMargin: 5; Layout.rightMargin: 5 }
+        }
+
+        // Keep every editable setting and action in one top control deck.
+        CollectCard {
+            objectName: "controlDeck"
+            Layout.fillWidth: true
+            implicitHeight: controls.implicitHeight + 28
             ColumnLayout {
-                spacing: 0
-                Text { text: "本次采集"; font.pixelSize: 10; color: root.muted; Layout.alignment: Qt.AlignRight }
-                Row {
-                    spacing: 5
-                    Text {
-                        text: root.controller.savedImageCount < 1000 ? ("000" + root.controller.savedImageCount).slice(-3) : root.controller.savedImageCount
-                        color: root.ink; font.family: "DejaVu Sans Mono"; font.pixelSize: 23
+                id: controls
+                anchors.fill: parent
+                spacing: 7
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 7
+                    RowLayout {
+                        Layout.preferredWidth: 70; spacing: 7
+                        CollectIcon { name: "camera"; ink: "#8d9eb4"; Layout.preferredWidth: 19; Layout.preferredHeight: 19 }
+                        Text { text: "相机"; color: root.ink; font.pixelSize: 12; font.weight: Font.Medium }
                     }
-                    Text { text: "张"; color: root.muted; font.pixelSize: 11; anchors.bottom: parent.bottom; anchors.bottomMargin: 3 }
+                    Text { text: "IP"; color: root.muted; font.pixelSize: 11 }
+                    CollectField {
+                        text: root.controller.cameraIp; mono: true; font.pixelSize: 11; Layout.preferredWidth: 126
+                        enabled: !root.controller.cameraOpened && !root.busy
+                        onEditingFinished: root.controller.cameraIp = text
+                    }
+                    Text { text: "序列号"; color: root.muted; font.pixelSize: 11; Layout.leftMargin: 5 }
+                    CollectField {
+                        text: root.controller.cameraSn; placeholderText: "可选"; mono: true; font.pixelSize: 11; Layout.preferredWidth: 100
+                        enabled: !root.controller.cameraOpened && !root.busy
+                        onEditingFinished: root.controller.cameraSn = text
+                    }
+                    Text { text: "分辨率"; color: root.muted; font.pixelSize: 11; Layout.leftMargin: 5 }
+                    CollectField {
+                        text: root.controller.previewWidth; mono: true; font.pixelSize: 11; Layout.preferredWidth: 56
+                        validator: IntValidator { bottom: 1; top: 32768 }
+                        enabled: !root.controller.cameraOpened && !root.busy
+                        onEditingFinished: if (acceptableInput) root.controller.previewWidth = parseInt(text)
+                    }
+                    Text { text: "×"; color: root.muted; font.pixelSize: 11 }
+                    CollectField {
+                        text: root.controller.previewHeight; mono: true; font.pixelSize: 11; Layout.preferredWidth: 56
+                        validator: IntValidator { bottom: 1; top: 32768 }
+                        enabled: !root.controller.cameraOpened && !root.busy
+                        onEditingFinished: if (acceptableInput) root.controller.previewHeight = parseInt(text)
+                    }
+                    Item { Layout.fillWidth: true }
+                    CollectButton {
+                        objectName: "openCameraButton"
+                        text: root.controller.cameraOpened ? "断开相机" : "连接并预览"; iconName: "connect"; font.pixelSize: 12
+                        enabled: !root.busy
+                        onClicked: {
+                            if (root.controller.cameraOpened) root.controller.closeCamera()
+                            else {
+                                root.controller.openCamera()
+                                if (root.controller.cameraOpened) root.controller.startPreview()
+                            }
+                        }
+                    }
+                    CollectButton {
+                        text: root.controller.previewActive ? "暂停" : "预览"
+                        iconName: root.controller.previewActive ? "pause" : "play"; quiet: true; font.pixelSize: 12
+                        enabled: root.controller.cameraOpened && !root.busy
+                        onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview()
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#2c333d" }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 7
+                    RowLayout {
+                        Layout.preferredWidth: 70; spacing: 7
+                        CollectIcon { name: "level"; ink: "#8d9eb4"; Layout.preferredWidth: 19; Layout.preferredHeight: 19 }
+                        Text { text: "机器人"; color: root.ink; font.pixelSize: 12; font.weight: Font.Medium }
+                    }
+                    Text { text: "机器人IP"; color: root.muted; font.pixelSize: 11 }
+                    CollectField {
+                        text: root.controller.robotIp; mono: true; font.pixelSize: 11; Layout.preferredWidth: 122
+                        enabled: !root.controller.robotConnected && !root.busy
+                        onEditingFinished: root.controller.robotIp = text
+                    }
+                    Text { text: "端口"; color: root.muted; font.pixelSize: 11; Layout.leftMargin: 5 }
+                    CollectField {
+                        text: root.controller.robotPort; mono: true; font.pixelSize: 11; Layout.preferredWidth: 64
+                        validator: IntValidator { bottom: 1; top: 65535 }
+                        enabled: !root.controller.robotConnected && !root.busy
+                        onEditingFinished: if (acceptableInput) root.controller.robotPort = parseInt(text)
+                    }
+                    Text { text: "密码"; color: root.muted; font.pixelSize: 11; Layout.leftMargin: 5 }
+                    CollectField {
+                        text: root.controller.robotPasswd; echoMode: TextInput.Password; font.pixelSize: 11; Layout.preferredWidth: 76
+                        enabled: !root.controller.robotConnected && !root.busy
+                        onEditingFinished: root.controller.robotPasswd = text
+                    }
+                    Item { Layout.fillWidth: true }
+                    CollectButton {
+                        text: root.controller.robotConnected ? "断开机器人" : "连接机器人"; iconName: "connect"; font.pixelSize: 12
+                        enabled: !root.busy
+                        onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot()
+                    }
+                    CollectButton {
+                        objectName: "levelButton"
+                        text: "一键调平"; iconName: "level"; font.pixelSize: 12
+                        enabled: root.ready && root.controller.robotConnected
+                        onClicked: root.controller.levelCamera()
+                        ToolTip.visible: hovered
+                        ToolTip.text: "镜头平面水平，相机向下；无手眼矩阵时按法兰方向调平。"
+                    }
+                    CollectButton {
+                        objectName: "stopButton"
+                        text: "停止操作"; iconName: "stop"; danger: true; quiet: true; font.pixelSize: 12
+                        enabled: root.controller.collectionBusy
+                        onClicked: root.controller.cancelCollectionOperation()
+                    }
+                }
+                Rectangle { Layout.fillWidth: true; height: 1; color: "#2c333d" }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 7
+                    RowLayout {
+                        Layout.preferredWidth: 70; spacing: 7
+                        CollectIcon { name: "shutter"; ink: "#8d9eb4"; Layout.preferredWidth: 19; Layout.preferredHeight: 19 }
+                        Text { text: "采集"; color: root.ink; font.pixelSize: 12; font.weight: Font.Medium }
+                    }
+                    Text { text: "预览曝光"; color: root.muted; font.pixelSize: 11 }
+                    CollectField {
+                        id: previewExposure
+                        text: root.controller.cameraExposureUs; mono: true; font.pixelSize: 11; Layout.preferredWidth: 80
+                        validator: IntValidator { bottom: 1; top: 1000000 }
+                        enabled: !root.busy
+                    }
+                    Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
+                    CollectButton {
+                        text: "应用"; font.pixelSize: 12
+                        enabled: !root.busy && previewExposure.acceptableInput
+                        onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text))
+                    }
+                    Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 18; color: "#394351"; Layout.leftMargin: 4; Layout.rightMargin: 4 }
+                    Text { text: "融合序列"; color: root.muted; font.pixelSize: 11 }
+                    CollectField {
+                        id: exposuresField; objectName: "exposureInput"
+                        text: root.controller.exposureList; mono: true; font.pixelSize: 11
+                        Layout.preferredWidth: root.width < 1100 ? 176 : 256
+                        enabled: !root.busy
+                        onEditingFinished: root.controller.exposureList = text
+                    }
+                    Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
+                    Item { Layout.fillWidth: true }
+                    CollectButton {
+                        text: "图片目录"; iconName: "folder"; quiet: true; font.pixelSize: 12
+                        onClicked: root.controller.openCollectionFolder()
+                    }
+                    CollectButton {
+                        objectName: "captureButton"
+                        text: "拍照保存"; iconName: "shutter"; primary: true; font.pixelSize: 12
+                        enabled: root.ready
+                        onClicked: root.takePhoto()
+                    }
                 }
             }
         }
@@ -89,31 +246,18 @@ ApplicationWindow {
             spacing: 14
             Rectangle {
                 id: viewfinder
-                Layout.fillWidth: true
-                Layout.fillHeight: true
-                color: "#1b2027"
-                radius: 10
-                border.color: "#2c333d"
-                clip: true
+                Layout.fillWidth: true; Layout.fillHeight: true
+                color: "#1b2027"; radius: 10; border.color: "#2c333d"; clip: true
                 ColumnLayout {
-                    anchors.fill: parent
-                    anchors.margins: 16
-                    spacing: 12
+                    anchors.fill: parent; anchors.margins: 16; spacing: 12
                     RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 8
+                        Layout.fillWidth: true; spacing: 8
                         CollectIcon { name: "camera"; ink: "#98a5b6"; Layout.preferredWidth: 18; Layout.preferredHeight: 18 }
-                        Text { text: "取景器"; color: "#e4eaf2"; font.pixelSize: 13; font.weight: Font.Medium }
+                        Text { text: "实时取景"; color: root.ink; font.pixelSize: 13; font.weight: Font.Medium }
                         Item { Layout.fillWidth: true }
-                        CollectButton {
-                            text: "停止操作"; iconName: "stop"; danger: true; quiet: true
-                            visible: root.controller.collectionBusy
-                            Layout.preferredHeight: 28
-                            onClicked: root.controller.cancelCollectionOperation()
-                        }
                         Text {
                             text: root.controller.cameraOpened ? root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight : "LIVE VIEW"
-                            color: "#788595"; font.family: "DejaVu Sans Mono"; font.pixelSize: 10; font.letterSpacing: 0.7
+                            color: root.muted; font.family: "DejaVu Sans Mono"; font.pixelSize: 10; font.letterSpacing: 0.7
                         }
                     }
                     Rectangle {
@@ -170,242 +314,126 @@ ApplicationWindow {
                     }
                     RowLayout {
                         Layout.fillWidth: true
-                        spacing: 10
-                        ColumnLayout {
-                            spacing: 2
-                            Text { text: "多曝光融合"; color: "#cbd6e6"; font.pixelSize: 12 }
-                            Text { text: "PNG  /  原始分辨率"; color: "#6f7e92"; font.pixelSize: 10 }
-                        }
+                        Text { text: "保持静止，自动融合多曝光"; color: root.muted; font.pixelSize: 10 }
                         Item { Layout.fillWidth: true }
-                        Rectangle {
-                            width: shortcutLabel.implicitWidth + 16; height: 25; radius: 5
-                            color: "#232d3b"; border.color: "#354255"
-                            Text { id: shortcutLabel; text: "SPACE"; anchors.centerIn: parent; color: "#8a9cb4"; font.pixelSize: 9; font.letterSpacing: 1 }
-                        }
-                        CollectButton {
-                            objectName: "captureButton"
-                            text: "拍照保存"
-                            iconName: "shutter"
-                            primary: true
-                            Layout.preferredHeight: 42
-                            Layout.preferredWidth: 146
-                            enabled: root.ready
-                            onClicked: root.takePhoto()
-                        }
+                        Text { text: root.controller.cameraBackend.toUpperCase() + "  /  原始分辨率"; color: "#6f7e92"; font.pixelSize: 10 }
                     }
                 }
             }
 
-            ScrollView {
-                id: deviceSettings
-                Layout.preferredWidth: 340
+            ColumnLayout {
+                id: infoSidebar
+                Layout.preferredWidth: root.infoWidth
+                Layout.minimumWidth: root.infoWidth
+                Layout.maximumWidth: root.infoWidth
                 Layout.fillHeight: true
-                clip: true
-                contentWidth: availableWidth
-                ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
-                ScrollBar.vertical: ScrollBar {
-                    policy: ScrollBar.AsNeeded
-                    width: 5
-                    contentItem: Rectangle { radius: 2; color: parent.pressed ? "#627187" : "#394451"; opacity: parent.active ? 1 : 0.5 }
+                spacing: 12
+                CollectCard {
+                    id: statusCard
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: root.infoWidth
+                    implicitHeight: sessionInfo.implicitHeight + 28
+                    ColumnLayout {
+                        id: sessionInfo
+                        anchors.fill: parent; spacing: 8
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "采集状态"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "PNG"; color: root.muted; font.family: "DejaVu Sans Mono"; font.pixelSize: 10 }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "相机"; color: root.muted; font.pixelSize: 11 }
+                            Text { text: root.controller.previewActive ? "● 预览中" : root.controller.cameraOpened ? "● 已暂停" : "○ 未连接"; color: root.controller.previewActive ? "#90b3a2" : root.muted; font.pixelSize: 11 }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "机器人"; color: root.muted; font.pixelSize: 11 }
+                            Text { text: root.controller.robotConnected ? "● 已连接" : "○ 未连接"; color: root.controller.robotConnected ? "#90b3a2" : root.muted; font.pixelSize: 11 }
+                        }
+                        Rectangle { Layout.fillWidth: true; height: 1; color: "#2c333d" }
+                        RowLayout {
+                            Layout.fillWidth: true
+                            ColumnLayout {
+                                spacing: 2
+                                Text { text: "本次已保存"; color: root.muted; font.pixelSize: 10 }
+                                Row {
+                                    spacing: 5
+                                    Text {
+                                        text: root.controller.savedImageCount < 1000 ? ("000" + root.controller.savedImageCount).slice(-3) : root.controller.savedImageCount
+                                        color: root.ink; font.family: "DejaVu Sans Mono"; font.pixelSize: 27
+                                    }
+                                    Text { text: "张"; color: root.muted; font.pixelSize: 10; anchors.bottom: parent.bottom; anchors.bottomMargin: 4 }
+                                }
+                            }
+                            Item { Layout.fillWidth: true }
+                            ColumnLayout {
+                                spacing: 5; Layout.alignment: Qt.AlignRight
+                                Text { text: "按日期自动归档"; color: root.muted; font.pixelSize: 10; Layout.alignment: Qt.AlignRight }
+                                Text { text: root.archiveDate; color: "#b8c6d7"; font.family: "DejaVu Sans Mono"; font.pixelSize: 11 }
+                            }
+                        }
+                    }
                 }
-                ColumnLayout {
-                    width: deviceSettings.availableWidth
-                    spacing: 12
-                    CollectCard {
-                        Layout.fillWidth: true
-                        implicitHeight: cameraSettings.implicitHeight + 28
-                        ColumnLayout {
-                            id: cameraSettings
-                            anchors.fill: parent
-                            spacing: 7
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text { text: "相机设置"; color: root.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                                Item { Layout.fillWidth: true }
-                                Text { text: root.controller.cameraBackend.toUpperCase(); color: root.muted; font.pixelSize: 10; font.letterSpacing: 1 }
+                CollectCard {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: root.infoWidth
+                    implicitHeight: recentPhoto.implicitHeight + 28
+                    ColumnLayout {
+                        id: recentPhoto
+                        anchors.fill: parent; spacing: 8
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "最近图片"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Text { text: "多曝光融合"; color: root.muted; font.pixelSize: 10 }
+                        }
+                        Rectangle {
+                            Layout.fillWidth: true; Layout.preferredHeight: root.controller.lastCapturePath ? 106 : 66
+                            radius: 6; color: "#151a21"; border.color: "#303845"
+                            Image {
+                                anchors.fill: parent; anchors.margins: 3
+                                source: root.controller.lastCapturePath ? "file://" + root.controller.lastCapturePath : ""
+                                fillMode: Image.PreserveAspectFit
                             }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                spacing: 8
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 4
-                                    Text { text: "设备 IP"; color: root.muted; font.pixelSize: 10 }
-                                    CollectField {
-                                        text: root.controller.cameraIp; mono: true; Layout.fillWidth: true
-                                        enabled: !root.controller.cameraOpened && !root.busy
-                                        onEditingFinished: root.controller.cameraIp = text
-                                    }
-                                }
-                                ColumnLayout {
-                                    Layout.fillWidth: true; spacing: 4
-                                    Text { text: "序列号"; color: root.muted; font.pixelSize: 10 }
-                                    CollectField {
-                                        text: root.controller.cameraSn; placeholderText: "可选"; mono: true; Layout.fillWidth: true
-                                        enabled: !root.controller.cameraOpened && !root.busy
-                                        onEditingFinished: root.controller.cameraSn = text
-                                    }
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Text { text: "分辨率"; color: root.muted; font.pixelSize: 11; Layout.preferredWidth: 60 }
-                                CollectField {
-                                    text: root.controller.previewWidth; mono: true; Layout.fillWidth: true
-                                    validator: IntValidator { bottom: 1; top: 32768 }
-                                    enabled: !root.controller.cameraOpened && !root.busy
-                                    onEditingFinished: if (acceptableInput) root.controller.previewWidth = parseInt(text)
-                                }
-                                Text { text: "×"; color: root.muted }
-                                CollectField {
-                                    text: root.controller.previewHeight; mono: true; Layout.fillWidth: true
-                                    validator: IntValidator { bottom: 1; top: 32768 }
-                                    enabled: !root.controller.cameraOpened && !root.busy
-                                    onEditingFinished: if (acceptableInput) root.controller.previewHeight = parseInt(text)
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                CollectButton {
-                                    objectName: "openCameraButton"
-                                    text: root.controller.cameraOpened ? "断开相机" : "连接并预览"; iconName: "connect"
-                                    Layout.fillWidth: true; enabled: !root.busy
-                                    onClicked: {
-                                        if (root.controller.cameraOpened) root.controller.closeCamera()
-                                        else {
-                                            root.controller.openCamera()
-                                            if (root.controller.cameraOpened) root.controller.startPreview()
-                                        }
-                                    }
-                                }
-                                CollectButton {
-                                    text: root.controller.previewActive ? "暂停" : "预览"
-                                    iconName: root.controller.previewActive ? "pause" : "play"; quiet: true
-                                    enabled: root.controller.cameraOpened && !root.busy
-                                    onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview()
-                                }
-                            }
-                            Rectangle { Layout.fillWidth: true; height: 1; color: "#2c333d"; Layout.topMargin: 3; Layout.bottomMargin: 3 }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Text { text: "预览曝光"; color: root.muted; font.pixelSize: 11; Layout.preferredWidth: 60 }
-                                CollectField {
-                                    id: previewExposure
-                                    text: root.controller.cameraExposureUs; mono: true; Layout.fillWidth: true
-                                    validator: IntValidator { bottom: 1; top: 1000000 }
-                                    enabled: !root.busy
-                                }
-                                Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
-                                CollectButton {
-                                    text: "应用"; enabled: !root.busy && previewExposure.acceptableInput
-                                    onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text))
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text { text: "拍照曝光序列"; color: root.muted; font.pixelSize: 11 }
-                                Item { Layout.fillWidth: true }
-                                Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
-                            }
-                            CollectField {
-                                id: exposuresField; objectName: "exposureInput"
-                                Layout.fillWidth: true; text: root.controller.exposureList
-                                mono: true; font.pixelSize: 11; enabled: !root.busy
-                                onEditingFinished: root.controller.exposureList = text
-                            }
-                            Text { text: "2–9 档曝光，逗号分隔；拍照时保持静止。"; color: root.muted; font.pixelSize: 10; wrapMode: Text.Wrap; Layout.fillWidth: true }
+                            Text { anchors.centerIn: parent; text: "保存后的图片将在此显示"; visible: !root.controller.lastCapturePath; color: "#65758b"; font.pixelSize: 10 }
+                        }
+                        Text {
+                            visible: root.controller.lastCapturePath !== ""
+                            text: root.controller.lastCapturePath.split("/").pop()
+                            color: root.muted; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true
                         }
                     }
-                    CollectCard {
-                        objectName: "robotSettingsCard"
-                        Layout.fillWidth: true
-                        implicitHeight: robotSettings.implicitHeight + 28
-                        ColumnLayout {
-                            id: robotSettings
-                            anchors.fill: parent
-                            spacing: 7
-                            RowLayout {
-                                Layout.fillWidth: true
-                                Text { text: "机器人设置"; color: root.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                                Item { Layout.fillWidth: true }
-                                Text { text: root.controller.robotConnected ? "● 已连接" : "○ 未连接"; color: root.controller.robotConnected ? "#83a997" : root.muted; font.pixelSize: 10 }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Text { text: "机器人IP"; color: root.muted; font.pixelSize: 11; Layout.preferredWidth: 60 }
-                                CollectField {
-                                    text: root.controller.robotIp; mono: true; Layout.fillWidth: true
-                                    enabled: !root.controller.robotConnected && !root.busy
-                                    onEditingFinished: root.controller.robotIp = text
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                Text { text: "端口"; color: root.muted; font.pixelSize: 11 }
-                                CollectField {
-                                    text: root.controller.robotPort; mono: true; Layout.preferredWidth: 76
-                                    validator: IntValidator { bottom: 1; top: 65535 }
-                                    enabled: !root.controller.robotConnected && !root.busy
-                                    onEditingFinished: if (acceptableInput) root.controller.robotPort = parseInt(text)
-                                }
-                                Text { text: "密码"; color: root.muted; font.pixelSize: 11; Layout.leftMargin: 3 }
-                                CollectField {
-                                    text: root.controller.robotPasswd; echoMode: TextInput.Password; Layout.fillWidth: true
-                                    enabled: !root.controller.robotConnected && !root.busy
-                                    onEditingFinished: root.controller.robotPasswd = text
-                                }
-                            }
-                            RowLayout {
-                                Layout.fillWidth: true; spacing: 6
-                                CollectButton {
-                                    text: root.controller.robotConnected ? "断开连接" : "连接机器人"; iconName: "connect"
-                                    Layout.fillWidth: true; enabled: !root.busy
-                                    onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot()
-                                }
-                                CollectButton {
-                                    objectName: "levelButton"
-                                    text: "一键调平"; iconName: "level"; Layout.fillWidth: true
-                                    enabled: root.ready && root.controller.robotConnected
-                                    onClicked: root.controller.levelCamera()
-                                }
-                            }
-                            Text {
-                                text: "镜头平面水平 · 相机朝下\n无手眼矩阵时，按法兰方向调平。"
-                                color: root.muted; font.pixelSize: 10; lineHeight: 1.3
-                                Layout.fillWidth: true; wrapMode: Text.Wrap
-                            }
+                }
+                CollectCard {
+                    Layout.fillWidth: true
+                    Layout.minimumWidth: 0
+                    Layout.maximumWidth: root.infoWidth
+                    Layout.fillHeight: true
+                    Layout.minimumHeight: 118
+                    ColumnLayout {
+                        anchors.fill: parent; spacing: 10
+                        RowLayout {
+                            Layout.fillWidth: true
+                            Text { text: "操作日志"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
+                            Item { Layout.fillWidth: true }
+                            Text { text: activityLog.count + " 条"; color: root.muted; font.pixelSize: 10 }
                         }
-                    }
-                    CollectCard {
-                        Layout.fillWidth: true
-                        implicitHeight: librarySettings.implicitHeight + 28
-                        ColumnLayout {
-                            id: librarySettings
-                            anchors.fill: parent
-                            spacing: 7
-                            Text { text: "采集文件"; color: root.ink; font.pixelSize: 14; font.weight: Font.DemiBold }
-                            CollectField {
-                                id: outputField
-                                Layout.fillWidth: true; text: root.controller.outputDirectory; enabled: !root.busy
-                                onEditingFinished: root.controller.outputDirectory = text
+                        ListView {
+                            id: operationLog
+                            objectName: "operationLog"
+                            Layout.fillWidth: true; Layout.fillHeight: true
+                            clip: true; spacing: 10; boundsBehavior: Flickable.StopAtBounds
+                            model: activityLog
+                            ScrollBar.vertical: ScrollBar {
+                                width: 4; policy: ScrollBar.AsNeeded
+                                contentItem: Rectangle { radius: 2; color: "#455163"; opacity: parent.active ? 1 : 0.4 }
                             }
-                            CollectButton {
-                                text: "打开文件夹"; iconName: "folder"; quiet: true; Layout.fillWidth: true
-                                onClicked: Qt.openUrlExternally("file://" + root.controller.outputDirectory)
-                            }
-                            Rectangle {
-                                Layout.fillWidth: true; Layout.preferredHeight: 90
-                                radius: 6; color: "#151a21"; border.color: "#303845"
-                                visible: root.controller.lastCapturePath !== ""
-                                Image {
-                                    anchors.fill: parent; anchors.margins: 3
-                                    source: root.controller.lastCapturePath ? "file://" + root.controller.lastCapturePath : ""
-                                    fillMode: Image.PreserveAspectFit
-                                }
-                            }
-                            Text {
-                                visible: root.controller.lastCapturePath !== ""
-                                text: root.controller.lastCapturePath.split("/").pop()
-                                color: root.muted; font.pixelSize: 10; elide: Text.ElideMiddle; Layout.fillWidth: true
+                            delegate: Column {
+                                width: operationLog.width - 10; spacing: 4
+                                Text { text: stamp; color: "#65758b"; font.family: "DejaVu Sans Mono"; font.pixelSize: 10 }
+                                Text { width: parent.width; text: message; color: tone; font.pixelSize: 11; wrapMode: Text.Wrap; lineHeight: 1.25 }
                             }
                         }
                     }
@@ -414,18 +442,9 @@ ApplicationWindow {
         }
 
         RowLayout {
-            Layout.fillWidth: true
-            spacing: 7
+            Layout.fillWidth: true; spacing: 7
             Rectangle { width: 5; height: 5; radius: 2.5; color: root.busy ? "#809dbc" : "#789789" }
-            Text {
-                Layout.fillWidth: true
-                text: root.controller.statusMessage
-                color: "#8a97a8"; font.pixelSize: 11
-                elide: Text.ElideMiddle
-                ToolTip.visible: statusHover.containsMouse
-                ToolTip.text: text
-                MouseArea { id: statusHover; anchors.fill: parent; hoverEnabled: true; acceptedButtons: Qt.NoButton }
-            }
+            Text { Layout.fillWidth: true; text: root.controller.statusMessage; color: "#8a97a8"; font.pixelSize: 11; elide: Text.ElideMiddle }
             Text { text: "空格 / S / Ctrl+S 拍照"; color: "#748194"; font.pixelSize: 10 }
         }
     }
