@@ -87,13 +87,13 @@ void CalibrationController::capturePhoto() {
         bool ok = false;
         const int exposure = token.toInt(&ok);
         if (!ok || exposure < 1 || exposure > 1000000 || !distinct.insert(exposure).second) {
-            setStatus("曝光列表应包含 2～9 个不同的正整数，单位 μs，最大 1000000");
+            setStatus("曝光列表应包含 2～8 个不同的正整数，单位 μs，最大 1000000");
             return;
         }
         exposures.push_back(exposure);
     }
-    if (exposures.size() < 2 || exposures.size() > 9) {
-        setStatus("每次拍照至少需要 2 个、最多 9 个曝光值");
+    if (exposures.size() < 2 || exposures.size() > 8) {
+        setStatus("每次拍照至少需要 2 个、最多 8 个曝光值");
         return;
     }
     const auto camera = m_camera;
