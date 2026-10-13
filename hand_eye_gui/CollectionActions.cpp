@@ -101,22 +101,12 @@ void CalibrationController::capturePhoto() {
     // one daily folder, with a filename that uses the same timestamp.
     const QDateTime captureTime = QDateTime::currentDateTime();
     const QString directory = QDir(m_outputDirectory).filePath(captureTime.toString("yyyy-MM-dd"));
-    const RobotHandle handle = m_robotHandle;
-    const bool hasRobot = m_robotConnected;
     beginCollectionOperation();
     setStatus(QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, handle, hasRobot]() {
+        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures]() {
             QString message, path;
             try {
-                if (hasRobot) {
-                    double velocities[ROB_AXIS_NUM]{};
-                    if (cr_get_jointActualVelocity(handle, velocities) != sucess)
-                        throw std::runtime_error("无法确认机器人静止状态");
-                    for (double velocity : velocities)
-                        if (!std::isfinite(velocity) || std::abs(velocity) > 0.1)
-                            throw std::runtime_error("请等待机器人停止后拍照");
-                }
                 int minimum = 0, maximum = 0;
                 if (!camera->getExposureRange(minimum, maximum))
                     throw std::runtime_error("无法读取相机曝光范围");

@@ -1,12 +1,12 @@
 %YAML:1.0
 ---
 # Edit to match the connected MVS camera. All exposure values use microseconds.
-cam_ip: "192.168.0.10"
+cam_ip: "192.168.66.253"
 cam_sn: ""
-cam_width: 2448
-cam_height: 2048
-exposure_us: 30000
-gain: 3
-robot_ip: "192.168.0.6"
+cam_width: 4024
+cam_height: 3036
+camera_exposure_us: 30000
+camera_gain: 3
+robot_ip: "192.168.66.14"
 robot_port: 2323
 robot_pwd: "123"

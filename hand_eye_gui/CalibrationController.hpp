@@ -288,12 +288,12 @@ private:
     // ==================== 数据成员 ====================
 
     // 配置
-    QString  m_robotIp      = "192.168.0.6";
+    QString  m_robotIp      = "192.168.66.14";
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
     int      m_cameraToTcpEnd = 150;
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
-    QString  m_cameraIp     = "192.168.0.10";
+    QString  m_cameraIp     = "192.168.66.253";
     int      m_cameraPort   = 8090;
     QString  m_cameraSn;                        // 可选；配置后优先于 IP
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名

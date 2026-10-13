@@ -19,7 +19,6 @@ ApplicationWindow {
     readonly property bool editing: activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined
     readonly property color ink: "#dce3ed"
     readonly property color muted: "#8693a4"
-    readonly property bool wideExposureRow: width >= 1280
     readonly property int infoWidth: width < 1100 ? 270 : 290
     property string today: Qt.formatDate(new Date(), "yyyy-MM-dd")
     readonly property string archiveDate: controller.lastCapturePath
@@ -98,7 +97,7 @@ ApplicationWindow {
             }
         }
 
-        // Keep every editable setting and action in one top control deck.
+        // Keep connection and bracket capture controls together at the top.
         CollectCard {
             objectName: "controlDeck"
             Layout.fillWidth: true
@@ -238,77 +237,50 @@ ApplicationWindow {
                     }
                 }
                 Rectangle { Layout.fillWidth: true; height: 1; color: "#2c333d" }
-                GridLayout {
+                RowLayout {
                     Layout.fillWidth: true
-                    columns: root.wideExposureRow ? 2 : 1
-                    columnSpacing: 12
-                    rowSpacing: 7
+                    spacing: 7
                     RowLayout {
-                        Layout.alignment: Qt.AlignLeft
-                        Layout.maximumWidth: implicitWidth
-                        spacing: 7
-                        RowLayout {
-                            Layout.preferredWidth: 70; spacing: 7
-                            CollectIcon { name: "shutter"; ink: "#8d9eb4"; Layout.preferredWidth: 19; Layout.preferredHeight: 19 }
-                            Text { text: "采集"; color: root.ink; font.pixelSize: 12; font.weight: Font.Medium }
-                        }
-                        Text { text: "预览曝光"; color: root.muted; font.pixelSize: 11 }
-                        CollectField {
-                            id: previewExposure
-                            text: root.controller.cameraExposureUs; mono: true; font.pixelSize: 11; Layout.preferredWidth: 80
-                            validator: IntValidator { bottom: 1; top: 1000000 }
-                            enabled: !root.busy
-                        }
-                        Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
-                        CollectButton {
-                            text: "应用"; font.pixelSize: 12
-                            enabled: !root.busy && previewExposure.acceptableInput
-                            onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text))
-                        }
+                        Layout.preferredWidth: 70; spacing: 7
+                        CollectIcon { name: "shutter"; ink: "#8d9eb4"; Layout.preferredWidth: 19; Layout.preferredHeight: 19 }
+                        Text { text: "采集"; color: root.ink; font.pixelSize: 12; font.weight: Font.Medium }
                     }
+                    Text { text: "融合序列"; color: root.muted; font.pixelSize: 11 }
                     RowLayout {
-                        Layout.fillWidth: true
-                        spacing: 7
-                        Text {
-                            text: "融合序列"; color: root.muted; font.pixelSize: 11
-                            Layout.preferredWidth: root.wideExposureRow ? implicitWidth : 70
-                        }
-                        RowLayout {
-                            spacing: 5
-                            Repeater {
-                                id: exposureInputs
-                                model: exposureSlots
-                                CollectField {
-                                    objectName: index === 0 ? "exposureInput" : "exposureInput" + (index + 1)
-                                    text: value; placeholderText: "可选"
-                                    mono: true; font.pixelSize: 11
-                                    leftPadding: 7; rightPadding: 7
-                                    horizontalAlignment: TextInput.AlignHCenter
-                                    Layout.preferredWidth: 62
-                                    Layout.minimumWidth: 62
-                                    Layout.maximumWidth: 62
-                                    validator: IntValidator { bottom: 1; top: 1000000 }
-                                    enabled: !root.busy
-                                    hoverEnabled: true
-                                    onTextEdited: exposureSlots.setProperty(index, "value", text)
-                                    onActiveFocusChanged: if (!activeFocus && exposureSlots.count === 8 && !root.busy) root.saveExposures()
-                                    ToolTip.visible: hovered && enabled
-                                    ToolTip.text: "第 " + (index + 1) + " 档曝光（μs），留空不参与融合"
-                                }
+                        spacing: 5
+                        Repeater {
+                            id: exposureInputs
+                            model: exposureSlots
+                            CollectField {
+                                objectName: index === 0 ? "exposureInput" : "exposureInput" + (index + 1)
+                                text: value; placeholderText: "可选"
+                                mono: true; font.pixelSize: 11
+                                leftPadding: 7; rightPadding: 7
+                                horizontalAlignment: TextInput.AlignHCenter
+                                Layout.preferredWidth: 62
+                                Layout.minimumWidth: 62
+                                Layout.maximumWidth: 62
+                                validator: IntValidator { bottom: 1; top: 1000000 }
+                                enabled: !root.busy
+                                hoverEnabled: true
+                                onTextEdited: exposureSlots.setProperty(index, "value", text)
+                                onActiveFocusChanged: if (!activeFocus && exposureSlots.count === 8 && !root.busy) root.saveExposures()
+                                ToolTip.visible: hovered && enabled
+                                ToolTip.text: "第 " + (index + 1) + " 档曝光（μs），留空不参与融合"
                             }
                         }
-                        Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
-                        Item { Layout.fillWidth: true }
-                        CollectButton {
-                            text: "图片目录"; iconName: "folder"; quiet: true; font.pixelSize: 12
-                            onClicked: root.controller.openCollectionFolder()
-                        }
-                        CollectButton {
-                            objectName: "captureButton"
-                            text: "拍照保存"; iconName: "shutter"; primary: true; font.pixelSize: 12
-                            enabled: root.ready
-                            onClicked: root.takePhoto()
-                        }
+                    }
+                    Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
+                    Item { Layout.fillWidth: true }
+                    CollectButton {
+                        text: "图片目录"; iconName: "folder"; quiet: true; font.pixelSize: 12
+                        onClicked: root.controller.openCollectionFolder()
+                    }
+                    CollectButton {
+                        objectName: "captureButton"
+                        text: "拍照保存"; iconName: "shutter"; primary: true; font.pixelSize: 12
+                        enabled: root.ready
+                        onClicked: root.takePhoto()
                     }
                 }
             }
@@ -410,7 +382,7 @@ ApplicationWindow {
                     implicitHeight: sessionInfo.implicitHeight + 28
                     ColumnLayout {
                         id: sessionInfo
-                        anchors.fill: parent; spacing: 8
+                        anchors.fill: parent; spacing: 7
                         RowLayout {
                             Layout.fillWidth: true
                             Text { text: "采集状态"; color: root.ink; font.pixelSize: 13; font.weight: Font.DemiBold }
@@ -445,6 +417,24 @@ ApplicationWindow {
                                 spacing: 5; Layout.alignment: Qt.AlignRight
                                 Text { text: "按日期自动归档"; color: root.muted; font.pixelSize: 10; Layout.alignment: Qt.AlignRight }
                                 Text { text: root.archiveDate; color: "#b8c6d7"; font.family: "DejaVu Sans Mono"; font.pixelSize: 11 }
+                            }
+                        }
+                        RowLayout {
+                            Layout.fillWidth: true; spacing: 6
+                            Text { text: "预览曝光"; color: root.muted; font.pixelSize: 11 }
+                            CollectField {
+                                id: previewExposure
+                                objectName: "previewExposureInput"
+                                text: root.controller.cameraExposureUs; mono: true; font.pixelSize: 11
+                                Layout.fillWidth: true; Layout.minimumWidth: 0
+                                validator: IntValidator { bottom: 1; top: 1000000 }
+                                enabled: !root.busy
+                            }
+                            Text { text: "μs"; color: root.muted; font.pixelSize: 10 }
+                            CollectButton {
+                                text: "应用"; font.pixelSize: 12
+                                enabled: !root.busy && previewExposure.acceptableInput
+                                onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text))
                             }
                         }
                     }
