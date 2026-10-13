@@ -2,11 +2,11 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 
 Pane {
-    padding: 16
+    padding: 14
     background: Rectangle {
-        radius: 12
-        color: "#fdfdfb"
+        radius: 10
+        color: "#1b2027"
         border.width: 1
-        border.color: "#e3e6df"
+        border.color: "#2c333d"
     }
 }

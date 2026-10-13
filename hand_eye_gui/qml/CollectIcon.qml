@@ -3,7 +3,7 @@ import QtQuick 2.15
 Canvas {
     id: icon
     property string name: "camera"
-    property color ink: "#555d68"
+    property color ink: "#9ba8bc"
     implicitWidth: 20
     implicitHeight: 20
     onNameChanged: requestPaint()

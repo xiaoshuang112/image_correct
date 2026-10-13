@@ -64,8 +64,6 @@ class CalibrationController : public QObject
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
     Q_PROPERTY(QString outputDirectory READ outputDirectory WRITE setOutputDirectory NOTIFY collectionChanged)
     Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
-    Q_PROPERTY(QString handEyePath READ handEyePath WRITE setHandEyePath NOTIFY collectionChanged)
-    Q_PROPERTY(QString handEyeUnits READ handEyeUnits WRITE setHandEyeUnits NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
     Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
 
@@ -109,14 +107,10 @@ public:
     bool collectionBusy() const { return m_collectionBusy; }
     QString outputDirectory() const { return m_outputDirectory; }
     QString exposureList() const { return m_exposureList; }
-    QString handEyePath() const { return m_handEyePath; }
-    QString handEyeUnits() const { return m_handEyeUnits; }
     QString lastCapturePath() const { return m_lastCapturePath; }
     int savedImageCount() const { return m_savedImageCount; }
     void setOutputDirectory(const QString& value);
     void setExposureList(const QString& value);
-    void setHandEyePath(const QString& value);
-    void setHandEyeUnits(const QString& value);
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }
@@ -364,7 +358,6 @@ private:
     QString m_outputDirectory;
     QString m_exposureList = "7500,15000,30000,60000";
     QString m_handEyePath;
-    QString m_handEyeUnits = "m";
     QString m_lastCapturePath;
     int m_savedImageCount = 0;
     std::thread m_collectionThread;

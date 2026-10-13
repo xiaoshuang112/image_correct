@@ -22,9 +22,7 @@ void CalibrationController::initializeCollection() {
     QSettings settings;
     m_outputDirectory = settings.value("collection/output", QDir::homePath() + "/Pictures/caitu-collect").toString();
     m_exposureList = settings.value("collection/exposures", m_exposureList).toString();
-    m_handEyePath = settings.value("collection/handEyePath",
-        QString::fromStdString(m_paramPath) + "hand_eye_result.yaml").toString();
-    m_handEyeUnits = settings.value("collection/handEyeUnits", "m").toString();
+    m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
 }
 
 void CalibrationController::setOutputDirectory(const QString& value) {
@@ -39,19 +37,6 @@ void CalibrationController::setExposureList(const QString& value) {
     QSettings().setValue("collection/exposures", m_exposureList);
     emit collectionChanged();
 }
-void CalibrationController::setHandEyePath(const QString& value) {
-    if (m_collectionBusy || m_running) return;
-    m_handEyePath = value.trimmed();
-    QSettings().setValue("collection/handEyePath", m_handEyePath);
-    emit collectionChanged();
-}
-void CalibrationController::setHandEyeUnits(const QString& value) {
-    if (m_collectionBusy || m_running || (value != "m" && value != "mm")) return;
-    m_handEyeUnits = value;
-    QSettings().setValue("collection/handEyeUnits", m_handEyeUnits);
-    emit collectionChanged();
-}
-
 void CalibrationController::beginCollectionOperation() {
     if (m_collectionThread.joinable()) m_collectionThread.join();
     m_collectionWasPreviewing = m_previewActive;
@@ -170,22 +155,42 @@ void CalibrationController::levelCamera() {
         setStatus("调平需要预览画面和机器人连接");
         return;
     }
-    cv::Mat flangeCamera;
+    // Parallel mounting: without calibration, level the flange at its current
+    // position. A real matrix instead preserves the calibrated camera centre.
+    cv::Mat flangeCamera = cv::Mat::eye(4, 4, CV_64F);
+    bool calibrated = false;
     try {
-        cv::FileStorage storage(m_handEyePath.toStdString(), cv::FileStorage::READ);
-        if (!storage.isOpened()) throw std::runtime_error("无法打开手眼标定文件");
-        const auto node = storage["T_flange_camera"];
-        if (node.isSeq()) {
-            std::vector<double> values; node >> values;
-            if (values.size() != 16) throw std::runtime_error("手眼矩阵需要 16 个数值");
-            flangeCamera = cv::Mat(4, 4, CV_64F, values.data()).clone();
-        } else {
-            node >> flangeCamera;
-            flangeCamera.convertTo(flangeCamera, CV_64F);
+        if (QFileInfo::exists(m_handEyePath)) {
+            cv::FileStorage storage;
+            try {
+                storage.open(m_handEyePath.toStdString(), cv::FileStorage::READ);
+            } catch (const cv::Exception&) {
+                throw std::runtime_error("手眼标定文件格式无效");
+            }
+            if (!storage.isOpened()) throw std::runtime_error("无法读取手眼标定文件");
+            const auto node = storage["T_flange_camera"];
+            if (!node.empty()) {
+                try {
+                    if (node.isSeq()) {
+                        std::vector<double> values; node >> values;
+                        if (values.size() != 16) throw std::runtime_error("手眼矩阵需要 16 个数值");
+                        flangeCamera = cv::Mat(4, 4, CV_64F, values.data()).clone();
+                    } else {
+                        node >> flangeCamera;
+                        flangeCamera.convertTo(flangeCamera, CV_64F);
+                    }
+                    collection::validateTransform(flangeCamera);
+                    std::string unit = "m";
+                    if (!storage["translation_unit"].empty()) storage["translation_unit"] >> unit;
+                    if (unit != "m" && unit != "mm")
+                        throw std::runtime_error("手眼矩阵平移单位须为 m 或 mm");
+                    if (unit == "mm") flangeCamera(cv::Rect(3, 0, 1, 3)) /= 1000.0;
+                    calibrated = true;
+                } catch (const cv::Exception&) {
+                    throw std::runtime_error("手眼矩阵格式无效");
+                }
+            }
         }
-        collection::validateTransform(flangeCamera);
-        if (m_handEyeUnits == "mm")
-            flangeCamera(cv::Rect(3, 0, 1, 3)) /= 1000.0;
     } catch (const std::exception& error) {
         setStatus(QString("调平失败: %1").arg(QString::fromUtf8(error.what())));
         return;
@@ -193,9 +198,10 @@ void CalibrationController::levelCamera() {
     const RobotHandle handle = m_robotHandle;
     beginCollectionOperation();
     setRobotMotionCancelCheck(&CalibrationController::robotMotionCancellationRequested);
-    setStatus("正在调平：镜头平面水平，相机向下…");
+    setStatus(calibrated ? "正在调平：镜头平面水平，相机向下…"
+                         : "正在调平：法兰垂直向下，相机与法兰平行…");
     try {
-        m_collectionThread = std::thread([this, handle, flangeCamera]() {
+        m_collectionThread = std::thread([this, handle, flangeCamera, calibrated]() {
             QString message;
             try {
                 enum RobotModes mode;
@@ -224,7 +230,8 @@ void CalibrationController::levelCamera() {
                 const cv::Mat actualCamera = calib_transform::axisAnglePoseToTransform(pose) * flangeCamera;
                 const double tilt = std::acos(std::clamp(-actualCamera.at<double>(2, 2), -1.0, 1.0)) * 180 / CV_PI;
                 if (tilt > 1.0) throw std::runtime_error("调平后的相机倾角超过 1°");
-                message = QString("调平完成，相机向下，倾角 %1°").arg(tilt, 0, 'f', 2);
+                message = QString(calibrated ? "调平完成，相机向下，倾角 %1°"
+                                             : "调平完成，法兰垂直向下，倾角 %1°").arg(tilt, 0, 'f', 2);
             } catch (const std::exception& error) {
                 message = QString::fromUtf8(error.what());
             } catch (...) {
