@@ -166,6 +166,9 @@ endif()
 
 # 将安全关键的半自动位姿配置放到每个构建目录，避免发布产物缺失后静默回退。
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/param")
+if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/config.yaml")
+    configure_file(config/collect.example.yaml "${CMAKE_CURRENT_BINARY_DIR}/config.yaml" COPYONLY)
+endif()
 configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_in_hand_config.yaml"
     "${CMAKE_CURRENT_BINARY_DIR}/param/eye_in_hand_config.yaml"
@@ -353,6 +356,20 @@ if(BUILD_TESTS)
     target_link_libraries(caitu_tests ${OpenCV_LIBS})
     enable_testing()
     add_test(NAME caitu_tests COMMAND caitu_tests)
+    add_executable(test_collection
+        tests/test_collection.cpp
+        utils/collection_utils.cpp
+        utils/calib_transform.cpp)
+    target_include_directories(test_collection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+    target_link_libraries(test_collection ${OpenCV_LIBS})
+    add_test(NAME collection_geometry_and_fusion COMMAND test_collection)
+    find_package(Qt5 QUIET COMPONENTS Core Quick Test)
+    if(Qt5Test_FOUND)
+        add_executable(test_collection_ui tests/test_collection_ui.cpp hand_eye_gui/resources.qrc)
+        set_target_properties(test_collection_ui PROPERTIES AUTORCC ON)
+        target_link_libraries(test_collection_ui Qt5::Core Qt5::Quick Qt5::Test)
+        add_test(NAME collection_ui COMMAND test_collection_ui)
+    endif()
 
     # Synthetic pose and disk-preflight regression; no hardware connections.
     add_executable(test_eye_to_hand_solver

@@ -60,6 +60,14 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString resultText     READ resultText     NOTIFY resultTextChanged)
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
+    Q_PROPERTY(bool collectionMode READ collectionMode CONSTANT)
+    Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
+    Q_PROPERTY(QString outputDirectory READ outputDirectory WRITE setOutputDirectory NOTIFY collectionChanged)
+    Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
+    Q_PROPERTY(QString handEyePath READ handEyePath WRITE setHandEyePath NOTIFY collectionChanged)
+    Q_PROPERTY(QString handEyeUnits READ handEyeUnits WRITE setHandEyeUnits NOTIFY collectionChanged)
+    Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
+    Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
 
     // 结构化运行时状态（与 logText 解耦）
     Q_PROPERTY(int     calibrationStage READ calibrationStage NOTIFY calibrationRuntimeChanged)
@@ -96,6 +104,19 @@ public:
 
     /// 必须在 QML 引擎初始化后调用：设置 imageProvider 并完成路径初始化
     void init(CameraImageProvider* provider);
+    void setCollectionMode(bool enabled) { m_collectionMode = enabled; }
+    bool collectionMode() const { return m_collectionMode; }
+    bool collectionBusy() const { return m_collectionBusy; }
+    QString outputDirectory() const { return m_outputDirectory; }
+    QString exposureList() const { return m_exposureList; }
+    QString handEyePath() const { return m_handEyePath; }
+    QString handEyeUnits() const { return m_handEyeUnits; }
+    QString lastCapturePath() const { return m_lastCapturePath; }
+    int savedImageCount() const { return m_savedImageCount; }
+    void setOutputDirectory(const QString& value);
+    void setExposureList(const QString& value);
+    void setHandEyePath(const QString& value);
+    void setHandEyeUnits(const QString& value);
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }
@@ -191,6 +212,9 @@ public slots:
 
     /// 热更新相机曝光，并将设备回读值持久化到 config.yaml。
     void adjustCameraExposure(int exposureUs);
+    void capturePhoto();
+    void levelCamera();
+    void cancelCollectionOperation();
 
 signals:
     void robotIpChanged();
@@ -218,11 +242,15 @@ signals:
     void calibrationRuntimeChanged();
     void logAutoScrollChanged();
     void frameUpdated();
+    void collectionChanged();
 
     /// 标定结束信号
     void calibrationFinished(bool success, const QString& message);
 
 private:
+    void initializeCollection();
+    void beginCollectionOperation();
+    void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----
     void setupPaths();
     void loadConfigYaml();
@@ -330,6 +358,16 @@ private:
     std::string m_appPath;
     std::string m_paramPath;
     std::string m_calibrationPath;
+    bool m_collectionMode = false;
+    bool m_collectionBusy = false;
+    bool m_collectionWasPreviewing = false;
+    QString m_outputDirectory;
+    QString m_exposureList = "7500,15000,30000,60000";
+    QString m_handEyePath;
+    QString m_handEyeUnits = "m";
+    QString m_lastCapturePath;
+    int m_savedImageCount = 0;
+    std::thread m_collectionThread;
 
 };
 

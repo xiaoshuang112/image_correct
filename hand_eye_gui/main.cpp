@@ -40,7 +40,7 @@ int main(int argc, char* argv[])
     }
 
     QGuiApplication app(argc, argv);
-    app.setApplicationName("hand-eye-app");
+    app.setApplicationName("collect-app");
     app.setOrganizationName("caitu");
     app.setApplicationVersion(QStringLiteral(APP_VERSION));
 
@@ -109,20 +109,22 @@ int main(int argc, char* argv[])
         QQmlApplicationEngine engine;
         auto imageProvider = new CameraImageProvider();
         auto controller = std::make_unique<CalibrationController>();
-
+        const bool collectionMode = !app.arguments().contains("--calibration");
+        controller->setCollectionMode(collectionMode);
         controller->init(imageProvider);
 
         engine.rootContext()->setContextProperty("calibrationController", controller.get());
         engine.rootContext()->setContextProperty("appVersion", QStringLiteral(APP_VERSION));
         engine.addImageProvider("camera", imageProvider);
-        APP_LOG_EVENT_INFO("qml", "qml", "loading",
-                           {{"source", "qrc:///qml/HandEyeCalibration.qml"}});
-        engine.load(QUrl(QStringLiteral("qrc:///qml/HandEyeCalibration.qml")));
+        const QString qmlSource = collectionMode ? QStringLiteral("qrc:///qml/Collection.qml")
+                                                 : QStringLiteral("qrc:///qml/HandEyeCalibration.qml");
+        APP_LOG_EVENT_INFO("qml", "qml", "loading", {{"source", qmlSource}});
+        engine.load(QUrl(qmlSource));
 
         if (engine.rootObjects().isEmpty()) {
             qCritical() << "QML 加载失败!";
             APP_LOG_EVENT_ERROR("qml", "qml", "fail",
-                                {{"source", "qrc:///qml/HandEyeCalibration.qml"},
+                                {{"source", qmlSource},
                                  {"stage", "load"}});
         } else {
             APP_LOG_EVENT_INFO("qml", "qml", "loaded",

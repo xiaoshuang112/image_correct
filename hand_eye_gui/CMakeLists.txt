@@ -122,6 +122,7 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/DiagnosticLogger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CalibrationController.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CollectionActions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_resolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/auth_check.cpp
@@ -228,7 +229,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
     CXX_STANDARD_REQUIRED ON
     CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-    OUTPUT_NAME "hand-eye-${CAM_SUFFIX}"
+    OUTPUT_NAME "collect-${CAM_SUFFIX}"
 )
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），

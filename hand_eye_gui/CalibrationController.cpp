@@ -109,6 +109,10 @@ CalibrationController::~CalibrationController()
                         {"preview", QString::number(m_previewActive)},
                         {"camera_opened", QString::number(m_cameraOpened)},
                         {"robot_connected", QString::number(m_robotConnected)}});
+    m_cancelRequested = true;
+    if (m_collectionThread.joinable())
+        m_collectionThread.join();
+    m_collectionBusy = false;
     stopCalibration();
     waitForCalibrationThread();
     flushPendingLogs();
@@ -149,6 +153,7 @@ void CalibrationController::init(CameraImageProvider* provider)
                         {"image_provider", QString::number(reinterpret_cast<quintptr>(provider), 16)}});
     setupPaths();
     loadConfigYaml();
+    initializeCollection();
     std::vector<std::string> recoveredSessions;
     std::string recoveryError;
     const std::array<std::string, 2> auditRoots{{
@@ -167,7 +172,7 @@ void CalibrationController::init(CameraImageProvider* provider)
         APP_LOG_EVENT_WARNING("calibration.audit", "startup_recovery", "recovered",
                               {{"session", QString::fromStdString(session)}});
     }
-    setStatus("就绪 — 请连接机器人");
+    setStatus(m_collectionMode ? "就绪 — 打开相机即可预览和拍照" : "就绪 — 请连接机器人");
 }
 
 void CalibrationController::setupPaths()
@@ -236,6 +241,16 @@ void CalibrationController::loadConfigYaml()
 
     const config_resolver::CameraConfig resolved =
         config_resolver::resolveCameraConfig(fs, defaults);
+    std::string robotIp, robotPassword;
+    if (!fs["robot_ip"].empty()) {
+        fs["robot_ip"] >> robotIp;
+        m_robotIp = QString::fromStdString(robotIp);
+    }
+    if (!fs["robot_port"].empty()) fs["robot_port"] >> m_robotPort;
+    if (!fs["robot_pwd"].empty()) {
+        fs["robot_pwd"] >> robotPassword;
+        m_robotPasswd = QString::fromStdString(robotPassword);
+    }
     int configuredSettlingMs = m_mechanicalSettlingMs;
     const cv::FileNode settlingNode = fs["mechanical_settling_ms"];
     if (!settlingNode.empty())
@@ -297,7 +312,7 @@ void CalibrationController::loadConfigYaml()
 // ===================================================================
 
 void CalibrationController::setRobotIp(const QString& v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -316,7 +331,7 @@ void CalibrationController::setRobotIp(const QString& v) {
     }
 }
 void CalibrationController::setRobotPort(int v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -335,7 +350,7 @@ void CalibrationController::setRobotPort(int v) {
     }
 }
 void CalibrationController::setRobotPasswd(const QString& v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -353,7 +368,7 @@ void CalibrationController::setRobotPasswd(const QString& v) {
     }
 }
 void CalibrationController::setCameraToTcpEnd(int v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -372,7 +387,7 @@ void CalibrationController::setCameraToTcpEnd(int v) {
     }
 }
 void CalibrationController::setCalibrationType(const QString& v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -391,7 +406,7 @@ void CalibrationController::setCalibrationType(const QString& v) {
     }
 }
 void CalibrationController::setCameraIp(const QString& v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -410,7 +425,7 @@ void CalibrationController::setCameraIp(const QString& v) {
     }
 }
 void CalibrationController::setCameraPort(int v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -429,7 +444,7 @@ void CalibrationController::setCameraPort(int v) {
     }
 }
 void CalibrationController::setCameraSn(const QString& v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -449,7 +464,7 @@ void CalibrationController::setCameraSn(const QString& v) {
     }
 }
 void CalibrationController::setPreviewWidth(int v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -468,7 +483,7 @@ void CalibrationController::setPreviewWidth(int v) {
     }
 }
 void CalibrationController::setPreviewHeight(int v) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -488,7 +503,7 @@ void CalibrationController::setPreviewHeight(int v) {
 }
 
 void CalibrationController::updateMechanicalSettlingMs(int milliseconds) {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
                               "config_update",
                               "skip",
@@ -655,7 +670,7 @@ void CalibrationController::updateProgressFromRuntime()
 
 void CalibrationController::connectRobot()
 {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         setStatus("标定运行中，不能更改机器人连接");
         return;
     }
@@ -714,7 +729,7 @@ void CalibrationController::disconnectRobot()
                        "start",
                        {{"connected", QString::number(m_robotConnected)},
                         {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("robot",
                               "robot_disconnect",
                               "skip",
@@ -722,7 +737,7 @@ void CalibrationController::disconnectRobot()
         setStatus("请先取消标定并等待结束，再断开机器人");
         return;
     }
-    stopPreview();
+    if (!m_collectionMode) stopPreview();
 
     if (m_robotConnected) {
         if (m_robotHandle != 0) {
@@ -882,7 +897,7 @@ bool CalibrationController::checkAndRestoreRobotHand()
 
 void CalibrationController::openCamera()
 {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("camera",
                               "camera_open",
                               "skip",
@@ -1091,7 +1106,7 @@ void CalibrationController::closeCamera()
                        "start",
                        {{"opened", QString::number(m_cameraOpened)},
                         {"instance", QString::number(reinterpret_cast<quintptr>(m_camera.get()), 16)}});
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("camera",
                               "camera_close",
                               "skip",
@@ -1119,7 +1134,7 @@ void CalibrationController::closeCamera()
 
 void CalibrationController::adjustCameraExposure(int exposureUs)
 {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("camera", "exposure_update", "skip",
                               {{"reason", "calibration_running"},
                                {"requested_us", QString::number(exposureUs)}});
@@ -1248,6 +1263,7 @@ void CalibrationController::adjustCameraExposure(int exposureUs)
 
 void CalibrationController::startPreview()
 {
+    if (m_running || m_collectionBusy) return;
     if (m_previewActive) {
         APP_LOG_EVENT_INFO("preview",
                            "preview_start",
@@ -1275,7 +1291,9 @@ void CalibrationController::startPreview()
         // 创建预览用的 ChArUco 检测器
         CharucoBoardConfig board_cfg;  // 默认: 7x5, 40mm, 28mm
 
-    if (m_calibrationType == "eye_in_hand") {
+    if (m_collectionMode) {
+        m_previewDetector.reset();
+    } else if (m_calibrationType == "eye_in_hand") {
         // 眼在手内：加载已知内参做预览
         std::string cam_file = m_paramPath + "camera_params.yaml";
         m_previewDetector = std::make_unique<CharucoDetector>(board_cfg, cam_file);
@@ -1290,7 +1308,7 @@ void CalibrationController::startPreview()
         m_haveBoardDetectionState = false;
         m_previewActive = true;
         emit previewActiveChanged();
-        setStatus("预览中 — 调整位姿后点击开始标定");
+        setStatus(m_collectionMode ? "预览中 — 空格或 Ctrl+S 拍照，自动融合多曝光" : "预览中 — 调整位姿后点击开始标定");
         APP_LOG_EVENT_INFO("preview",
                            "preview_start",
                            "success",
@@ -1331,7 +1349,7 @@ void CalibrationController::stopPreview()
 
 void CalibrationController::onPreviewTick()
 {
-    if (!m_camera || !m_cameraOpened || m_running) return;
+    if (!m_camera || !m_cameraOpened || m_running || m_collectionBusy) return;
 
     try {
 
@@ -1460,7 +1478,7 @@ void CalibrationController::publishFrame(const cv::Mat& bgr)
 
 void CalibrationController::startCalibration()
 {
-    if (m_running) {
+    if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("calibration",
                               "calibration_start",
                               "skip",

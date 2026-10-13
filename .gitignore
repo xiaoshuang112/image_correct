@@ -1,4 +1,5 @@
 sources/
+/libs
 docs/
 libs/
 dist/

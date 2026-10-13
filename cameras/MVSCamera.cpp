@@ -806,37 +806,71 @@ cv::Mat MVSCamera::captureAndFuseMultiExposureFast(const std::vector<int>& expos
 std::vector<cv::Mat> MVSCamera::captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::vector<cv::Mat> images;
-    if (!m_isOpened) return images;
+    if (!m_isOpened || !m_handle || exposureValuesUs.empty()) return images;
 
-    bool wasGrabbing = m_isGrabbing;
-    if (wasGrabbing) {
-        MV_CC_StopGrabbing(m_handle);
-        m_isGrabbing = false;
+    MVCC_FLOATVALUE range{};
+    MVCC_ENUMVALUE automatic{};
+    if (MV_OK != MV_CC_GetFloatValue(m_handle, "ExposureTime", &range) ||
+        MV_OK != MV_CC_GetEnumValue(m_handle, "ExposureAuto", &automatic)) {
+        setError("multi_exposure", -1, "cannot read exposure state");
+        return {};
     }
-
-    bool wasAuto = getAutoExposure();
-    MV_CC_SetEnumValue(m_handle, "ExposureAuto", 0);
-    int prevExposure = getColorExposureTime();
-
     for (int exposure : exposureValuesUs) {
-        MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)exposure);
-        MV_CC_StartGrabbing(m_handle);
-        m_isGrabbing = true;
-        // 丢弃第一帧，避免拿到旧曝光帧
-        discardFramesLocked(1, 200);
-        cv::Mat frame = captureOneFrame(500);
-        MV_CC_StopGrabbing(m_handle);
-        m_isGrabbing = false;
-        if (!frame.empty()) images.push_back(frame);
+        if (exposure < range.fMin || exposure > range.fMax) {
+            setError("multi_exposure", -1, "exposure out of device range: " + std::to_string(exposure));
+            return {};
+        }
     }
-
-    MV_CC_SetFloatValue(m_handle, "ExposureTime", (float)prevExposure);
-    if (wasAuto) MV_CC_SetEnumValue(m_handle, "ExposureAuto", 2);
-
-    if (wasGrabbing) {
-        MV_CC_StartGrabbing(m_handle);
-        m_isGrabbing = true;
-        discardFramesLocked(1, 200);
+    const bool wasGrabbing = m_isGrabbing;
+    // Preserve the exact float exposure and enum mode (including Once).
+    const float previousExposure = range.fCurValue;
+    auto restore = [&]() {
+        bool ok = true;
+        if (m_isGrabbing) {
+            const int ret = MV_CC_StopGrabbing(m_handle);
+            if (ret == MV_OK) m_isGrabbing = false;
+            else { setError("multi_exposure_restore", ret, "stop grabbing failed"); ok = false; }
+        }
+        int ret = MV_CC_SetFloatValue(m_handle, "ExposureTime", previousExposure);
+        if (ret != MV_OK) { setError("multi_exposure_restore", ret, "restore exposure failed"); ok = false; }
+        ret = MV_CC_SetEnumValue(m_handle, "ExposureAuto", automatic.nCurValue);
+        if (ret != MV_OK) { setError("multi_exposure_restore", ret, "restore automatic mode failed"); ok = false; }
+        m_exposureUs = static_cast<int>(previousExposure);
+        m_exposureCached = m_exposureUs;
+        m_autoExposureCached = automatic.nCurValue != 0;
+        if (wasGrabbing && !m_isGrabbing) {
+            ret = MV_CC_StartGrabbing(m_handle);
+            if (ret != MV_OK) { setError("multi_exposure_restore", ret, "restart grabbing failed"); ok = false; }
+            else {
+                m_isGrabbing = true;
+                discardFramesLocked(2, 1000);
+            }
+        }
+        return ok;
+    };
+    try {
+        bool complete = setAutoExposureLocked(false);
+        if (complete && !m_isGrabbing) {
+            const int ret = MV_CC_StartGrabbing(m_handle);
+            complete = ret == MV_OK;
+            if (complete) m_isGrabbing = true;
+            else setError("multi_exposure", ret, "start grabbing failed");
+        }
+        for (int exposure : exposureValuesUs) {
+            if (!complete || !setExposureLocked(exposure)) { complete = false; break; }
+            const int timeout = static_cast<int>(std::clamp(exposure / 1000.0 * 2 + 500, 1000.0, 60000.0));
+            // Restarting can still leave a frame with the previous exposure.
+            discardFramesLocked(2, timeout);
+            cv::Mat frame = captureOneFrame(timeout);
+            if (frame.empty()) frame = captureOneFrame(timeout);
+            if (frame.empty()) { complete = false; break; }
+            images.push_back(std::move(frame));
+        }
+        const bool restored = restore();
+        if (!complete || !restored) images.clear();
+    } catch (...) {
+        restore();
+        throw;
     }
     return images;
 }
