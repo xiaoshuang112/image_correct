@@ -364,6 +364,15 @@ if(BUILD_TESTS)
     target_link_libraries(test_collection ${OpenCV_LIBS})
     add_test(NAME collection_geometry_and_fusion COMMAND test_collection)
     find_package(Qt5 QUIET COMPONENTS Core Quick Test)
+    if(Qt5Core_FOUND)
+        add_executable(test_collection_pose_record
+            tests/test_collection_pose_record.cpp
+            hand_eye_gui/CollectionPoseRecord.cpp
+            utils/calib_transform.cpp)
+        target_include_directories(test_collection_pose_record PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(test_collection_pose_record Qt5::Core ${OpenCV_LIBS})
+        add_test(NAME collection_pose_records COMMAND test_collection_pose_record)
+    endif()
     if(Qt5Test_FOUND)
         add_executable(test_collection_ui tests/test_collection_ui.cpp hand_eye_gui/resources.qrc)
         set_target_properties(test_collection_ui PROPERTIES AUTORCC ON)

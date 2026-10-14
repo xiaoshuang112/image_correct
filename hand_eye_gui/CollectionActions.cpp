@@ -1,5 +1,6 @@
 #include "CalibrationController.hpp"
 #include "DiagnosticLogger.hpp"
+#include "CollectionPoseRecord.hpp"
 #include "utils/collection_utils.hpp"
 #include "utils/calib_transform.hpp"
 #include "utils/robot_util.hpp"
@@ -16,9 +17,34 @@
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <future>
 #include <set>
 #include <stdexcept>
+
+namespace {
+struct FlangeRead {
+    std::array<double, 6> pose{};
+    bool valid = false;
+    QString error;
+};
+
+FlangeRead readFlangePose(RobotHandle handle) {
+    FlangeRead result;
+    double zeroTool[ROB_AXIS_NUM]{};
+    const CRresult code = cr_get_AssignTCP_Pose(handle, zeroTool, result.pose.data());
+    if (code != sucess) {
+        result.error = QString("法兰位姿读取失败（错误码 %1），本张位姿为空").arg(code);
+    } else if (!std::all_of(result.pose.begin(), result.pose.end(),
+                           [](double value) { return std::isfinite(value); })) {
+        result.error = "法兰位姿包含无效数值，本张位姿为空";
+    } else {
+        result.valid = true;
+    }
+    return result;
+}
+}
 
 void CalibrationController::initializeCollection() {
     QSettings settings;
@@ -63,7 +89,10 @@ void CalibrationController::finishCollectionOperation(const QString& message, co
     if (m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
         m_previewTimer->start();
     emit collectionChanged();
-    setStatus(savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount));
+    QString status = savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
+    if (!savedPath.isEmpty() && message != "多曝光融合完成，图片已保存")
+        status += "；" + message;
+    setStatus(status);
     APP_LOG_EVENT_INFO("collection", "operation", "finished", {{"message", message}, {"image", savedPath}});
 }
 
@@ -97,6 +126,8 @@ void CalibrationController::capturePhoto() {
         return;
     }
     const auto camera = m_camera;
+    const bool robotConnected = m_robotConnected;
+    const RobotHandle robotHandle = m_robotHandle;
     // Freeze the date at shutter time so a bracket crossing midnight stays in
     // one daily folder, with a filename that uses the same timestamp.
     const QDateTime captureTime = QDateTime::currentDateTime();
@@ -104,7 +135,7 @@ void CalibrationController::capturePhoto() {
     beginCollectionOperation();
     setStatus(QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures]() {
+        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, robotConnected, robotHandle]() {
             QString message, path;
             try {
                 int minimum = 0, maximum = 0;
@@ -114,6 +145,22 @@ void CalibrationController::capturePhoto() {
                     if (exposure < minimum || exposure > maximum)
                         throw std::runtime_error(QString("曝光 %1 μs 超出相机范围 %2～%3 μs")
                             .arg(exposure).arg(minimum).arg(maximum).toStdString());
+                // Read the zero-offset flange pose alongside camera acquisition.
+                // Save the PNG before waiting for the RPC result, so robot errors
+                // cannot prevent camera acquisition, fusion or image saving.
+                FlangeRead flange;
+                std::future<FlangeRead> poseRead;
+                try {
+                    if (robotConnected) {
+                        poseRead = std::async(std::launch::async, [robotHandle]() {
+                            return readFlangePose(robotHandle);
+                        });
+                    } else {
+                        flange.error = "机器人未连接，本张法兰位姿为空";
+                    }
+                } catch (const std::exception& error) {
+                    flange.error = "无法启动法兰位姿读取：" + QString::fromUtf8(error.what());
+                }
                 const auto frames = camera->captureMultiExposureImages(exposures);
                 if (m_cancelRequested) throw std::runtime_error("拍照已取消");
                 if (frames.size() != exposures.size())
@@ -135,6 +182,30 @@ void CalibrationController::capturePhoto() {
                     !file.commit())
                     throw std::runtime_error(("图片保存失败: " + file.errorString()).toStdString());
                 message = "多曝光融合完成，图片已保存";
+                // Metadata failure is reported separately from the already
+                // committed image. Busy remains set until the read finishes,
+                // keeping the robot handle alive while the SDK uses it.
+                try {
+                    if (poseRead.valid()) {
+                        try {
+                            flange = poseRead.get();
+                        } catch (const std::exception& error) {
+                            flange.error = "法兰位姿读取异常：" + QString::fromUtf8(error.what());
+                        } catch (...) {
+                            flange.error = "法兰位姿读取发生未知异常";
+                        }
+                    }
+                    const QString recordError = collection::saveFlangePoseRecords(
+                        path, flange.valid ? flange.pose.data() : nullptr);
+                    QStringList warnings;
+                    if (!flange.error.isEmpty()) warnings << flange.error;
+                    if (!recordError.isEmpty()) warnings << recordError;
+                    if (!warnings.isEmpty()) message = warnings.join("；");
+                } catch (const std::exception& error) {
+                    message = "图片已保存，法兰位姿记录失败：" + QString::fromUtf8(error.what());
+                } catch (...) {
+                    message = "图片已保存，法兰位姿记录发生未知异常";
+                }
             } catch (const std::exception& error) {
                 path.clear();
                 message = QString::fromUtf8(error.what());
