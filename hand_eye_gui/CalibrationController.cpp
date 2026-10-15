@@ -939,7 +939,7 @@ void CalibrationController::openCamera()
     CONFIG cfg;
     cfg.cam_ip   = m_cameraIp.toStdString();
     cfg.cam_port = static_cast<uint16_t>(m_cameraPort);
-    cfg.cam_sn   = m_cameraSn.toStdString();
+    cfg.cam_sn   = m_collectionMode ? std::string{} : m_cameraSn.toStdString();
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
     cfg.exposure_us = m_cameraExposureUs;

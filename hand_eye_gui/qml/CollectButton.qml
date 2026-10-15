@@ -9,7 +9,7 @@ Button {
     property bool danger: false
     property string iconName: ""
     readonly property color textInk: !enabled ? (primary ? "#8190a6" : "#6b7583")
-        : primary ? "#e8edf4" : danger ? "#c98080" : "#c5cfdd"
+        : primary ? "#0c2919" : danger ? "#f87171" : "#9ccaff"
     implicitHeight: 36
     implicitWidth: contentItem.implicitWidth + 28
     leftPadding: 14
@@ -39,10 +39,10 @@ Button {
     background: Rectangle {
         radius: 7
         color: !control.enabled ? (control.primary ? "#2b3749" : control.quiet ? "transparent" : "#1d232b")
-            : control.primary ? (control.down ? "#466585" : control.hovered ? "#6083aa" : "#53769e")
-            : control.down ? "#303b49" : control.hovered ? "#293341" : control.quiet ? "transparent" : "#232b36"
+            : control.primary ? (control.down ? "#61c68d" : control.hovered ? "#91ebba" : "#73dfa1")
+            : control.down ? "#303b49" : control.hovered ? "#293341" : control.quiet ? "transparent" : (control.danger ? "#2c1618" : "#162435")
         border.width: control.primary ? 0 : 1
-        border.color: control.activeFocus ? "#53769e" : control.quiet ? "transparent" : "#394454"
+        border.color: control.activeFocus ? "#53769e" : control.quiet ? "transparent" : (control.danger ? "#633033" : "#355776")
         Behavior on color { ColorAnimation { duration: 100 } }
     }
 }

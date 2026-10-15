@@ -66,6 +66,7 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
     Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
+    Q_PROPERTY(int savedPoseCount READ savedPoseCount NOTIFY collectionChanged)
 
     // 结构化运行时状态（与 logText 解耦）
     Q_PROPERTY(int     calibrationStage READ calibrationStage NOTIFY calibrationRuntimeChanged)
@@ -109,6 +110,8 @@ public:
     QString exposureList() const { return m_exposureList; }
     QString lastCapturePath() const { return m_lastCapturePath; }
     int savedImageCount() const { return m_savedImageCount; }
+    int savedPoseCount() const { return m_savedPoseCount; }
+    Q_INVOKABLE void saveFlangePose(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
 
@@ -360,6 +363,7 @@ private:
     QString m_handEyePath;
     QString m_lastCapturePath;
     int m_savedImageCount = 0;
+    int m_savedPoseCount = 0;
     std::thread m_collectionThread;
 
 };

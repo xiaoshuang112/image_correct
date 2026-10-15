@@ -50,6 +50,11 @@ void CalibrationController::initializeCollection() {
     QSettings settings;
     m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
     m_exposureList = settings.value("collection/exposures", m_exposureList).toString();
+    if (m_collectionMode) {
+        m_cameraSn.clear();
+        m_robotPort = 2323;
+        m_robotPasswd = "123";
+    }
     m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
 }
 
@@ -116,13 +121,13 @@ void CalibrationController::capturePhoto() {
         bool ok = false;
         const int exposure = token.toInt(&ok);
         if (!ok || exposure < 1 || exposure > 1000000 || !distinct.insert(exposure).second) {
-            setStatus("曝光列表应包含 2～8 个不同的正整数，单位 μs，最大 1000000");
+            setStatus("曝光列表应包含 2～5 个不同的正整数，单位 μs，最大 1000000");
             return;
         }
         exposures.push_back(exposure);
     }
-    if (exposures.size() < 2 || exposures.size() > 8) {
-        setStatus("每次拍照至少需要 2 个、最多 8 个曝光值");
+    if (exposures.size() < 2 || exposures.size() > 5) {
+        setStatus("每次拍照至少需要 2 个、最多 5 个曝光值");
         return;
     }
     const auto camera = m_camera;
@@ -219,6 +224,44 @@ void CalibrationController::capturePhoto() {
     } catch (const std::exception& error) {
         finishCollectionOperation(QString::fromUtf8(error.what()));
     }
+}
+
+void CalibrationController::saveFlangePose(const QString& name) {
+    if (m_running || m_collectionBusy) return;
+    if (!m_robotConnected) { setStatus("请先连接机器人再保存法兰位姿"); return; }
+    const QString pointName = name.trimmed();
+    const bool invalidCharacter = std::any_of(pointName.begin(), pointName.end(), [](QChar c) {
+        return c.unicode() < 32 || QStringLiteral("\\/:*?\"<>|").contains(c);
+    });
+    if (pointName.size() > 100 || invalidCharacter ||
+        pointName == "." || pointName == ".." || pointName.endsWith('.')) {
+        setStatus("点位名称不能包含路径、特殊字符或超过 100 个字符"); return;
+    }
+    const auto time = QDateTime::currentDateTime();
+    const QString directory = QDir(m_outputDirectory).filePath(time.toString("yyyy-MM-dd"));
+    const QString base = "pose_" + (pointName.isEmpty() ? time.toString("yyyyMMdd_HHmmss_zzz") : pointName);
+    const auto handle = m_robotHandle;
+    beginCollectionOperation();
+    setStatus("正在读取法兰位姿…");
+    try {
+        m_collectionThread = std::thread([this, handle, directory, base]() {
+            QString message; bool saved = false;
+            try {
+                const auto flange = readFlangePose(handle);
+                if (!flange.valid) throw std::runtime_error((QString(flange.error).replace("本张位姿为空", "未保存点位文件")).toStdString());
+                if (m_cancelRequested) throw std::runtime_error("点位保存已取消");
+                QString path;
+                message = collection::saveStandaloneFlangePose(directory, base, flange.pose.data(), path);
+                saved = !path.isEmpty();
+                if (saved) message = "点位已保存：" + QFileInfo(path).fileName() + (message.isEmpty() ? "" : "；" + message);
+            } catch (const std::exception& error) { message = QString::fromUtf8(error.what()); }
+            catch (...) { message = "法兰位姿读取或保存发生未知异常"; }
+            QMetaObject::invokeMethod(this, [this, message, saved]() {
+                if (saved) ++m_savedPoseCount;
+                finishCollectionOperation(message);
+            }, Qt::QueuedConnection);
+        });
+    } catch (const std::exception& error) { finishCollectionOperation(QString::fromUtf8(error.what())); }
 }
 
 void CalibrationController::levelCamera() {

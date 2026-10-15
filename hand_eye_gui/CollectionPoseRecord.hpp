@@ -10,4 +10,6 @@ namespace collection {
 // Returns warnings; a record failure never removes or changes the image.
 QString saveFlangePoseRecords(const QString& imagePath, const double* pose);
 
+QString saveStandaloneFlangePose(const QString& directory, const QString& base, const double* pose, QString& savedPath);
+
 } // namespace collection

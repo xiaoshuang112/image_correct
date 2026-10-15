@@ -8,6 +8,7 @@
 #include <QQuickWindow>
 #include <QtTest/QTest>
 #include <iostream>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 
@@ -45,19 +46,22 @@ QtObject {
     property bool previewActive: false
     property bool robotConnected: false
     property string cameraBackend: "mvs"
-    property string cameraIp: "192.168.0.10"
+    property string cameraIp: "192.168.66.253"
     property string cameraSn: ""
-    property int previewWidth: 2448
-    property int previewHeight: 2048
+    property int previewWidth: 4024
+    property int previewHeight: 3036
     property string cameraModel: "MVS"
-    property int cameraActualWidth: 2448
-    property int cameraActualHeight: 2048
-    property int cameraExposureUs: 30000
+    property int cameraActualWidth: 4024
+    property int cameraActualHeight: 3036
+    property int cameraExposureUs: 12000
     property string outputDirectory: "/tmp/collect-ui-check"
-    property string exposureList: "7500,15000,30000,60000"
+    property string exposureList: "5000,8500,14500,25000"
     property string lastCapturePath: ""
     property int savedImageCount: 0
-    property string robotIp: "192.168.0.6"
+    property int savedPoseCount: 0
+    property string pointName: ""
+    property bool poseFailure: false
+    property string robotIp: "192.168.66.14"
     property int robotPort: 2323
     property string robotPasswd: "123"
     property string handEyePath: "/tmp/hand_eye_result.yaml"
@@ -69,6 +73,14 @@ QtObject {
     function startPreview() { previewActive = true; frameUpdated() }
     function stopPreview() { previewActive = false }
     function capturePhoto() { savedImageCount++ }
+    function openCollectionFolder() {}
+    function saveFlangePose(name) {
+        if (collectionBusy || !robotConnected) return
+        pointName = name
+        if (poseFailure) { statusMessage = "法兰位姿读取失败，未保存点位文件"; return }
+        savedPoseCount++
+        statusMessage = "点位已保存：pose_" + (name || "20261015_123456_001") + ".json"
+    }
     function adjustCameraExposure(value) { cameraExposureUs = value }
     function connectRobot() { robotConnected = true }
     function disconnectRobot() { robotConnected = false }
@@ -88,9 +100,16 @@ QtObject {
         window->requestActivate();
         require(QTest::qWaitForWindowActive(window), "collection window did not become active");
         QTest::qWait(100);
+        std::function<QQuickItem*(QQuickItem*, const QString&)> findVisual =
+            [&](QQuickItem* parent, const QString& name) -> QQuickItem* {
+                if (parent->objectName() == name) return parent;
+                for (auto* child : parent->childItems())
+                    if (auto* found = findVisual(child, name)) return found;
+                return nullptr;
+            };
         auto item = [&](const char* name) {
-            auto* result = window->findChild<QQuickItem*>(name);
-            require(result != nullptr, "missing UI action");
+            auto* result = findVisual(window->contentItem(), QString::fromLatin1(name));
+            if (!result) throw std::runtime_error(std::string("missing UI action: ") + name);
             return result;
         };
         auto count = [&]() { return controller->property("savedImageCount").toInt(); };
@@ -98,6 +117,11 @@ QtObject {
         auto* capture = item("captureButton");
         auto* level = item("levelButton");
         auto* input = item("exposureInput");
+        auto* savePose = item("savePoseButton");
+        auto* pointName = item("pointNameInput");
+        require(!savePose->isEnabled(), "pose enabled without robot");
+        require(item("exposureInput5")->property("text").toString().isEmpty(), "fifth exposure is not blank");
+        require(findVisual(window->contentItem(), "exposureInput6") == nullptr, "more than five exposure inputs");
         require(!capture->isEnabled() && !level->isEnabled(), "actions enabled before camera preview");
         QTest::keyClick(window, Qt::Key_Space);
         require(count() == 0, "captured with closed camera");
@@ -115,7 +139,13 @@ QtObject {
         QTest::keyClick(window, Qt::Key_S);
         require(count() == 2, "typing in input triggered capture");
         QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
-        require(count() == 3, "Ctrl+S failed in input");
+        require(count() == 2, "Ctrl+S captured while editing input");
+        input->setFocus(false);
+        window->contentItem()->forceActiveFocus();
+        QTest::qWait(20);
+        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+        QTest::qWait(20);
+        require(count() == 3, "Ctrl+S failed outside input");
         controller->setProperty("collectionBusy", true);
         QTest::qWait(10);
         QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
@@ -124,15 +154,57 @@ QtObject {
         controller->setProperty("robotConnected", true);
         QTest::qWait(10);
         require(level->isEnabled(), "level action not enabled with preview and robot");
-        window->resize(1000, 740);
+        auto click = [&](QQuickItem* button) {
+            QTest::mouseClick(window, Qt::LeftButton, Qt::NoModifier,
+                button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
+            QTest::qWait(30);
+        };
+        click(savePose);
+        require(window->property("poseEditorOpen").toBool() && pointName->property("text").toString().isEmpty(),
+                "pose editor did not open with an empty name");
+        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+        require(count() == 3, "pose name editing triggered photo");
+        pointName->setProperty("text", "工位_A");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(20);
+        require(controller->property("savedPoseCount").toInt() == 1 && count() == 3 &&
+                controller->property("pointName").toString() == "工位_A", "named pose saved wrong data or captured image");
+        require(!window->property("poseEditorOpen").toBool(), "successful point save left editor open");
+        click(savePose);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(20);
+        require(controller->property("savedPoseCount").toInt() == 2 &&
+                controller->property("pointName").toString().isEmpty(), "empty name was not passed for timestamp naming");
+        click(savePose);
+        pointName->setProperty("text", "保留失败点位");
+        controller->setProperty("poseFailure", true);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(20);
+        require(window->property("poseEditorOpen").toBool() &&
+                pointName->property("text").toString() == "保留失败点位" &&
+                controller->property("savedPoseCount").toInt() == 2 && count() == 3,
+                "failed pose save lost name, counted a point, or captured an image");
+        QTest::keyClick(window, Qt::Key_Escape);
+        require(!window->property("poseEditorOpen").toBool(), "Escape did not close point editor");
+        window->resize(1024, 740);
         QTest::qWait(50);
-        for (auto* action : {open, capture, level}) {
+        for (auto* action : {open, capture, level, savePose, item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
                 std::cerr << action->objectName().toStdString() << " bounds " << bounds.x() << ',' << bounds.y()
                           << ' ' << bounds.width() << 'x' << bounds.height() << '\n';
             require(QRectF(0, 0, window->width(), window->height()).contains(bounds), "action clipped at minimum window size");
         }
+        auto bounds = [](QQuickItem* target) {
+            return QRectF(target->mapToScene(QPointF()), QSizeF(target->width(), target->height()));
+        };
+        require(!bounds(capture).intersects(bounds(savePose)) &&
+                !bounds(item("exposureInput5")).intersects(bounds(capture)),
+                "capture controls overlap at minimum window size");
+        require(qAbs(bounds(open).left() - bounds(item("connectRobotButton")).left()) < 1.0,
+                "camera and robot connect buttons are not aligned");
+        require(qAbs(bounds(capture).bottom() - bounds(item("exposureInput5")).bottom()) < 2.0,
+                "capture buttons and exposure fields are not on the same row");
         if (argc > 1) {
             controller->setProperty("cameraOpened", false);
             controller->setProperty("previewActive", false);
@@ -141,7 +213,7 @@ QtObject {
             controller->setProperty("statusMessage", "就绪 — 打开相机即可预览和拍照");
             controller->setProperty("outputDirectory", QDir::homePath() + "/Pictures/caitu-collect");
             controller->setProperty("handEyePath", QCoreApplication::applicationDirPath() + "/param/hand_eye_result.yaml");
-            input->setProperty("text", "7500,15000,30000,60000");
+            input->setProperty("text", "5000");
             input->setFocus(false);
             window->contentItem()->forceActiveFocus();
             window->resize(1280, 850);

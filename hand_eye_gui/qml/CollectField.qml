@@ -16,9 +16,9 @@ TextField {
     selectedTextColor: "#ecf1f8"
     background: Rectangle {
         radius: 7
-        color: control.enabled ? "#151a21" : "#181d24"
+        color: control.enabled ? "#0f131a" : "#181d24"
         border.width: 1
-        border.color: control.activeFocus ? "#7796bd" : "#323a46"
+        border.color: control.activeFocus ? "#7796bd" : "#303a48"
         Behavior on border.color { ColorAnimation { duration: 100 } }
     }
 }

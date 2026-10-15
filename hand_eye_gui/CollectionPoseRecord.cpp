@@ -56,4 +56,20 @@ QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
     }
     return warnings.join("；");
 }
+QString saveStandaloneFlangePose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
+    savedPath.clear();
+    if (!pose || !std::all_of(pose, pose + 6, [](double v) { return std::isfinite(v); }))
+        return "法兰位姿无效，未保存点位";
+    QDir directory(directoryPath);
+    if (!QDir().mkpath(directoryPath)) return "无法创建点位保存目录";
+    QLockFile lock(directory.filePath(".pose-save.lock"));
+    if (!lock.tryLock(0)) return "其他点位正在保存，请重试";
+    QString path = directory.filePath(base + ".json");
+    for (int i = 2; QFileInfo::exists(path); ++i)
+        path = directory.filePath(base + "_" + QString::number(i) + ".json");
+    // Reuse the per-image writer and its once-only initial matrix creation.
+    const QString warnings = saveFlangePoseRecords(path, pose);
+    if (QFileInfo::exists(path)) savedPath = path;
+    return warnings;
+}
 } // namespace collection

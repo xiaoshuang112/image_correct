@@ -100,6 +100,46 @@ int main(int argc, char** argv) {
         require(!collection::saveFlangePoseRecords(image, later).isEmpty(), "disk error was hidden");
         require(read(image) == imageBytes && read(matrixPath) == initialMatrix,
                 "record failure changed image or initial matrix");
+
+        // Standalone points contain exactly six raw values and never create an image.
+        const QString points = temp.filePath("standalone");
+        QString saved;
+        require(collection::saveStandaloneFlangePose(points, "pose_工位A", pose, saved).isEmpty(),
+                "standalone point save failed");
+        require(saved == QDir(points).filePath("pose_工位A.json"), "point name was not preserved");
+        const QByteArray firstPoint = read(saved);
+        require(firstPoint == QJsonDocument(values).toJson(QJsonDocument::Indented),
+                "standalone JSON differs from per-image pose JSON for the same pose");
+        const auto pointValues = object(saved);
+        require(pointValues.size() == 6 && pointValues["x"].toDouble() == 500 &&
+                pointValues["rz"].toDouble() == 90, "standalone pose format or units changed");
+        const QString pointMatrix = QDir(points).filePath("T_base_flange.json");
+        const auto initialPointMatrix = read(pointMatrix);
+        require(initialPointMatrix == initialMatrix, "standalone initial matrix differs from image matrix");
+        require(QDir(points).entryList({"*.png", "*.jpg"}, QDir::Files).isEmpty(),
+                "standalone save unexpectedly created an image");
+        require(collection::saveStandaloneFlangePose(points, "pose_工位A", later, saved).isEmpty(),
+                "duplicate point save failed");
+        require(saved.endsWith("pose_工位A_2.json"), "duplicate point did not receive suffix");
+        require(read(QDir(points).filePath("pose_工位A.json")) == firstPoint,
+                "duplicate point overwrote original");
+        require(read(pointMatrix) == initialPointMatrix, "standalone point replaced initial matrix");
+        require(collection::saveStandaloneFlangePose(points, "pose_工位A", later, saved).isEmpty() &&
+                saved.endsWith("pose_工位A_3.json"), "third duplicate reused an occupied name");
+        require(collection::saveStandaloneFlangePose(points, "pose_20261015_123456_001", later, saved).isEmpty(),
+                "timestamp point name failed");
+        require(collection::saveStandaloneFlangePose(points, "pose_A.v1", later, saved).isEmpty() &&
+                saved.endsWith("pose_A.v1.json"), "dotted point name failed");
+        const auto pointFiles = QDir(points).entryList(QDir::Files);
+        require(!collection::saveStandaloneFlangePose(points, "pose_invalid", nullptr, saved).isEmpty() &&
+                saved.isEmpty(), "missing standalone pose was reported as saved");
+        require(!collection::saveStandaloneFlangePose(points, "pose_invalid", invalid, saved).isEmpty() &&
+                saved.isEmpty(), "non-finite standalone pose was reported as saved");
+        require(QDir(points).entryList(QDir::Files) == pointFiles,
+                "invalid standalone pose created a JSON file");
+        require(!collection::saveStandaloneFlangePose(image, "pose_blocked", pose, saved).isEmpty() &&
+                saved.isEmpty(), "unwritable standalone directory did not fail");
+        require(read(image) == imageBytes, "standalone disk failure changed existing image");
         std::cout << "Flange pose records, null failures and initial matrix persistence passed\n";
         return 0;
     } catch (const std::exception& error) {

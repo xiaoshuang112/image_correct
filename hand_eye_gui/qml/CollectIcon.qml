@@ -37,6 +37,10 @@ Canvas {
                 line(12 + Math.cos(a) * 3.6, 12 + Math.sin(a) * 3.6,
                      12 + Math.cos(a - 0.35) * 8.9, 12 + Math.sin(a - 0.35) * 8.9)
             }
+        } else if (name === "save") {
+            ctx.beginPath(); ctx.moveTo(4, 3); ctx.lineTo(17, 3); ctx.lineTo(21, 7)
+            ctx.lineTo(21, 21); ctx.lineTo(4, 21); ctx.closePath(); ctx.stroke()
+            ctx.strokeRect(8, 3, 8, 6); ctx.strokeRect(8, 14, 9, 7)
         } else if (name === "folder") {
             ctx.beginPath(); ctx.moveTo(3, 6); ctx.lineTo(10, 6); ctx.lineTo(12, 9)
             ctx.lineTo(21, 9); ctx.lineTo(21, 20); ctx.lineTo(3, 20)
