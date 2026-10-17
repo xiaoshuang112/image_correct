@@ -61,6 +61,12 @@ Canvas {
             ctx.beginPath(); ctx.moveTo(6, 8); ctx.lineTo(18, 8); ctx.lineTo(18, 12)
             ctx.arc(12, 12, 6, 0, Math.PI); ctx.lineTo(6, 8); ctx.stroke()
             line(12, 18, 12, 22)
+        } else if (name === "undistort") {
+            line(3, 8, 3, 3); line(3, 3, 8, 3)
+            line(16, 3, 21, 3); line(21, 3, 21, 8)
+            line(21, 16, 21, 21); line(21, 21, 16, 21)
+            line(8, 21, 3, 21); line(3, 21, 3, 16)
+            line(7, 12, 17, 12)
         } else if (name === "check") {
             line(5, 12, 10, 17); line(10, 17, 19, 7)
         } else if (name === "arrow") {

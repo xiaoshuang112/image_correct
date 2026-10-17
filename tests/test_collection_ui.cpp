@@ -165,6 +165,18 @@ QtObject {
                 button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
             QTest::qWait(30);
         };
+        auto* previewExposure = item("previewExposureInput");
+        auto* applyExposure = item("applyPreviewExposureButton");
+        previewExposure->setProperty("text", "18000");
+        click(applyExposure);
+        require(controller->property("cameraExposureUs").toInt() == 18000,
+                "moved preview exposure action did not update controller");
+        controller->setProperty("collectionBusy", true);
+        QTest::qWait(10);
+        require(!applyExposure->isEnabled() && !previewExposure->isEnabled() &&
+                item("stopButton")->isEnabled(), "busy exposure gate or stop action changed");
+        click(item("stopButton"));
+        require(!controller->property("collectionBusy").toBool(), "stop action did not cancel collection");
         require(!undistortion->isEnabled(), "undistortion enabled with missing calibration");
         controller->setProperty("undistortionReady", true);
         QTest::qWait(10);
@@ -174,6 +186,12 @@ QtObject {
                 undistortion->property("text").toString() == "去畸变已启用", "undistortion switch not visibly enabled");
         require(item("undistortionStatus")->property("text").toString().contains("预览 / 拍照"),
                 "undistortion status does not describe capture mode");
+        click(item("previewButton"));
+        require(!controller->property("previewActive").toBool() && !capture->isEnabled() &&
+                controller->property("undistortionEnabled").toBool(),
+                "pause lost correction state or left capture enabled");
+        click(item("previewButton"));
+        require(capture->isEnabled(), "preview did not resume after pause");
         controller->setProperty("collectionBusy", true);
         QTest::qWait(10);
         require(!undistortion->isEnabled(), "undistortion can change during capture");
@@ -210,7 +228,8 @@ QtObject {
         require(!window->property("poseEditorOpen").toBool(), "Escape did not close point editor");
         window->resize(1024, 740);
         QTest::qWait(50);
-        for (auto* action : {open, capture, level, savePose, undistortion, item("previewButton"), item("exposureInput5")}) {
+        for (auto* action : {open, capture, level, savePose, undistortion, previewExposure, applyExposure,
+                             item("previewButton"), item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
                 std::cerr << action->objectName().toStdString() << " bounds " << bounds.x() << ',' << bounds.y()
@@ -227,11 +246,52 @@ QtObject {
                 "capture controls overlap at minimum window size");
         require(qAbs(bounds(open).left() - bounds(item("connectRobotButton")).left()) < 1.0,
                 "camera and robot connect buttons are not aligned");
-        require(qAbs(bounds(capture).bottom() - bounds(item("exposureInput5")).bottom()) < 2.0,
-                "capture buttons and exposure fields are not on the same row");
+        auto checkCards = [&]() {
+            const auto device = bounds(item("deviceCard"));
+            const auto calibration = bounds(item("calibrationCard"));
+            const auto collection = bounds(item("captureCard"));
+            require(device.right() < calibration.left() && calibration.right() < collection.left(),
+                    "top cards do not form three separate columns");
+            require(qAbs(device.height() - calibration.height()) < 1 &&
+                    qAbs(device.height() - collection.height()) < 1, "top cards have different heights");
+            require(calibration.contains(bounds(previewExposure)) && calibration.contains(bounds(applyExposure)) &&
+                    calibration.contains(bounds(undistortion)), "calibration action is outside calibration card");
+            require(qAbs(bounds(open).top() - bounds(previewExposure).top()) < 1 &&
+                    qAbs(bounds(open).top() - bounds(input).top()) < 1,
+                    "first control rows are not aligned");
+            require(qAbs(bounds(level).top() - bounds(undistortion).top()) < 1 &&
+                    qAbs(bounds(level).top() - bounds(capture).top()) < 1,
+                    "second control rows are not aligned");
+            // Qt rounds fractional device-independent pixels in layouts.
+            require(qAbs(capture->width() - savePose->width()) <= 1,
+                    "capture and pose buttons have different widths");
+            require(qAbs(bounds(capture).left() - bounds(input).left()) < 1 &&
+                    qAbs(bounds(savePose).right() - bounds(item("exposureInput5")).right()) < 1,
+                    "capture actions do not align with exposure group edges");
+            require(bounds(input).bottom() < bounds(capture).top(),
+                    "capture actions should be below exposure inputs");
+            require(previewExposure->width() <= 76 && item("resolutionWidthInput")->width() <= 58 &&
+                    item("resolutionHeightInput")->width() <= 58, "compact fields expanded unexpectedly");
+            for (const auto& names : {
+                     QStringList{"cameraIpInput", "resolutionWidthInput", "resolutionHeightInput", "openCameraButton"},
+                     QStringList{"previewExposureInput", "applyPreviewExposureButton"},
+                     QStringList{"exposureInput", "exposureInput2", "exposureInput3", "exposureInput4", "exposureInput5"}}) {
+                for (int i = 1; i < names.size(); ++i)
+                    require(!bounds(item(names[i-1].toUtf8().constData())).intersects(
+                                bounds(item(names[i].toUtf8().constData()))), "control fields overlap");
+            }
+            for (const auto* name : {"sessionCard", "recentPhotoCard", "logCard"})
+                require(QRectF(0,0,window->width(),window->height()).contains(bounds(item(name))),
+                        "sidebar card clipped");
+        };
+        checkCards();
         const qreal compactHeight = item("controlDeck")->height();
+        window->resize(1280, 850);
+        QTest::qWait(50);
+        checkCards();
         window->resize(1840, 1080);
         QTest::qWait(50);
+        checkCards();
         require(qAbs(item("controlDeck")->height() - compactHeight) < 1.0,
                 "top cards stretch vertically on a large window");
         require(bounds(item("deviceCard")).bottom() - bounds(item("connectRobotButton")).bottom() <= 16,

@@ -98,3 +98,7 @@ code_only_20260812/utils/Texts.cpp
 code_only_20260812/utils/Texts.h
 code_only_20260812/utils/Util.cpp
 code_only_20260812/utils/Util.h
+
+# Local runtime logs and Visual Studio user settings
+/Log/
+*.vcxproj.user
