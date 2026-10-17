@@ -576,35 +576,6 @@ bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *
     return false;
 }
 
-bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM], double flangeEule[ROB_AXIS_NUM]){
-    double flangePos[ROB_AXIS_NUM] = {};
-    CRresult ret = cr_kineForward(robot_handle, const_cast<double*>(joint), flangePos);
-    if (ret != sucess) {
-        APP_LOG_EVENT_ERROR("robot.kinematics",
-                            "transform",
-                            "fail",
-                            {{"phase", "forward_kinematics"},
-                             {"reason", "forward_kinematics_failed"},
-                             {"handle", QString::number(robot_handle)},
-                             {"error", QString::number(ret)},
-                             {"joint", formatSixValues(joint)}});
-        return false;
-    }
-    ret = cr_AxisAngle2Eule(flangePos, flangeEule);
-    if (ret != sucess) {
-        APP_LOG_EVENT_ERROR("robot.kinematics",
-                            "transform",
-                            "fail",
-                            {{"phase", "axis_to_euler"},
-                             {"reason", "axis_to_euler_failed"},
-                             {"handle", QString::number(robot_handle)},
-                             {"error", QString::number(ret)},
-                             {"flange_axis", formatSixValues(flangePos)}});
-        return false;
-    }
-    return true;
-}
-
 // ============================================================
 // 运动到目标法兰轴角位姿
 // ============================================================

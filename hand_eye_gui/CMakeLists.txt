@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(hand-eye-app)
 
 # 查找 Qt5
-find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2 Widgets)
+find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
@@ -107,7 +107,6 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionImageRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_resolver.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/auth_check.cpp
 )
 
 # MOC 需要处理的头文件
@@ -178,7 +177,7 @@ endif()
 # ============================================================
 #  链接库
 # ============================================================
-set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2 Qt5::Widgets)
+set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2)
 
 target_link_libraries(${PROJECT_NAME}
     ${QT_LIBS}

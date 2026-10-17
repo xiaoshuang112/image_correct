@@ -67,8 +67,6 @@ public:
         return board_corners_3d_;
     }
 
-    cv::Ptr<cv::aruco::CharucoBoard> getBoard() const { return board_; }
-
 private:
     bool loadCameraParams(const std::string& camera_params_file);
 

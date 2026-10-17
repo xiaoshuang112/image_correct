@@ -197,7 +197,6 @@ void DepthTester::validateRemedy(const std::string& csv_path) {
     const auto& ptA = m_config.pointA;
     const auto& ptB = m_config.pointB;
 
-    int reacquire_total = 0, reacquire_ok = 0;
     int remedy_total = 0, remedy_ok = 0;
 
     std::string line;
@@ -217,17 +216,16 @@ void DepthTester::validateRemedy(const std::string& csv_path) {
         bool is_stale = (fields[4] == "true");
 
         DepthHistory* hist = nullptr;
-        const DepthTestPoint *pt = nullptr, *other = nullptr;
+        const DepthTestPoint* pt = nullptr;
         if (point_name == ptA.name) {
-            hist = &histA; pt = &ptA; other = &ptB;
+            hist = &histA; pt = &ptA;
         } else {
-            hist = &histB; pt = &ptB; other = &ptA;
+            hist = &histB; pt = &ptB;
         }
 
         if (is_stale) {
             remedy_total++;
-            int reacquire_count = 0;
-            // 模拟补救：重采使用当前 raw_depth 代替实际重采（离线验证）
+            // 离线验证：使用历史默认深度补救陈旧帧。
             double remedy_val = hist->getDefaultDepth();
             // 如果默认深度在合理范围内 → 补救成功
             if (remedy_val >= pt->depth_min && remedy_val <= pt->depth_max)

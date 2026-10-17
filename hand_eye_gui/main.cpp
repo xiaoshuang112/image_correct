@@ -1,9 +1,7 @@
 #include <QGuiApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
-#include <QMessageBox>
 #include <QDir>
-#include <QFile>
 #include <QDebug>
 #include <QSysInfo>
 
@@ -11,7 +9,6 @@
 
 #include <memory>
 
-#include "auth_check.hpp"
 #include "CalibrationController.hpp"
 #include "CameraImageProvider.hpp"
 #include "DiagnosticLogger.hpp"
@@ -79,25 +76,6 @@ int main(int argc, char* argv[])
         APP_LOG_EVENT_INFO("lifecycle", "application", "about_to_quit", {});
         DiagnosticLogger::instance().flush();
     });
-
-
-#ifndef X86_64    
-    // ================================================================
-    //  授权检查
-    // ================================================================
-    // std::string appPath = QCoreApplication::applicationDirPath()
-    //                           .toStdString() + "/";
-    // std::string err = check_authorization(appPath);
-    // if (!err.empty()) {
-    //     qCritical() << "[auth] 授权检查失败:" << err.c_str();
-    //     QMessageBox box(QMessageBox::Critical,
-    //                     QString::fromUtf8("授权检查失败"),
-    //                     QString::fromUtf8(err.c_str()),
-    //                     QMessageBox::Ok);
-    //     box.exec();
-    //     return -1;
-    // }
-#endif    
 
     int exitCode = -1;
     {

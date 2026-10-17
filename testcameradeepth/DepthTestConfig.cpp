@@ -26,7 +26,6 @@ bool loadDepthTestConfig(const std::string& path, DepthTestConfig& cfg) {
         pa_pose[i] >> cfg.pointA.flange_pose[i];
     root["pointA_depth_min"] >> cfg.pointA.depth_min;
     root["pointA_depth_max"] >> cfg.pointA.depth_max;
-    root["pointA_default_depth"] >> cfg.pointA.default_depth;
 
     // Point B
     root["pointB_name"] >> cfg.pointB.name;
@@ -35,16 +34,12 @@ bool loadDepthTestConfig(const std::string& path, DepthTestConfig& cfg) {
         pb_pose[i] >> cfg.pointB.flange_pose[i];
     root["pointB_depth_min"] >> cfg.pointB.depth_min;
     root["pointB_depth_max"] >> cfg.pointB.depth_max;
-    root["pointB_default_depth"] >> cfg.pointB.default_depth;
 
     // Detection
     cv::FileNode det = root["detection"];
     if (!det.empty()) {
         det["center_ratio"] >> cfg.center_ratio;
-        det["stale_threshold_mm"] >> cfg.stale_threshold_mm;
         det["outlier_sigma"] >> cfg.outlier_sigma;
-        det["max_reacquire"] >> cfg.max_reacquire;
-        det["history_size"] >> cfg.history_size;
     }
 
     fs.release();

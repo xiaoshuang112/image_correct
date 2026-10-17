@@ -584,12 +584,6 @@ QString DiagnosticLogger::logFilePath() const
     return m_logFilePath;
 }
 
-QString DiagnosticLogger::logDirectory() const
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_logDirectory;
-}
-
 void DiagnosticLogger::setUiSink(std::function<void(const QString&)> sink)
 {
     std::lock_guard<std::mutex> lock(m_sinkMutex);

@@ -419,7 +419,7 @@ endif()
 # ============================================================
 option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
 if(BUILD_QT_GUI)
-    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
+    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2)
     if(Qt5_FOUND)
         add_subdirectory(hand_eye_gui)
         message(STATUS "Qt5 GUI enabled → target 'hand-eye-app'")

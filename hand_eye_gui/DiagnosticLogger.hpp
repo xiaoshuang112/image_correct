@@ -55,7 +55,6 @@ public:
     void flush();
 
     QString logFilePath() const;
-    QString logDirectory() const;
 
     // The sink is called outside the file mutex and may be invoked by any thread.
     void setUiSink(std::function<void(const QString&)> sink);

@@ -28,7 +28,6 @@ struct CameraErrorDetail {
     std::string stage;          // initialize / enumerate / select / create_handle / ...
     unsigned int sdk_code = 0;  // SDK 原始错误码（无 SDK 语义时为 0）
     std::string message;        // 人类可读诊断
-    bool hasError() const { return !stage.empty(); }
 };
 
 /**

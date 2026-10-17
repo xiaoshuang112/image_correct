@@ -11,17 +11,12 @@ depth_test:
   pointA_flange_pose: [ 400.0, 0.0, 200.0, 180.0, 0.0, 90.0 ]
   pointA_depth_min: 600
   pointA_depth_max: 800
-  pointA_default_depth: 0
 
   pointB_name: "pointB"
   pointB_flange_pose: [ 400.0, 0.0, 200.0, 90.0, 0.0, 90.0 ]
   pointB_depth_min: 350
   pointB_depth_max: 500
-  pointB_default_depth: 0
 
   detection:
     center_ratio: 0.3
-    stale_threshold_mm: 80
     outlier_sigma: 2.0
-    max_reacquire: 3
-    history_size: 50

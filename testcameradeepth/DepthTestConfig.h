@@ -9,7 +9,6 @@ struct DepthTestPoint {
     double flange_pose[6] = {};  // [x,y,z,rx,ry,rz] (mm, deg)
     double depth_min = 0;        // mm
     double depth_max = 0;        // mm
-    double default_depth = 0;    // 0 = learn from capture
 };
 
 struct DepthTestConfig {
@@ -20,10 +19,7 @@ struct DepthTestConfig {
     DepthTestPoint pointA;
     DepthTestPoint pointB;
     double center_ratio = 0.15;
-    double stale_threshold_mm = 80;
     double outlier_sigma = 2.0;
-    int max_reacquire = 3;
-    int history_size = 50;
 };
 
 bool loadDepthTestConfig(const std::string& path, DepthTestConfig& cfg);

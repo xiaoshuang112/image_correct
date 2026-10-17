@@ -198,14 +198,6 @@ bool publishEyeToHandResult(
     EyeToHandPublicationCheck& check,
     std::string& error);
 
-inline PoseGenerationConfig loadPoseGenerationConfig(const std::string& yaml_path) {
-    PoseGenerationConfig cfg;
-    std::string error;
-    if (!tryLoadPoseGenerationConfig(yaml_path, cfg, error))
-        std::cerr << "加载位姿配置失败，使用默认参数: " << error << std::endl;
-    return cfg;
-}
-
 /**
  * @brief 自动眼在手外 ChArUco 标定
  *

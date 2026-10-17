@@ -58,16 +58,9 @@ QString formatDoubleVector(const std::vector<double>& values)
 } // namespace
 
 // ===================================================================
-//  全局变量（原在 calibration.cpp 中定义，其他模块依赖）
+//  采样器模块引用的机器人句柄（CLI 中由 calibration.cpp 定义）
 // ===================================================================
-CONFIG g_cfg;
-std::string g_appPath = "";
-std::string g_paramPath = "";
-std::string g_posPath = "";
-std::string g_calibrationPath = "";
-std::shared_ptr<AICamera> g_camera = nullptr;
 RobotHandle robotHandle;
-AICameraIntrinsic g_cam_param;
 
 // ---- 静态成员 ----
 CalibrationController* CalibrationController::s_instance = nullptr;

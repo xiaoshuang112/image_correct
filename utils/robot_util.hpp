@@ -54,7 +54,6 @@ bool convertFlangeOulePos2Joint(int robot_handle, double* flangeEulePos, double 
 
 // TCP 轴角 → 法兰欧拉
 bool convertTcpAxisPos2FlangeEule(int robot_handle, double *tcpAxisPos, double *flangeEulePos);
-bool convertJointToFlangeEule(int robot_handle, const double joint[ROB_AXIS_NUM], double flangeEule[ROB_AXIS_NUM]);
 
 // 运动到目标法兰轴角位姿
 bool moveToFlangeAxisPos(int robot_handle, double* axisAnglePos);
