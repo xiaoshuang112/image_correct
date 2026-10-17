@@ -1,6 +1,5 @@
 #include "MVSCamera.hpp"
 #include "mvs_error.hpp"
-#include "utils/exposure_fusion.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 
 #include <iostream>
@@ -780,30 +779,6 @@ bool MVSCamera::getGainRange(int& min, int& max) {
 }
 
 std::vector<cv::Mat> MVSCamera::captureMultiExposureImages(const std::vector<int>& exposureValuesUs) {
-    return captureMultiExposureImagesImpl(exposureValuesUs);
-}
-
-cv::Mat MVSCamera::captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                                float contrastWeight,
-                                                float saturationWeight,
-                                                float wellExposedWeight) {
-    std::vector<cv::Mat> images = captureMultiExposureImagesImpl(exposureValuesUs);
-    if (images.empty()) return cv::Mat();
-
-    ExposureFusion::Params params;
-    params.contrastWeight = contrastWeight;
-    params.saturationWeight = saturationWeight;
-    params.wellExposedWeight = wellExposedWeight;
-    return ExposureFusion::fuse(images, params);
-}
-
-cv::Mat MVSCamera::captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) {
-    std::vector<cv::Mat> images = captureMultiExposureImagesImpl(exposureValuesUs);
-    if (images.empty()) return cv::Mat();
-    return ExposureFusion::fuseFast(images);
-}
-
-std::vector<cv::Mat> MVSCamera::captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) {
     std::lock_guard<std::recursive_mutex> lock(m_mutex);
     std::vector<cv::Mat> images;
     if (!m_isOpened || !m_handle || exposureValuesUs.empty()) return images;

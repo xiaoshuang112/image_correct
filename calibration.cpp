@@ -107,7 +107,6 @@ bool GetBasePathInfo() {
         p = strchr(p, split);
         p++;
     }
-    char t = *p;
     *p = 0; // 当前路径放在 szPath 中了
     g_appPath = szPath;
 
@@ -601,10 +600,8 @@ void auto_handeye_calibration(int cameraToTcpEnd, char *pchRobotIP) {
 
     checkAndRestoreRobotHand();
     applyRobotSpeedPercent();
-    // double init_tcp_pose[6] = {-703.396, -198.517, 211.509, 140.34, 112.72, 0.00616}, euler_fixed[6];
-    //double init_tcp_pose[6] = {-502.377, 204.607, 207.971,1.76, -0.918, -47.680}, euler_fixed[6];// offseted
     double init_flangeAxisPos[6]={-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780}; // no-offset
-    double init_tcp_pose[6] = {-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780}, euler_fixed[6];// no-offseted
+    double init_tcp_pose[6] = {-676.9377, 155.607, 275.971, 146.58, 93.1018, 7.71780};// no-offseted
     
    
     TCPMsg tcp_msg;   
@@ -1074,7 +1071,6 @@ static void local_eye_to_hand_calibration_wrapper() {
 
 bool tryMoveByLineOrJoint(int robotHandle, double tcpAxisPosZ[6], double x_off, double y_off, double z_off){
     CRresult ret = moveToJointPosByLine(robotHandle, tcpAxisPosZ);
-    //cr_get_jointActualPos(robotHandle, jointPos);
     if (sucess != ret)
     {                     
         bool   ok = moveToTcpAxisPos(robotHandle, tcpAxisPosZ);                    
@@ -1125,7 +1121,7 @@ static void singularity_test() {
 
     for (double x_off : x_offsets) {
         for (double y_off : y_offsets) {
-            double tcpAxisPos[ROB_AXIS_NUM], tcpAxisPosZ[ROB_AXIS_NUM], jointPos[ROB_AXIS_NUM];
+            double tcpAxisPos[ROB_AXIS_NUM], tcpAxisPosZ[ROB_AXIS_NUM];
             memcpy(tcpAxisPos, tcpAxisPoseInit, sizeof(tcpAxisPoseInit));
             tcpAxisPos[0] = tcpAxisPoseInit[0] + x_off;
             tcpAxisPos[1] = tcpAxisPoseInit[1] + y_off;

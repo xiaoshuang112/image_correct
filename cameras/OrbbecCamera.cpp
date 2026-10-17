@@ -1,5 +1,4 @@
 #include "OrbbecCamera.hpp"
-#include "utils/exposure_fusion.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 #include <iostream>
 #include <thread>
@@ -1123,12 +1122,7 @@ bool OrbbecCameraV2::getGainRange(int& min, int& max) {
     }
 }
 
-// ========== 多曝光采集与融合 ==========
-
-// 实现多曝光采集的虚函数
-std::vector<cv::Mat> OrbbecCameraV2::captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) {
-    return captureMultiExposureImages(exposureValuesUs);
-}
+// ========== 多曝光采集 ==========
 
 std::vector<cv::Mat> OrbbecCameraV2::captureMultiExposureImages(const std::vector<int>& exposureValuesUs) {
     std::vector<cv::Mat> images;
@@ -1173,45 +1167,4 @@ std::vector<cv::Mat> OrbbecCameraV2::captureMultiExposureImages(const std::vecto
     
     std::cout << "Captured " << images.size() << " images for multi-exposure fusion" << std::endl;
     return images;
-}
-
-cv::Mat OrbbecCameraV2::captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                                    float contrastWeight,
-                                                    float saturationWeight,
-                                                    float wellExposedWeight) {
-    // 采集多曝光图像
-    std::vector<cv::Mat> images = captureMultiExposureImages(exposureValuesUs);
-    
-    if (images.size() < 2) {
-        std::cerr << "Need at least 2 images for fusion, got " << images.size() << std::endl;
-        return cv::Mat();
-    }
-    
-    // 创建融合参数
-    ExposureFusion::Params params;
-    params.contrastWeight = contrastWeight;
-    params.saturationWeight = saturationWeight;
-    params.wellExposedWeight = wellExposedWeight;
-    
-    // 执行融合
-    std::cout << "Performing exposure fusion..." << std::endl;
-    cv::Mat result = ExposureFusion::fuse(images, params);
-    
-    return result;
-}
-
-cv::Mat OrbbecCameraV2::captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) {
-    // 采集多曝光图像
-    std::vector<cv::Mat> images = captureMultiExposureImages(exposureValuesUs);
-    
-    if (images.size() < 2) {
-        std::cerr << "Need at least 2 images for fusion, got " << images.size() << std::endl;
-        return cv::Mat();
-    }
-    
-    // 快速融合
-    std::cout << "Performing fast exposure fusion..." << std::endl;
-    cv::Mat result = ExposureFusion::fuseFast(images);
-    
-    return result;
 }

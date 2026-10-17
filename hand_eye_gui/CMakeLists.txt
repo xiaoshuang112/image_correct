@@ -137,7 +137,6 @@ set(GUI_CORE_SRCS
     ${CMAKE_SOURCE_DIR}/utils/calib_transform.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_undistortion.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_utils.cpp
-    ${CMAKE_SOURCE_DIR}/utils/exposure_fusion.cpp
     ${CMAKE_SOURCE_DIR}/utils/robot_util.cpp
 )
 

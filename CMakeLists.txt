@@ -194,7 +194,7 @@ SET(SRC_LISTS
 calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
     calibration/solver_consensus.cpp
     calibration/mechanical_settling_config.cpp
-    calibration.cpp utils/exposure_fusion.cpp
+    calibration.cpp
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
@@ -320,7 +320,6 @@ if(useMVS)
         cameras/MVSCamera.cpp
         cameras/mvs_device_selector.cpp
         cameras/mvs_error.cpp
-        utils/exposure_fusion.cpp
     )
     target_compile_definitions(mvs_hw_acceptance PRIVATE useMVS)
     target_include_directories(mvs_hw_acceptance PRIVATE

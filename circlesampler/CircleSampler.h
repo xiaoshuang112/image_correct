@@ -27,16 +27,13 @@ private:
     // Checkpoint helpers (test mode)
     std::string checkpointPath() const;
     bool saveCheckpoint(int bg_idx, int combo_idx, int layer_idx, int point_idx);
-    bool loadCheckpoint(int& bg_idx, int& combo_idx, int& layer_idx, int& point_idx);
 
     std::shared_ptr<AICamera>& m_camera;
     ScrewSamplingConfig m_config;
     CircleTestConfig m_test_config;
-    bool m_test_mode = false;
 
     cv::Mat m_R_f_c;
     cv::Mat m_t_f_c;
-    cv::Matx44d m_T_f_c;
     std::vector<int> _exp_values;
 };
 

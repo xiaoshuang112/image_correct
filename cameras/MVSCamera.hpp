@@ -33,18 +33,10 @@ public:
     bool getGainRange(int& min, int& max) override;
 
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) override;
-    cv::Mat captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                        float contrastWeight = 1.0f,
-                                        float saturationWeight = 1.0f,
-                                        float wellExposedWeight = 1.0f) override;
-    cv::Mat captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) override;
 
     // MVS SDK 不提供镜头内参，返回空是正确行为；
     // 内参安全门禁要求从外部 camera_params.yaml 加载并校验身份。
     std::vector<std::vector<float>> getCameraIntrinsics(const int imgWidth, const int imgHight) override;
-
-protected:
-    std::vector<cv::Mat> captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) override;
 
 private:
     // ---- 生命周期阶段（用于幂等清理与诊断） ----

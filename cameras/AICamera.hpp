@@ -152,7 +152,7 @@ public:
      */
     virtual bool getGainRange(int& min, int& max) = 0;
 
-    // ========== 多曝光融合接口 ==========
+    // ========== 多曝光采集接口 ==========
     
     /**
      * @brief 采集多组不同曝光的原始图像
@@ -160,26 +160,6 @@ public:
      * @return 采集到的图像序列
      */
     virtual std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) = 0;
-
-    /**
-     * @brief 采集多组不同曝光的图像并融合（Mertens算法）
-     * @param exposureValuesUs 曝光时间列表（微秒）
-     * @param contrastWeight 对比度权重系数 (默认1.0)
-     * @param saturationWeight 饱和度权重系数 (默认1.0)
-     * @param wellExposedWeight 良好曝光权重系数 (默认1.0)
-     * @return 融合后的BGR图像
-     */
-    virtual cv::Mat captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                                float contrastWeight = 1.0f,
-                                                float saturationWeight = 1.0f,
-                                                float wellExposedWeight = 1.0f) = 0;
-
-    /**
-     * @brief 快速多曝光融合（速度优化版本）
-     * @param exposureValuesUs 曝光时间列表（微秒）
-     * @return 融合后的BGR图像
-     */
-    virtual cv::Mat captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) = 0;
 
     // 获取内参矩阵 (3x3矩阵)
     // 如果想得到特定分辨率下的内参，可以传入宽和高，例如 (1280, 720)
@@ -191,11 +171,6 @@ protected:
     // 缓存值（供子类使用）
     bool m_autoExposureCached = true;
     int m_exposureCached = -1;
-    
-    // 通用的多曝光采集逻辑
-    virtual std::vector<cv::Mat> captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) = 0;
-
-
 };
 
 #endif // AI_CAMERA_HPP

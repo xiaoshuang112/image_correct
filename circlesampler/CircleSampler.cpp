@@ -21,22 +21,20 @@ extern RobotHandle robotHandle;
 
 // --- Screw mode constructor (unchanged) ---
 CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const ScrewSamplingConfig& config)
-    : m_camera(camera), m_config(config), m_test_mode(false) {
+    : m_camera(camera), m_config(config) {
     m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
     m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
-    m_T_f_c = config.T_flange_camera;
 }
 
 // --- Test mode constructor ---
 CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const CircleTestConfig& config)
-    : m_camera(camera), m_test_config(config), m_test_mode(true) {
+    : m_camera(camera), m_test_config(config) {
     // Borrow fields from test config for genExposures / capture timeout
     m_config.num_exposures = config.num_exposures;
     m_config.capture_timeout_ms = config.capture_timeout_ms;
 
     m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
     m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
-    m_T_f_c = config.T_flange_camera;
 }
 
 CRresult CircleSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
@@ -208,23 +206,6 @@ bool CircleSampler::saveCheckpoint(int bg_idx, int combo_idx, int layer_idx, int
     return true;
 }
 
-bool CircleSampler::loadCheckpoint(int& bg_idx, int& combo_idx, int& layer_idx, int& point_idx) {
-    std::string path = checkpointPath();
-    FILE* fp = fopen(path.c_str(), "r");
-    if (!fp) return false;
-    fclose(fp);
-
-    cv::FileStorage fs(path, cv::FileStorage::READ);
-    if (!fs.isOpened()) return false;
-    cv::FileNode chk = fs["checkpoint"];
-    if (chk.empty()) return false;
-    bg_idx = (int)chk["bg_idx"];
-    combo_idx = (int)chk["combo_idx"];
-    layer_idx = (int)chk["layer_idx"];
-    point_idx = (int)chk["point_idx"];
-    return true;
-}
-
 // ============================================================
 // Dry-run: verify IK reachability only, no capture
 // ============================================================
@@ -320,26 +301,8 @@ int CircleSampler::runTestCollection() {
     // Ensure output directory (creates parent dirs as needed)
     std::filesystem::create_directories(cfg.output_dir);
 
-    // Check for existing checkpoint
+    // Collection starts from the beginning.
     int start_bg = 0, start_combo = 0, start_layer = 0, start_point = 0;
-    int resume_from = 0;
-    // if (loadCheckpoint(start_bg, start_combo, start_layer, start_point)) {
-    //     std::cout << "检测到上次未完成采集 (bg=" << start_bg
-    //               << " combo=" << start_combo
-    //               << " layer=" << start_layer
-    //               << " point=" << start_point << ")" << std::endl;
-    //     std::cout << "按 Enter 继续，或输入 r 重新开始: " << std::flush;
-    //     std::string line;
-    //     std::getline(std::cin, line);
-    //     if (line == "r" || line == "R") {
-    //         start_bg = start_combo = start_layer = start_point = 0;
-    //         // Remove checkpoint
-    //         std::remove(checkpointPath().c_str());
-    //         std::cout << "已重新开始" << std::endl;
-    //     } else {
-    //         std::cout << "从断点继续" << std::endl;
-    //     }
-    // }
 
     int cumulative = 0;   // points completed in this run (for progress)
     int total_expected = n_bg * n_combo * n_layer * n_point;

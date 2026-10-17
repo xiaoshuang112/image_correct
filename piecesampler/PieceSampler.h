@@ -32,14 +32,12 @@ private:
     // Checkpoint helpers
     std::string checkpointPath() const;
     bool saveCheckpoint(int bg_idx, int wp_idx, int z_idx, int xy_idx);
-    bool loadCheckpoint(int& bg_idx, int& wp_idx, int& z_idx, int& xy_idx);
 
     std::shared_ptr<AICamera>& m_camera;
     PieceSamplerConfig m_config;
 
     cv::Mat m_R_f_c;       // rotation: flange -> camera
     cv::Mat m_t_f_c;       // translation: flange -> camera
-    cv::Matx44d m_T_f_c;   // full 4x4: flange -> camera
 
     // Precomputed for fixed downward camera
     cv::Mat m_rvec;        // axis-angle of fixed flange orientation (3x1, degrees)

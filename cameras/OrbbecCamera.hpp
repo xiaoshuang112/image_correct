@@ -2,7 +2,6 @@
 #define ORBBEC_CAMERA_V2_HPP
 
 #include "AICamera.hpp"
-#include "utils/exposure_fusion.hpp"
 
 #include <atomic>
 #include <cstdint>
@@ -40,20 +39,12 @@ public:
     int getColorGain() override;
     bool getGainRange(int& min, int& max) override;
 
-    // 多曝光融合接口实现
+    // 多曝光采集接口实现
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) override;
-    cv::Mat captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                        float contrastWeight = 1.0f,
-                                        float saturationWeight = 1.0f,
-                                        float wellExposedWeight = 1.0f) override;
-    cv::Mat captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) override;
 
     // 内参接口
     std::vector<std::vector<float>> getCameraIntrinsics(const int imgWidth, const int imgHight) override;
 
-
-protected:
-    std::vector<cv::Mat> captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) override;
 
 private:
     bool m_isOpened = false;

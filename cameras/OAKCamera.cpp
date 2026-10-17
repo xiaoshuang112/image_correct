@@ -447,11 +447,7 @@ bool OAKCamera::getGainRange(int& min, int& max) {
     return true;
 }
 
-// ========== 多曝光采集与融合 ==========
-
-std::vector<cv::Mat> OAKCamera::captureMultiExposureImagesImpl(const std::vector<int>& exposureValuesUs) {
-    return captureMultiExposureImages(exposureValuesUs);
-}
+// ========== 多曝光采集 ==========
 
 std::vector<cv::Mat> OAKCamera::captureMultiExposureImages(const std::vector<int>& exposureValuesUs) {
     std::vector<cv::Mat> images;
@@ -493,38 +489,6 @@ std::vector<cv::Mat> OAKCamera::captureMultiExposureImages(const std::vector<int
 
     std::cout << "Captured " << images.size() << " images for multi-exposure fusion" << std::endl;
     return images;
-}
-
-cv::Mat OAKCamera::captureAndFuseMultiExposure(const std::vector<int>& exposureValuesUs,
-                                                float contrastWeight,
-                                                float saturationWeight,
-                                                float wellExposedWeight) {
-    std::vector<cv::Mat> images = captureMultiExposureImages(exposureValuesUs);
-
-    if (images.size() < 2) {
-        std::cerr << "Need at least 2 images for fusion, got " << images.size() << std::endl;
-        return cv::Mat();
-    }
-
-    ExposureFusion::Params params;
-    params.contrastWeight = contrastWeight;
-    params.saturationWeight = saturationWeight;
-    params.wellExposedWeight = wellExposedWeight;
-
-    std::cout << "Performing exposure fusion..." << std::endl;
-    return ExposureFusion::fuse(images, params);
-}
-
-cv::Mat OAKCamera::captureAndFuseMultiExposureFast(const std::vector<int>& exposureValuesUs) {
-    std::vector<cv::Mat> images = captureMultiExposureImages(exposureValuesUs);
-
-    if (images.size() < 2) {
-        std::cerr << "Need at least 2 images for fusion, got " << images.size() << std::endl;
-        return cv::Mat();
-    }
-
-    std::cout << "Performing fast exposure fusion..." << std::endl;
-    return ExposureFusion::fuseFast(images);
 }
 
 // ========== 内参接口 ==========

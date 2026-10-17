@@ -21,7 +21,6 @@ PieceSampler::PieceSampler(std::shared_ptr<AICamera>& camera, const PieceSampler
     : m_camera(camera), m_config(config) {
     m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
     m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
-    m_T_f_c = config.T_flange_camera;
 
     // Precompute fixed flange orientation for downward-pointing camera.
     // Camera in base frame: X→world X, Y→-world Y, Z→-world Z (straight down)
@@ -162,23 +161,6 @@ bool PieceSampler::saveCheckpoint(int bg_idx, int wp_idx, int z_idx, int xy_idx)
     return true;
 }
 
-bool PieceSampler::loadCheckpoint(int& bg_idx, int& wp_idx, int& z_idx, int& xy_idx) {
-    std::string path = checkpointPath();
-    FILE* fp = fopen(path.c_str(), "r");
-    if (!fp) return false;
-    fclose(fp);
-
-    cv::FileStorage fs(path, cv::FileStorage::READ);
-    if (!fs.isOpened()) return false;
-    cv::FileNode chk = fs["checkpoint"];
-    if (chk.empty()) return false;
-    bg_idx = (int)chk["bg_idx"];
-    wp_idx = (int)chk["wp_idx"];
-    z_idx = (int)chk["z_idx"];
-    xy_idx = (int)chk["xy_idx"];
-    return true;
-}
-
 // ============================================================
 // Main sampling run
 // ============================================================
@@ -252,8 +234,8 @@ int PieceSampler::run() {
     // Ensure output directory
     std::filesystem::create_directories(cfg.output_dir);
 
-    // Check for existing checkpoint
-    int start_bg = 0, start_wp = 0, start_z = 0, start_xy = 0;   
+    // Collection starts from the beginning.
+    int start_bg = 0, start_wp = 0, start_z = 0, start_xy = 0;
 
     int cumulative = 0;
 
@@ -280,16 +262,15 @@ int PieceSampler::run() {
             std::cin.get();
 
             int z_start = (bi == start_bg && wi == wp_start) ? start_z : 0;
-            double max_z = *std::max_element(cfg.z_heights.begin(), cfg.z_heights.end());
             for (int zi = z_start; zi < n_z; zi++) {
-                double dz = cfg.z_heights[zi], z_shrink = 1;//sqrt(dz / max_z);
+                double dz = cfg.z_heights[zi];
 
                 int xy_start = (bi == start_bg && wi == wp_start && zi == z_start) ? start_xy : 0;
                 for (int xyi = xy_start; xyi < n_x * n_y; xyi++) {
                     int xi = xyi / n_y;
                     int yi = xyi % n_y;
-                    double dx = cfg.x_offsets[xi] * z_shrink;
-                    double dy = cfg.y_offsets[yi] * z_shrink;
+                    double dx = cfg.x_offsets[xi];
+                    double dy = cfg.y_offsets[yi];
 
                     double pose[6];
                     computeFixedPose(cx + dx, cy + dy, cz + dz, cur_flange, pose);
