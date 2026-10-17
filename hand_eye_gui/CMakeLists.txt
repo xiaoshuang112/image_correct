@@ -7,93 +7,8 @@ find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-# ============================================================
-#  架构检测（与父 CMakeLists.txt 保持一致）
-# ============================================================
-if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
-    set(ARCH_TYPE "x86_64")
-    set(ARCH_FLAG "-DX86_64")
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
-    set(ARCH_TYPE "ARM64")
-    set(ARCH_FLAG "-DARM64")
-elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7|armv7l")
-    set(ARCH_TYPE "ARMv7")
-    set(ARCH_FLAG "-DARM")
-else()
-    set(ARCH_TYPE "Unknown")
-endif()
-
-
-message("-- [${PROJECT_NAME}] Architecture: ${ARCH_TYPE}")
-add_definitions(${ARCH_FLAG})
-
-
-# ============================================================
-#  CGX SDK 路径
-# ============================================================
-# SDK paths and libraries are resolved once by the parent project.
-
-# ============================================================
-#  相机后端检测（ORB 和 MVS 互斥）
-#  父目录已解析 CAMERA_BACKEND 缓存变量；这里兼容独立的
-#  -DUSE_ORB=ON/OFF 旧入口。SDK 不完整时配置直接失败，
-#  不允许生成名为 MVS、实际无相机支持的二进制。
-# ============================================================
-
-if(DEFINED USE_ORB AND NOT DEFINED CAMERA_BACKEND)
-    if(USE_ORB)
-        set(CAMERA_BACKEND "ORB" CACHE STRING "Camera backend: ORB or MVS" FORCE)
-    else()
-        set(CAMERA_BACKEND "MVS" CACHE STRING "Camera backend: ORB or MVS" FORCE)
-    endif()
-endif()
-if(NOT DEFINED CAMERA_BACKEND OR CAMERA_BACKEND STREQUAL "")
-    set(CAMERA_BACKEND "ORB" CACHE STRING "Camera backend: ORB or MVS" FORCE)
-endif()
-string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
-
-if(CAMERA_BACKEND STREQUAL "ORB")
-    # ---- ORB 模式 ----
-    if(EXISTS /usr/local/include/libobsensor)
-        set(useORB_QT TRUE)
-        set(useMVS_QT FALSE)
-        set(CAM_SUFFIX "orb")
-        set(ORBBEC_SDK_V2_DIR "/usr/local")
-        add_definitions(-DuseORB -DDEFAULT_CAM_WIDTH=1280 -DDEFAULT_CAM_HEIGHT=800)
-        message("-- [${PROJECT_NAME}] 相机: Orbbec (1280×800)")
-    else()
-        message(FATAL_ERROR "-- [${PROJECT_NAME}] CAMERA_BACKEND=ORB 但未找到 Orbbec SDK (/usr/local/include/libobsensor)")
-    endif()
-elseif(CAMERA_BACKEND STREQUAL "MVS")
-    # ---- MVS 模式 ----
-    if(NOT DEFINED MVS_SDK_DIR)
-        set(MVS_SDK_DIR "/opt/MVS")
-    endif()
-    if(ARCH_TYPE STREQUAL "x86_64")
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/64")
-    elseif(ARCH_TYPE STREQUAL "ARM64")
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/aarch64")
-    else()
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/32")
-    endif()
-    if(NOT EXISTS "${MVS_SDK_DIR}/include/MvCameraControl.h")
-        message(FATAL_ERROR
-            "-- [${PROJECT_NAME}] CAMERA_BACKEND=MVS 但未找到 MVS SDK 头文件: "
-            "${MVS_SDK_DIR}/include/MvCameraControl.h")
-    endif()
-    if(NOT EXISTS "${MVS_LIB_DIR}/libMvCameraControl.so")
-        message(FATAL_ERROR
-            "-- [${PROJECT_NAME}] CAMERA_BACKEND=MVS 但未找到 ${ARCH_TYPE} 架构的 MVS 运行库: "
-            "${MVS_LIB_DIR}/libMvCameraControl.so")
-    endif()
-    set(useORB_QT FALSE)
-    set(useMVS_QT TRUE)
-    set(CAM_SUFFIX "mvs")
-    add_definitions(-DuseMVS -DDEFAULT_CAM_WIDTH=4024 -DDEFAULT_CAM_HEIGHT=3036)
-    message("-- [${PROJECT_NAME}] 相机: MVS (4024×3036), SDK: ${MVS_SDK_DIR}")
-else()
-    message(FATAL_ERROR "-- [${PROJECT_NAME}] CAMERA_BACKEND 只支持 ORB 或 MVS，当前值: '${CAMERA_BACKEND}'")
-endif()
+# 架构、相机后端及 SDK 路径由父项目统一解析和校验。
+message(STATUS "[${PROJECT_NAME}] Architecture: ${ARCH_TYPE}; Camera backend: ${CAMERA_BACKEND}")
 
 # ============================================================
 #  GUI 源文件
@@ -140,17 +55,6 @@ set(GUI_CORE_SRCS
     ${CMAKE_SOURCE_DIR}/utils/robot_util.cpp
 )
 
-# 相机源文件：ORB / MVS 互斥
-if(useMVS_QT)
-    list(APPEND GUI_CORE_SRCS
-        ${CMAKE_SOURCE_DIR}/cameras/MVSCamera.cpp
-        ${CMAKE_SOURCE_DIR}/cameras/mvs_device_selector.cpp
-        ${CMAKE_SOURCE_DIR}/cameras/mvs_error.cpp
-    )
-elseif(useORB_QT)
-    list(APPEND GUI_CORE_SRCS ${CMAKE_SOURCE_DIR}/cameras/OrbbecCamera.cpp)
-endif()
-
 # ============================================================
 #  可执行文件
 # ============================================================
@@ -158,6 +62,7 @@ add_executable(${PROJECT_NAME}
     ${GUI_SRCS}
     ${GUI_HDRS}
     ${GUI_CORE_SRCS}
+    ${CAITU_CAMERA_SOURCES}
     ${QRC_FILE}
 )
 
@@ -173,14 +78,8 @@ target_include_directories(${PROJECT_NAME} PRIVATE
     ${Qt5QuickControls2_INCLUDE_DIRS}
 )
 
-# MVS / ORB SDK include
-if(useMVS_QT)
-    target_include_directories(${PROJECT_NAME} PRIVATE ${MVS_SDK_DIR}/include)
-endif()
-if(useORB_QT)
-    target_include_directories(${PROJECT_NAME} PRIVATE ${ORBBEC_SDK_V2_DIR}/include)
-    target_link_directories(${PROJECT_NAME} PRIVATE ${ORBBEC_SDK_V2_DIR}/lib)
-endif()
+target_include_directories(${PROJECT_NAME} PRIVATE ${CAITU_CAMERA_INCLUDE_DIR})
+target_link_directories(${PROJECT_NAME} PRIVATE ${CAITU_CAMERA_LIB_DIR})
 
 # ============================================================
 #  链接库
@@ -197,18 +96,8 @@ target_link_libraries(${PROJECT_NAME}
     ${CGX_SDK_LIBS}
     -Wl,--as-needed
     -Wl,--disable-new-dtags
+    ${CAITU_CAMERA_LIBRARIES}
 )
-
-# MVS SDK
-if(useMVS_QT)
-    target_link_directories(${PROJECT_NAME} PRIVATE ${MVS_LIB_DIR})
-    target_link_libraries(${PROJECT_NAME} MvCameraControl)
-endif()
-
-# Orbbec SDK
-if(useORB_QT)
-    target_link_libraries(${PROJECT_NAME} OrbbecSDK)
-endif()
 
 # ============================================================
 #  编译选项
@@ -223,7 +112,7 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
 # 开发机上回退到 SDK 安装目录；ORB 产物不引用任何 MVS 路径。
-if(useMVS_QT)
+if(useMVS)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         INSTALL_RPATH "$ORIGIN/lib/mvs"
         BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
@@ -247,7 +136,11 @@ add_custom_target(hand_eye_app_build_info ALL
 )
 add_dependencies(${PROJECT_NAME} hand_eye_app_build_info)
 target_include_directories(${PROJECT_NAME} PRIVATE ${APP_BUILD_INFO_DIR})
-target_compile_definitions(${PROJECT_NAME} PRIVATE QT_MESSAGELOGCONTEXT)
-
-# 继承父目录的宏定义（useMVS 等）
-add_definitions(-DQT_GUI)
+target_compile_definitions(${PROJECT_NAME} PRIVATE
+    ${CAITU_COMPILE_DEFINITIONS}
+    ${ARCH_DEFINITION}
+    DEFAULT_CAM_WIDTH=${CAITU_GUI_DEFAULT_CAM_WIDTH}
+    DEFAULT_CAM_HEIGHT=${CAITU_GUI_DEFAULT_CAM_HEIGHT}
+    QT_MESSAGELOGCONTEXT
+    QT_GUI
+)

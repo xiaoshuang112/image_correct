@@ -46,9 +46,14 @@ SET(useOAK FALSE)
 SET(useMVS FALSE)
 if(CAMERA_BACKEND STREQUAL "ORB")
     SET(useORB TRUE)
+    set(CAITU_GUI_DEFAULT_CAM_WIDTH 1280)
+    set(CAITU_GUI_DEFAULT_CAM_HEIGHT 800)
 elseif(CAMERA_BACKEND STREQUAL "MVS")
     SET(useMVS TRUE)
+    set(CAITU_GUI_DEFAULT_CAM_WIDTH 4024)
+    set(CAITU_GUI_DEFAULT_CAM_HEIGHT 3036)
 endif()
+string(TOLOWER "${CAMERA_BACKEND}" CAM_SUFFIX)
 message(STATUS "Camera backend: ${CAMERA_BACKEND}")
 
 
@@ -67,15 +72,16 @@ find_package(OpenCV REQUIRED)
 message("System Processor: ${CMAKE_SYSTEM_PROCESSOR}")
 
 # 判断架构
+set(ARCH_DEFINITION "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set(ARCH_TYPE "x86_64")
-    set(ARCH_FLAG "-DX86_64")
+    set(ARCH_DEFINITION X86_64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     set(ARCH_TYPE "ARM64")
-    set(ARCH_FLAG "-DARM64")
+    set(ARCH_DEFINITION ARM64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7|armv7l")
     set(ARCH_TYPE "ARMv7")
-    set(ARCH_FLAG "-DARM")
+    set(ARCH_DEFINITION ARM)
 else()
     set(ARCH_TYPE "Unknown")
 endif()
@@ -85,7 +91,7 @@ message("Architecture Type: ${ARCH_TYPE}")
  
 # Orbbec SDK v2 路径
 if(WIN32)
-	set(ORBBEC_SDK_V2_DIR "F:\Program Files\OrbbecSDK 2.4.11")
+	set(ORBBEC_SDK_V2_DIR "F:/Program Files/OrbbecSDK 2.4.11")
     set(CGX_SDK_LIBS )      
 else()
     # # public
@@ -95,12 +101,7 @@ else()
 
     set(depthai_DIR "/usr/local")
 
-    # 根据架构设置不同的编译选项
-    if(ARCH_TYPE STREQUAL "x86_64")
-        set(ORBBEC_SDK_V2_DIR "/usr/local")
-    elseif(ARCH_TYPE STREQUAL "ARM64")
-        set(ORBBEC_SDK_V2_DIR "/usr/local")
-    endif()
+    set(ORBBEC_SDK_V2_DIR "/usr/local")
 
 endif()
 
@@ -144,6 +145,17 @@ link_directories(${ORBBEC_SDK_V2_DIR}/lib)
 include_directories(${depthai_DIR}/include)
 link_directories(${depthai_DIR}/lib)
 
+# ORB SDK 校验与路径解析由父项目统一处理，CLI/GUI 使用相同结果。
+if(useORB)
+    if(NOT EXISTS "${ORBBEC_SDK_V2_DIR}/include/libobsensor/ObSensor.hpp")
+        message(FATAL_ERROR
+            "CAMERA_BACKEND=ORB 但未找到 Orbbec SDK 头文件: "
+            "${ORBBEC_SDK_V2_DIR}/include/libobsensor/ObSensor.hpp")
+    endif()
+    set(CAITU_CAMERA_INCLUDE_DIR "${ORBBEC_SDK_V2_DIR}/include")
+    set(CAITU_CAMERA_LIB_DIR "${ORBBEC_SDK_V2_DIR}/lib")
+endif()
+
 # MVS SDK：头文件和当前架构的运行库都必须存在，否则配置直接失败，
 # 不允许生成名为 MVS、实际无相机支持的二进制。
 if(useMVS)
@@ -169,6 +181,8 @@ if(useMVS)
 
     include_directories(${MVS_SDK_DIR}/include)
     link_directories(${MVS_LIB_DIR})
+    set(CAITU_CAMERA_INCLUDE_DIR "${MVS_SDK_DIR}/include")
+    set(CAITU_CAMERA_LIB_DIR "${MVS_LIB_DIR}")
     message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
 endif()
 
@@ -201,47 +215,46 @@ calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibratio
     utils/robot_util.cpp utils/calib_transform.cpp
 )
 
-SET(SRC_LIBS 
-)
+set(CAITU_CAMERA_SOURCES)
+set(CAITU_CAMERA_LIBRARIES)
 set(CAITU_COMPILE_DEFINITIONS)
 
 if(useORB)
     list(APPEND CAITU_COMPILE_DEFINITIONS useORB)
-    list(APPEND SRC_LISTS
-        cameras/OrbbecCamera.cpp
+    list(APPEND CAITU_CAMERA_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/OrbbecCamera.cpp
     )
-    list(APPEND SRC_LIBS
+    list(APPEND CAITU_CAMERA_LIBRARIES
         OrbbecSDK
     )
 endif()
 
 if(useOAK)
     list(APPEND CAITU_COMPILE_DEFINITIONS useOAK)
-    list(APPEND SRC_LISTS
-       cameras/OAKCamera.cpp
-        # cameras/OrbbecCamera.cpp
+    list(APPEND CAITU_CAMERA_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/OAKCamera.cpp
     )
-    list(APPEND SRC_LIBS
+    list(APPEND CAITU_CAMERA_LIBRARIES
         depthai-core
     )
 endif()
 
 if(useMVS)
     list(APPEND CAITU_COMPILE_DEFINITIONS useMVS)
-    list(APPEND SRC_LISTS
-        cameras/MVSCamera.cpp
-        cameras/mvs_device_selector.cpp
-        cameras/mvs_error.cpp
+    list(APPEND CAITU_CAMERA_SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/MVSCamera.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_device_selector.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_error.cpp
     )
-    list(APPEND SRC_LIBS
+    list(APPEND CAITU_CAMERA_LIBRARIES
         MvCameraControl
     )
 endif()
 
 
-add_executable(${PROJECT_NAME} ${SRC_LISTS})
+add_executable(${PROJECT_NAME} ${SRC_LISTS} ${CAITU_CAMERA_SOURCES})
 target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${SRC_LIBS} )
+target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${CAITU_CAMERA_LIBRARIES})
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
 # 开发机上回退到 SDK 安装目录。ORB 产物不引用任何 MVS 路径。
