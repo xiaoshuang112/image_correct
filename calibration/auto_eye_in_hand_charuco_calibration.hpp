@@ -63,7 +63,6 @@ bool autoEyeInHandCharucoCalibration(
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
-    int cameraToTcpEnd,
     CalibrationResult& result,
     const std::string& save_dir = "",
     const std::string& output_yaml = "",

@@ -38,21 +38,11 @@ set(QRC_FILE
 
 # 显式列出采集与标定界面使用的公共源码。
 set(GUI_CORE_SRCS
+    ${CALIBRATION_SOLVER_SOURCES}
     ${CMAKE_SOURCE_DIR}/calibration/auto_eye_in_hand_charuco_calibration.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/calibration_session.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/calibration_utils.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/camera_calibration.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/candidate_planner.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/charuco_detector.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/eye_to_hand_calibration.cpp
     ${CMAKE_SOURCE_DIR}/calibration/intrinsic_identity.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/mechanical_settling_config.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/semi_auto_eye_in_hand_calibration.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/solver_consensus.cpp
-    ${CMAKE_SOURCE_DIR}/utils/calib_transform.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_undistortion.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_utils.cpp
-    ${CMAKE_SOURCE_DIR}/utils/robot_util.cpp
 )
 
 # ============================================================

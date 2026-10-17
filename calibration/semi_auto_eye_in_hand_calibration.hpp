@@ -26,7 +26,6 @@ class CalibrationSession;
  * @param dist_coeffs     畸变系数 5x1
  * @param board_config    ChArUco 标定板参数
  * @param result          标定结果
- * @param enable_loo_diagnostics 是否在发布前执行 Phase 3 双模式 LOO 深诊断
  * @return true/false
  */
 bool calibrateHandEyeFromDisk(
@@ -38,7 +37,6 @@ bool calibrateHandEyeFromDisk(
     const std::string& output_yaml = "",
     CalibrationSession* session = nullptr,
     const std::string& intrinsic_source_file = "",
-    bool enable_loo_diagnostics = false,
     CalibrationRuntimeStatus* runtime_status = nullptr,
     const CalibrationRuntimeCallback& runtime_callback = {});
 

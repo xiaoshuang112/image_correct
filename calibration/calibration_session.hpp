@@ -109,52 +109,6 @@ struct HandEyePhase2Audit {
     std::vector<HandEyeOptimizationAuditRecord> optimizations;
 };
 
-struct HandEyeLooTrialAuditRecord {
-    std::string mode;
-    int removed_frame_id = -1;
-    int removed_source_index = -1;
-    bool success = false;
-    std::string failure_reason;
-    std::string selected_method;
-    int final_inliers = 0;
-    double delta_translation_mm = 0.0;
-    double delta_rotation_deg = 0.0;
-    bool filter_set_evaluated = false;
-    std::vector<int> filter_set_added_source_indices;
-    std::vector<int> filter_set_removed_source_indices;
-};
-
-struct HandEyeLooSummaryAuditRecord {
-    std::string mode;
-    int attempted = 0;
-    int successful = 0;
-    int failed = 0;
-    double translation_mean_mm = 0.0;
-    double translation_p95_mm = 0.0;
-    double translation_max_mm = 0.0;
-    int translation_max_frame_id = -1;
-    int translation_max_source_index = -1;
-    double rotation_mean_deg = 0.0;
-    double rotation_p95_deg = 0.0;
-    double rotation_max_deg = 0.0;
-    int rotation_max_frame_id = -1;
-    int rotation_max_source_index = -1;
-    int trials_with_filter_set_changes = 0;
-};
-
-struct HandEyePhase3Audit {
-    bool enabled = false;
-    bool completed = false;
-    std::string status = "not_run";
-    std::string failure_reason;
-    std::string full_selected_method;
-    int worker_count = 0;
-    cv::Mat full_transform;
-    std::vector<int> full_inlier_source_indices;
-    std::vector<HandEyeLooTrialAuditRecord> trials;
-    std::vector<HandEyeLooSummaryAuditRecord> summaries;
-};
-
 struct CalibrationSessionOptions {
     std::string base_directory;
     std::string mode;
@@ -222,8 +176,6 @@ public:
     void setFrames(const std::vector<CalibrationFrameAudit>& frames);
     bool setHandEyePhase2Audit(const HandEyePhase2Audit& audit,
                                std::string& error);
-    bool setHandEyePhase3Audit(const HandEyePhase3Audit& audit,
-                               std::string& error);
     void appendEvent(const std::string& event,
                      const std::string& result,
                      const std::string& detail = "");
@@ -254,8 +206,6 @@ public:
                          const std::string& message = "");
 
     static std::string sha256File(const std::string& path);
-    static bool verifyManifest(const std::string& session_directory,
-                               std::vector<std::string>& problems);
     static bool recoverPendingSessions(const std::string& base_directory,
                                        std::vector<std::string>& recovered_sessions,
                                        std::string& error);
@@ -293,7 +243,6 @@ private:
     std::string current_stage_ = "created";
     std::vector<CalibrationFrameAudit> frames_;
     HandEyePhase2Audit hand_eye_phase2_audit_;
-    HandEyePhase3Audit hand_eye_phase3_audit_;
     bool finalized_ = false;
     bool terminalization_attempted_ = false;
 };

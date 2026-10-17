@@ -1,5 +1,6 @@
 #include "calibration/eye_to_hand_calibration.hpp"
 #include "calibration/calibration_utils.hpp"
+#include "calibration/calibration_session.hpp"
 
 #include <cmath>
 #include <functional>
@@ -159,6 +160,28 @@ int main() {
             std::cerr << "[FAIL] " << name << ": " << error.what() << '\n';
         }
     };
+
+    run("disabled offline diagnostics retain audit format", [&] {
+        TempDirectory temporary;
+        CalibrationSessionOptions options;
+        options.base_directory = temporary.path.string();
+        options.mode = "audit_format_test";
+        std::string error;
+        auto session = CalibrationSession::create(options, error);
+        require(bool(session), "cannot create audit session: " + error);
+        require(session->finalizeFailure("test", "intentional"), "cannot finalize audit");
+        cv::FileStorage report(session->directory() + "/calibration_report.yaml", cv::FileStorage::READ);
+        const cv::FileNode diagnostics = report["hand_eye_loo_diagnostics"];
+        require(diagnostics.isMap() && int(diagnostics["enabled"]) == 0 &&
+                    int(diagnostics["completed"]) == 0 &&
+                    diagnostics["status"].string() == "not_run",
+                "disabled diagnostics audit format changed");
+        for (const char* key : {"full_inlier_source_indices", "summaries", "trials"})
+            require(diagnostics[key].isSeq() && diagnostics[key].size() == 0,
+                    std::string("missing empty audit sequence: ") + key);
+        require(std::filesystem::exists(session->directory() + "/manifest.sha256"),
+                "finalized audit manifest missing");
+    });
 
     run("exact diverse poses recover production inverse convention", [&] {
         require(solveEyeToHandPoses(fixture.robot, fixture.camera, baseline),

@@ -155,6 +155,21 @@ add_custom_target(calibration_build_info ALL
     VERBATIM
 )
 
+# GUI 与求解测试共用同一份标定源码列表。
+set(CALIBRATION_SOLVER_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/charuco_detector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/camera_calibration.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_utils.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/candidate_planner.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_session.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/eye_to_hand_calibration.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/semi_auto_eye_in_hand_calibration.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/solver_consensus.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/mechanical_settling_config.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/calib_transform.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/utils/robot_util.cpp
+)
+
 # ============================================================
 #  无硬件单元测试（纯 C++ 助手：选机策略/错误码/内参门禁/配置解析）
 # ============================================================
@@ -219,22 +234,9 @@ if(BUILD_TESTS)
     endif()
 
     # Synthetic pose and disk-preflight regression; no hardware connections.
-    set(EYE_TO_HAND_TEST_SOURCES
-        calibration/charuco_detector.cpp
-        calibration/camera_calibration.cpp
-        calibration/calibration_utils.cpp
-        calibration/candidate_planner.cpp
-        calibration/calibration_session.cpp
-        calibration/semi_auto_eye_in_hand_calibration.cpp
-        calibration/solver_consensus.cpp
-        calibration/mechanical_settling_config.cpp
-        utils/calib_transform.cpp
-        utils/robot_util.cpp
-    )
     add_executable(test_eye_to_hand_solver
         tests/test_eye_to_hand_solver.cpp
-        calibration/eye_to_hand_calibration.cpp
-        ${EYE_TO_HAND_TEST_SOURCES}
+        ${CALIBRATION_SOLVER_SOURCES}
     )
     target_include_directories(test_eye_to_hand_solver PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

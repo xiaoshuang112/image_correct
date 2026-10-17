@@ -33,7 +33,6 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString robotIp        READ robotIp        WRITE setRobotIp        NOTIFY robotIpChanged)
     Q_PROPERTY(int     robotPort      READ robotPort      WRITE setRobotPort      NOTIFY robotPortChanged)
     Q_PROPERTY(QString robotPasswd    READ robotPasswd    WRITE setRobotPasswd    NOTIFY robotPasswdChanged)
-    Q_PROPERTY(int     cameraToTcpEnd READ cameraToTcpEnd WRITE setCameraToTcpEnd NOTIFY cameraToTcpEndChanged)
     Q_PROPERTY(QString calibrationType READ calibrationType WRITE setCalibrationType NOTIFY calibrationTypeChanged)
     Q_PROPERTY(QString cameraIp       READ cameraIp       WRITE setCameraIp       NOTIFY cameraIpChanged)
     Q_PROPERTY(QString cameraSn       READ cameraSn       WRITE setCameraSn       NOTIFY cameraSnChanged)
@@ -125,7 +124,6 @@ public:
     QString robotIp() const         { return m_robotIp; }
     int     robotPort() const       { return m_robotPort; }
     QString robotPasswd() const     { return m_robotPasswd; }
-    int     cameraToTcpEnd() const  { return m_cameraToTcpEnd; }
     QString calibrationType() const { return m_calibrationType; }
     QString cameraIp() const        { return m_cameraIp; }
     QString cameraSn() const        { return m_cameraSn; }
@@ -183,7 +181,6 @@ public:
     void setRobotIp(const QString& v);
     void setRobotPort(int v);
     void setRobotPasswd(const QString& v);
-    void setCameraToTcpEnd(int v);
     void setCalibrationType(const QString& v);
     void setCameraIp(const QString& v);
     void setCameraSn(const QString& v);
@@ -220,7 +217,6 @@ signals:
     void robotIpChanged();
     void robotPortChanged();
     void robotPasswdChanged();
-    void cameraToTcpEndChanged();
     void calibrationTypeChanged();
     void cameraIpChanged();
     void cameraSnChanged();
@@ -264,7 +260,6 @@ private:
     void calibrationThreadFunc(QString calibrationType,
                                QString robotIp,
                                int robotPort,
-                               int cameraToTcpEnd,
                                std::shared_ptr<AICamera> camera);
     void waitForCalibrationThread();
 
@@ -299,7 +294,6 @@ private:
     QString  m_robotIp      = "192.168.66.14";
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
-    int      m_cameraToTcpEnd = 150;
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
     QString  m_cameraIp     = "192.168.66.253";
     QString  m_cameraSn;                        // 可选；配置后优先于 IP

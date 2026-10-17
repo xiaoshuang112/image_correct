@@ -790,31 +790,6 @@ ApplicationWindow {
                                 spacing: 10
                                 visible: resultCol.showDetails
 
-                                // TCP 偏移
-                                RowLayout {
-                                    visible: calibrationController.calibrationType === "eye_in_hand"
-                                    spacing: 8
-                                    Label {
-                                        text: "TCP 偏移 (mm):"
-                                        color: textDim
-                                        font.pixelSize: 18
-                                    }
-                                    TextField {
-                                        enabled: !calibrationController.running
-                                        text: calibrationController.cameraToTcpEnd
-                                        font.pixelSize: 18
-                                        color: textPrimary
-                                        Layout.preferredWidth: 60
-                                        background: Rectangle {
-                                            radius: 4; color: "#161b22"; border.color: borderColor
-                                        }
-                                        onEditingFinished: {
-                                            var v = parseInt(text)
-                                            if (!isNaN(v)) calibrationController.cameraToTcpEnd = v
-                                        }
-                                    }
-                                }
-
                                 // A. 数据质量
                                 Label { text: "数据质量"; color: textPrimary; font.pixelSize: 20; font.bold: true }
                                 Label {

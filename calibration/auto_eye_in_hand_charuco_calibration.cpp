@@ -1453,7 +1453,6 @@ bool autoFindBestPose(int robot_handle,
 
 static bool computeZValues(int robot_handle,
     std::shared_ptr<AICamera>& camera,
-    int cameraToTcpEnd,
     CharucoDetector& detector,
     double z_out_[3]) {
     double tcp_aa[ROB_AXIS_NUM] = {};
@@ -1717,7 +1716,6 @@ bool autoEyeInHandCharucoCalibration(
     const CharucoBoardConfig& board_config,
     cv::InputOutputArray camera_matrix,
     cv::InputOutputArray dist_coeffs,
-    int cameraToTcpEnd,
     CalibrationResult& result,
     const std::string& save_dir,
     const std::string& output_yaml,
@@ -1926,7 +1924,7 @@ bool autoEyeInHandCharucoCalibration(
     // ---- Phase 2: 计算动态 Z 值 ----
     double z_values[3] = {0.0, 0.0, 0.0};
     {
-        if (computeZValues(robot_handle, camera, cameraToTcpEnd, detector, z_values)) {
+        if (computeZValues(robot_handle, camera, detector, z_values)) {
             std::cout << "[autoCalib] 动态 Z 值: "
                       << z_values[0] << ", " << z_values[1] << ", " << z_values[2] << std::endl;
         } else {
@@ -2035,7 +2033,7 @@ bool autoEyeInHandCharucoCalibration(
 
     if (!calibrateHandEyeFromDisk(session->framesDirectory(), K, D, board_config,
                                   result, output_yaml, session.get(),
-                                  intrinsic_source_file, false,
+                                  intrinsic_source_file,
                                   &runtime_status, runtime_callback))
         return false;
 

@@ -283,15 +283,6 @@ void writeStringSequence(cv::FileStorage& storage,
     storage << "]";
 }
 
-void writeIntSequence(cv::FileStorage& storage,
-                      const char* key,
-                      const std::vector<int>& values) {
-    storage << key << "[";
-    for (const int value : values)
-        storage << value;
-    storage << "]";
-}
-
 bool excludedFromManifest(const fs::path& path) {
     const std::string name = path.filename().string();
     return name == "manifest.sha256" || name == ".running" ||
@@ -868,21 +859,6 @@ bool CalibrationSession::setHandEyePhase2Audit(const HandEyePhase2Audit& audit,
     return true;
 }
 
-bool CalibrationSession::setHandEyePhase3Audit(const HandEyePhase3Audit& audit,
-                                               std::string& error) {
-    hand_eye_phase3_audit_ = audit;
-    appendEvent("loo_stability", audit.status,
-                "trials=" + std::to_string(audit.trials.size()) +
-                " summaries=" + std::to_string(audit.summaries.size()));
-    cv::Mat empty;
-    if (!writeReport("running", "", "", empty, 0.0, 0, "", error)) {
-        appendEvent("loo_stability", "persist_failed", error);
-        return false;
-    }
-    maybeInjectTestCrash("phase3_audit_after_persist");
-    return true;
-}
-
 void CalibrationSession::appendEvent(const std::string& event,
                                      const std::string& result,
                                      const std::string& detail) {
@@ -1307,72 +1283,16 @@ bool CalibrationSession::writeReport(const std::string& status,
         }
         out << "]";
         out << "}";
-        out << "hand_eye_loo_diagnostics" << "{";
-        out << "enabled" << static_cast<int>(hand_eye_phase3_audit_.enabled);
-        out << "completed" << static_cast<int>(hand_eye_phase3_audit_.completed);
-        out << "status" << hand_eye_phase3_audit_.status;
-        out << "failure_reason" << hand_eye_phase3_audit_.failure_reason;
-        out << "full_selected_method"
-            << hand_eye_phase3_audit_.full_selected_method;
-        out << "worker_count" << hand_eye_phase3_audit_.worker_count;
-        out << "comparison_definition" << "inverse(X_full)*X_without_frame";
-        out << "fixed_inlier_policy"
-            << "remove_one_from_final_inliers_lock_full_solver_without_rerunning_mad";
-        out << "full_pipeline_policy"
-            << "remove_one_then_rerun_mad_consensus_medoid_refinement";
-        out << "full_transform" << hand_eye_phase3_audit_.full_transform;
-        writeIntSequence(out, "full_inlier_source_indices",
-                         hand_eye_phase3_audit_.full_inlier_source_indices);
-        out << "summaries" << "[";
-        for (const HandEyeLooSummaryAuditRecord& summary :
-             hand_eye_phase3_audit_.summaries) {
-            out << "{";
-            out << "mode" << summary.mode;
-            out << "attempted" << summary.attempted;
-            out << "successful" << summary.successful;
-            out << "failed" << summary.failed;
-            out << "translation" << "{";
-            out << "mean_mm" << summary.translation_mean_mm;
-            out << "p95_mm" << summary.translation_p95_mm;
-            out << "max_mm" << summary.translation_max_mm;
-            out << "max_frame_id" << summary.translation_max_frame_id;
-            out << "max_source_index" << summary.translation_max_source_index;
-            out << "}";
-            out << "rotation" << "{";
-            out << "mean_deg" << summary.rotation_mean_deg;
-            out << "p95_deg" << summary.rotation_p95_deg;
-            out << "max_deg" << summary.rotation_max_deg;
-            out << "max_frame_id" << summary.rotation_max_frame_id;
-            out << "max_source_index" << summary.rotation_max_source_index;
-            out << "}";
-            out << "trials_with_filter_set_changes"
-                << summary.trials_with_filter_set_changes;
-            out << "}";
-        }
-        out << "]";
-        out << "trials" << "[";
-        for (const HandEyeLooTrialAuditRecord& trial :
-             hand_eye_phase3_audit_.trials) {
-            out << "{";
-            out << "mode" << trial.mode;
-            out << "removed_frame_id" << trial.removed_frame_id;
-            out << "removed_source_index" << trial.removed_source_index;
-            out << "success" << static_cast<int>(trial.success);
-            out << "failure_reason" << trial.failure_reason;
-            out << "selected_method" << trial.selected_method;
-            out << "final_inliers" << trial.final_inliers;
-            out << "delta_translation_mm" << trial.delta_translation_mm;
-            out << "delta_rotation_deg" << trial.delta_rotation_deg;
-            out << "filter_set_evaluated"
-                << static_cast<int>(trial.filter_set_evaluated);
-            writeIntSequence(out, "filter_set_added_source_indices",
-                             trial.filter_set_added_source_indices);
-            writeIntSequence(out, "filter_set_removed_source_indices",
-                             trial.filter_set_removed_source_indices);
-            out << "}";
-        }
-        out << "]";
-        out << "}";
+        // Compatibility with existing audit readers; offline LOO is no longer exposed.
+        out << "hand_eye_loo_diagnostics" << "{"
+            << "enabled" << 0 << "completed" << 0 << "status" << "not_run"
+            << "failure_reason" << "" << "full_selected_method" << "" << "worker_count" << 0
+            << "comparison_definition" << "inverse(X_full)*X_without_frame"
+            << "fixed_inlier_policy" << "remove_one_from_final_inliers_lock_full_solver_without_rerunning_mad"
+            << "full_pipeline_policy" << "remove_one_then_rerun_mad_consensus_medoid_refinement"
+            << "full_transform" << cv::Mat()
+            << "full_inlier_source_indices" << "[" << "]"
+            << "summaries" << "[" << "]" << "trials" << "[" << "]" << "}";
         out << "frames" << "[";
         for (const CalibrationFrameAudit& frame : frames_) {
             out << "{";
@@ -1588,69 +1508,4 @@ std::string CalibrationSession::sha256File(const std::string& path) {
             hash.update(buffer.data(), static_cast<size_t>(count));
     }
     return hash.finish();
-}
-
-bool CalibrationSession::verifyManifest(const std::string& session_directory,
-                                        std::vector<std::string>& problems) {
-    problems.clear();
-    std::ifstream manifest(fs::path(session_directory) / "manifest.sha256");
-    if (!manifest) {
-        problems.push_back("manifest_missing");
-        return false;
-    }
-    std::vector<std::string> expectedFiles;
-    std::string line;
-    while (std::getline(manifest, line)) {
-        if (line.size() < 67 || line.substr(64, 2) != "  ") {
-            problems.push_back("manifest_malformed:" + line);
-            continue;
-        }
-        const std::string expected = line.substr(0, 64);
-        const std::string relative = line.substr(66);
-        if (!std::all_of(expected.begin(), expected.end(), [](unsigned char value) {
-                return std::isxdigit(value) != 0;
-            })) {
-            problems.push_back("manifest_hash_malformed:" + relative);
-            continue;
-        }
-        const fs::path relativePath(relative);
-        bool unsafePath = relative.empty() || relativePath.is_absolute();
-        for (const fs::path& component : relativePath) {
-            if (component == "..")
-                unsafePath = true;
-        }
-        if (unsafePath) {
-            problems.push_back("manifest_unsafe_path:" + relative);
-            continue;
-        }
-        if (std::find(expectedFiles.begin(), expectedFiles.end(), relative) !=
-            expectedFiles.end()) {
-            problems.push_back("manifest_duplicate:" + relative);
-            continue;
-        }
-        expectedFiles.push_back(relative);
-        const fs::path file = fs::path(session_directory) / relativePath;
-        if (!fs::exists(file)) {
-            problems.push_back("missing:" + relative);
-            continue;
-        }
-        if (fs::is_symlink(file)) {
-            problems.push_back("symlink_not_allowed:" + relative);
-            continue;
-        }
-        if (sha256File(file.string()) != expected)
-            problems.push_back("hash_mismatch:" + relative);
-    }
-    std::sort(expectedFiles.begin(), expectedFiles.end());
-    std::error_code ec;
-    for (const auto& entry : fs::recursive_directory_iterator(session_directory, ec)) {
-        if (ec || !entry.is_regular_file())
-            continue;
-        if (excludedFromManifest(entry.path()))
-            continue;
-        const std::string relative = relativeOrFilename(entry.path(), session_directory);
-        if (!std::binary_search(expectedFiles.begin(), expectedFiles.end(), relative))
-            problems.push_back("unexpected:" + relative);
-    }
-    return problems.empty();
 }

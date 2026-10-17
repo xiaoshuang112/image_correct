@@ -365,25 +365,6 @@ void CalibrationController::setRobotPasswd(const QString& v) {
         m_robotPasswd = v; emit robotPasswdChanged();
     }
 }
-void CalibrationController::setCameraToTcpEnd(int v) {
-    if (m_running || m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "camera_to_tcp_end"},
-                               {"reason", "calibration_running"}});
-        return;
-    }
-    if (m_cameraToTcpEnd != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "camera_to_tcp_end"},
-                            {"from", QString::number(m_cameraToTcpEnd)},
-                            {"to", QString::number(v)}});
-        m_cameraToTcpEnd = v; emit cameraToTcpEndChanged();
-    }
-}
 void CalibrationController::setCalibrationType(const QString& v) {
     if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
@@ -1426,8 +1407,7 @@ void CalibrationController::startCalibration()
                        {{"type", m_calibrationType},
                         {"robot", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
                         {"camera", m_cameraIp},
-                        {"resolution", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)},
-                        {"camera_to_tcp_end", QString::number(m_cameraToTcpEnd)}});
+                        {"resolution", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)}});
 
     // 标定期间暂停预览（标定线程会独占相机）
     stopPreview();
@@ -1453,7 +1433,6 @@ void CalibrationController::startCalibration()
             m_calibrationType,
             m_robotIp,
             m_robotPort,
-            m_cameraToTcpEnd,
             m_camera);
         APP_LOG_EVENT_INFO("calibration",
                            "calibration_thread",
@@ -1515,7 +1494,6 @@ void CalibrationController::calibrationThreadFunc(
     QString calibrationType,
     QString robotIp,
     int robotPort,
-    int cameraToTcpEnd,
     std::shared_ptr<AICamera> camera)
 {
     QElapsedTimer timer;
@@ -1526,7 +1504,6 @@ void CalibrationController::calibrationThreadFunc(
                        {{"type", calibrationType},
                         {"robot", QString("%1:%2").arg(robotIp).arg(robotPort)},
                         {"camera_instance", QString::number(reinterpret_cast<quintptr>(camera.get()), 16)},
-                        {"camera_to_tcp_end", QString::number(cameraToTcpEnd)},
                         {"output", QString::fromStdString(m_calibrationPath)}});
     try {
     // ================================================================
@@ -1641,7 +1618,6 @@ void CalibrationController::calibrationThreadFunc(
                 board_cfg,
                 camera_matrix,
                 dist_coeffs,
-                cameraToTcpEnd,
                 result,
                 m_calibrationPath,
                 m_paramPath + "hand_eye_result.yaml",

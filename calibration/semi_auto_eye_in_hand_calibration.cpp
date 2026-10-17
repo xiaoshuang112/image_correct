@@ -13,12 +13,9 @@
 #include <iomanip>
 #include <cmath>
 #include <filesystem>
-#include <future>
 #include <limits>
 #include <numeric>
-#include <set>
 #include <sstream>
-#include <thread>
 
 #include "utils/calib_transform.hpp"
 
@@ -67,8 +64,7 @@ namespace {
 static cv::Mat refineHandEyePoseConsistency(
     const cv::Mat& X_init,
     const std::vector<cv::Mat>& robot_poses,
-    const std::vector<cv::Mat>& camera_poses,
-    bool emit_diagnostics = true) {
+    const std::vector<cv::Mat>& camera_poses) {
 
     int n = (int)robot_poses.size();
     if (n < 3) return X_init.clone();
@@ -126,8 +122,7 @@ static cv::Mat refineHandEyePoseConsistency(
     std::vector<cv::Mat> res;
     cv::Mat mean_t;
     double prev_cost = eval(X, res, mean_t);
-    if (emit_diagnostics)
-        std::cout << "[refine] 初始方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
+    std::cout << "[refine] 初始方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
 
     for (int iter = 0; iter < max_iters; iter++) {
         cv::Mat R_full(3 * n, 1, CV_64F);
@@ -173,7 +168,7 @@ static cv::Mat refineHandEyePoseConsistency(
             res = res_new;
             mean_t = mean_new;
             lambda *= 0.3;
-            if (emit_diagnostics && iter % 10 == 0)
+            if (iter % 10 == 0)
                 std::cout << "[refine]   iter " << iter << ": "
                           << (cost * 1e6) << " mm²" << std::endl;
             if (std::abs(prev_cost - cost) < 1e-14 || prev_cost == 0.0)
@@ -184,8 +179,7 @@ static cv::Mat refineHandEyePoseConsistency(
         }
     }
 
-    if (emit_diagnostics)
-        std::cout << "[refine] 精化后方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
+    std::cout << "[refine] 精化后方差: " << (prev_cost * 1e6) << " mm²" << std::endl;
     return X;
 }
 
@@ -316,8 +310,6 @@ struct HandEyeMethodResult {
 struct HandEyeSolveAudit {
     std::vector<double> initial_consistency_errors;
     std::vector<bool> mad_inliers;
-    double mad_threshold = std::numeric_limits<double>::quiet_NaN();
-    std::string selected_method;
     bool quality_passed = false;
     HandEyePhase2Audit phase2;
 };
@@ -326,9 +318,7 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
     const std::vector<cv::Mat>& robot_poses,
     const std::vector<cv::Mat>& camera_poses,
     const char* phase,
-    HandEyePhase2Audit* audit,
-    bool emit_diagnostics = true,
-    const std::string& only_method = "") {
+    HandEyePhase2Audit* audit) {
     std::vector<cv::Mat> robot_rotations, robot_translations;
     std::vector<cv::Mat> camera_rotations, camera_translations;
     robot_rotations.reserve(robot_poses.size());
@@ -352,8 +342,6 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
 
     std::vector<HandEyeMethodResult> results;
     for (const auto& method : methods) {
-        if (!only_method.empty() && only_method != method.first)
-            continue;
         HandEyeSolverAuditRecord auditRecord;
         auditRecord.phase = phase;
         auditRecord.method = method.first;
@@ -365,16 +353,14 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
                                  translation_camera_to_gripper,
                                  method.second);
         } catch (const cv::Exception& exception) {
-            if (emit_diagnostics) {
-                APP_LOG_EVENT_WARNING("calibration.hand_eye",
-                                  "hand_eye_method",
-                                  "fail",
-                                  {{"phase", phase},
-                                   {"method", method.first},
-                                   {"frames", QString::number(robot_poses.size())},
-                                   {"reason", "opencv_exception"},
-                                   {"message", QString::fromUtf8(exception.what())}});
-            }
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                              "hand_eye_method",
+                              "fail",
+                              {{"phase", phase},
+                               {"method", method.first},
+                               {"frames", QString::number(robot_poses.size())},
+                               {"reason", "opencv_exception"},
+                               {"message", QString::fromUtf8(exception.what())}});
             auditRecord.failure_reason = "opencv_exception";
             if (audit)
                 audit->solvers.push_back(std::move(auditRecord));
@@ -383,15 +369,13 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
         if (rotation_camera_to_gripper.empty() || translation_camera_to_gripper.empty() ||
             !cv::checkRange(rotation_camera_to_gripper) ||
             !cv::checkRange(translation_camera_to_gripper)) {
-            if (emit_diagnostics) {
-                APP_LOG_EVENT_WARNING("calibration.hand_eye",
-                                  "hand_eye_method",
-                                  "fail",
-                                  {{"phase", phase},
-                                   {"method", method.first},
-                                   {"frames", QString::number(robot_poses.size())},
-                                   {"reason", "non_finite_output"}});
-            }
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                              "hand_eye_method",
+                              "fail",
+                              {{"phase", phase},
+                               {"method", method.first},
+                               {"frames", QString::number(robot_poses.size())},
+                               {"reason", "non_finite_output"}});
             auditRecord.failure_reason = "non_finite_output";
             if (audit)
                 audit->solvers.push_back(std::move(auditRecord));
@@ -405,15 +389,13 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
             evaluateHandEyeConsistency(transform, robot_poses, camera_poses);
         if (!std::isfinite(stats.translation_rms) ||
             !std::isfinite(stats.rotation_rms_degrees)) {
-            if (emit_diagnostics) {
-                APP_LOG_EVENT_WARNING("calibration.hand_eye",
-                                  "hand_eye_method",
-                                  "fail",
-                                  {{"phase", phase},
-                                   {"method", method.first},
-                                   {"frames", QString::number(robot_poses.size())},
-                                   {"reason", "invalid_quality_metrics"}});
-            }
+            APP_LOG_EVENT_WARNING("calibration.hand_eye",
+                              "hand_eye_method",
+                              "fail",
+                              {{"phase", phase},
+                               {"method", method.first},
+                               {"frames", QString::number(robot_poses.size())},
+                               {"reason", "invalid_quality_metrics"}});
             auditRecord.failure_reason = "invalid_quality_metrics";
             if (audit)
                 audit->solvers.push_back(std::move(auditRecord));
@@ -429,23 +411,21 @@ static std::vector<HandEyeMethodResult> solveHandEyeMethods(
         if (audit)
             audit->solvers.push_back(auditRecord);
 
-        if (emit_diagnostics) {
-            APP_LOG_EVENT_INFO("calibration.hand_eye",
-                           "hand_eye_method",
-                           "success",
-                           {{"phase", phase},
-                            {"method", method.first},
-                            {"result_stage", "raw_unoptimized"},
-                            {"frames", QString::number(robot_poses.size())},
-                            {"translation_rms_mm", QString::number(stats.translation_rms * 1000.0, 'f', 6)},
-                            {"translation_p95_mm", QString::number(stats.translation_p95 * 1000.0, 'f', 6)},
-                            {"rotation_rms_deg", QString::number(stats.rotation_rms_degrees, 'f', 6)},
-                            {"rotation_p95_deg", QString::number(stats.rotation_p95_degrees, 'f', 6)}});
-            std::cout << "[autoCalib] " << method.first << " [raw]"
-                      << " -> 平移一致性 RMS: " << stats.translation_rms * 1000.0
-                      << " mm, P95: " << stats.translation_p95 * 1000.0
-                      << " mm, 旋转 RMS: " << stats.rotation_rms_degrees << " deg" << std::endl;
-        }
+        APP_LOG_EVENT_INFO("calibration.hand_eye",
+                       "hand_eye_method",
+                       "success",
+                       {{"phase", phase},
+                        {"method", method.first},
+                        {"result_stage", "raw_unoptimized"},
+                        {"frames", QString::number(robot_poses.size())},
+                        {"translation_rms_mm", QString::number(stats.translation_rms * 1000.0, 'f', 6)},
+                        {"translation_p95_mm", QString::number(stats.translation_p95 * 1000.0, 'f', 6)},
+                        {"rotation_rms_deg", QString::number(stats.rotation_rms_degrees, 'f', 6)},
+                        {"rotation_p95_deg", QString::number(stats.rotation_p95_degrees, 'f', 6)}});
+        std::cout << "[autoCalib] " << method.first << " [raw]"
+                  << " -> 平移一致性 RMS: " << stats.translation_rms * 1000.0
+                  << " mm, P95: " << stats.translation_p95 * 1000.0
+                  << " mm, 旋转 RMS: " << stats.rotation_rms_degrees << " deg" << std::endl;
         results.push_back({method.first, method.second, transform, std::move(stats)});
     }
     return results;
@@ -505,8 +485,7 @@ static std::string joinMethodNames(
 static SolverConsensusResult evaluateSolverConsensus(
     const std::vector<HandEyeMethodResult>& results,
     const char* phase,
-    HandEyePhase2Audit* audit,
-    bool emit_diagnostics = true) {
+    HandEyePhase2Audit* audit) {
     SolverConsensusResult consensus;
     std::vector<std::vector<solver_consensus::PairDistance>> distances(
         results.size(),
@@ -533,17 +512,15 @@ static SolverConsensusResult evaluateSolverConsensus(
                 pair.delta_rotation_deg = measured.rotation_degrees;
                 audit->pairs.push_back(std::move(pair));
             }
-            if (emit_diagnostics) {
-                APP_LOG_EVENT_INFO(
-                    "calibration.hand_eye", "solver_consensus_pair", "measured",
-                    {{"phase", phase},
-                     {"left_method", QString::fromStdString(results[left].name)},
-                     {"right_method", QString::fromStdString(results[right].name)},
-                     {"delta_translation_mm", QString::number(
-                          measured.translation_meters * 1000.0, 'f', 6)},
-                     {"delta_rotation_deg", QString::number(
-                          measured.rotation_degrees, 'f', 6)}});
-            }
+            APP_LOG_EVENT_INFO(
+                "calibration.hand_eye", "solver_consensus_pair", "measured",
+                {{"phase", phase},
+                 {"left_method", QString::fromStdString(results[left].name)},
+                 {"right_method", QString::fromStdString(results[right].name)},
+                 {"delta_translation_mm", QString::number(
+                      measured.translation_meters * 1000.0, 'f', 6)},
+                 {"delta_rotation_deg", QString::number(
+                      measured.rotation_degrees, 'f', 6)}});
         }
     }
 
@@ -669,40 +646,38 @@ static SolverConsensusResult evaluateSolverConsensus(
         ? "none" : results[selected.medoid_index].name;
     const std::string members = joinMethodNames(results, selected.members);
     const std::string excluded = joinMethodNames(results, selected.excluded);
-    if (emit_diagnostics) {
-        APP_LOG_EVENT(
-            Info, "calibration.hand_eye", "solver_consensus_cluster",
-            selected.passed ? "success" : "fail",
-            {"phase", phase},
-            {"successful_solvers", QString::number(results.size())},
-            {"cluster_members", QString::fromStdString(members)},
-            {"excluded_solvers", QString::fromStdString(excluded)},
-            {"medoid_method", QString::fromStdString(medoid)},
-            {"cluster_max_translation_mm", QString::number(
-                 selected.cluster_max_translation * 1000.0, 'f', 6)},
-            {"cluster_p95_translation_mm", QString::number(
-                 selected.cluster_p95_translation * 1000.0, 'f', 6)},
-            {"cluster_max_rotation_deg", QString::number(
-                 selected.cluster_max_rotation, 'f', 6)},
-            {"cluster_p95_rotation_deg", QString::number(
-                 selected.cluster_p95_rotation, 'f', 6)},
-            {"raw_global_max_translation_mm", QString::number(
-                 selected.global_max_translation * 1000.0, 'f', 6)},
-            {"raw_global_max_rotation_deg", QString::number(
-                 selected.global_max_rotation, 'f', 6)},
-            {"tight_core_members", QString::fromStdString(
-                 joinMethodNames(results, tight_core.members))},
-            {"failure_reason", QString::fromStdString(selected.failure_reason)});
-        std::cout << "[autoCalib] Solver consensus [" << phase
-                  << "]: cluster=" << members << ", excluded=" << excluded
-                  << ", medoid=" << medoid << ", cluster max Δt="
-                  << selected.cluster_max_translation * 1000.0
-                  << " mm, cluster max ΔR=" << selected.cluster_max_rotation
-                  << " deg, raw global max Δt="
-                  << selected.global_max_translation * 1000.0
-                  << " mm, gate=" << (selected.passed ? "PASS" : "FAIL")
-                  << std::endl;
-    }
+    APP_LOG_EVENT(
+        Info, "calibration.hand_eye", "solver_consensus_cluster",
+        selected.passed ? "success" : "fail",
+        {"phase", phase},
+        {"successful_solvers", QString::number(results.size())},
+        {"cluster_members", QString::fromStdString(members)},
+        {"excluded_solvers", QString::fromStdString(excluded)},
+        {"medoid_method", QString::fromStdString(medoid)},
+        {"cluster_max_translation_mm", QString::number(
+             selected.cluster_max_translation * 1000.0, 'f', 6)},
+        {"cluster_p95_translation_mm", QString::number(
+             selected.cluster_p95_translation * 1000.0, 'f', 6)},
+        {"cluster_max_rotation_deg", QString::number(
+             selected.cluster_max_rotation, 'f', 6)},
+        {"cluster_p95_rotation_deg", QString::number(
+             selected.cluster_p95_rotation, 'f', 6)},
+        {"raw_global_max_translation_mm", QString::number(
+             selected.global_max_translation * 1000.0, 'f', 6)},
+        {"raw_global_max_rotation_deg", QString::number(
+             selected.global_max_rotation, 'f', 6)},
+        {"tight_core_members", QString::fromStdString(
+             joinMethodNames(results, tight_core.members))},
+        {"failure_reason", QString::fromStdString(selected.failure_reason)});
+    std::cout << "[autoCalib] Solver consensus [" << phase
+              << "]: cluster=" << members << ", excluded=" << excluded
+              << ", medoid=" << medoid << ", cluster max Δt="
+              << selected.cluster_max_translation * 1000.0
+              << " mm, cluster max ΔR=" << selected.cluster_max_rotation
+              << " deg, raw global max Δt="
+              << selected.global_max_translation * 1000.0
+              << " mm, gate=" << (selected.passed ? "PASS" : "FAIL")
+              << std::endl;
     return consensus;
 }
 
@@ -717,11 +692,10 @@ static OptimizedMedoidResult optimizeMedoidOnce(
     const std::vector<cv::Mat>& robot_poses,
     const std::vector<cv::Mat>& camera_poses,
     const char* phase,
-    HandEyePhase2Audit* audit,
-    bool emit_diagnostics = true) {
+    HandEyePhase2Audit* audit) {
     OptimizedMedoidResult optimized;
     optimized.transform = refineHandEyePoseConsistency(
-        medoid.transform, robot_poses, camera_poses, emit_diagnostics);
+        medoid.transform, robot_poses, camera_poses);
     optimized.stats = evaluateHandEyeConsistency(
         optimized.transform, robot_poses, camera_poses);
     const TransformDistance delta = measureTransformDistance(
@@ -747,513 +721,33 @@ static OptimizedMedoidResult optimizeMedoidOnce(
     if (audit)
         audit->optimizations.push_back(record);
 
-    if (emit_diagnostics) {
-        if (optimized.large_refinement_delta) {
-            APP_LOG_EVENT_WARNING(
-                "calibration.hand_eye", "medoid_refinement", "complete",
-                {"phase", phase},
-                {"method", QString::fromStdString(medoid.name)},
-                {"delta_translation_mm", QString::number(
-                     delta.translation_meters * 1000.0, 'f', 6)},
-                {"delta_rotation_deg", QString::number(
-                     delta.rotation_degrees, 'f', 6)},
-                {"large_refinement_delta", "1"},
-                {"publication_policy", "manual_confirmation_required"});
-        } else {
-            APP_LOG_EVENT_INFO(
-                "calibration.hand_eye", "medoid_refinement", "complete",
-                {"phase", phase},
-                {"method", QString::fromStdString(medoid.name)},
-                {"delta_translation_mm", QString::number(
-                     delta.translation_meters * 1000.0, 'f', 6)},
-                {"delta_rotation_deg", QString::number(
-                     delta.rotation_degrees, 'f', 6)},
-                {"large_refinement_delta", "0"},
-                {"publication_policy", "automatic_allowed"});
-        }
-        std::cout << "[autoCalib] Medoid refinement [" << phase << "] "
-                  << medoid.name << ": Δt=" << delta.translation_meters * 1000.0
-                  << " mm, ΔR=" << delta.rotation_degrees << " deg" << std::endl;
-    }
-    return optimized;
-}
-
-struct LooConsensusStageResult {
-    bool calculable = false;
-    std::string failure_reason;
-    std::string selected_method;
-    cv::Mat transform;
-    HandEyeConsistencyStats quality;
-    SolverConsensusResult consensus;
-};
-
-struct FullPipelineLooResult {
-    bool success = false;
-    bool filter_set_evaluated = false;
-    std::string failure_reason;
-    std::string selected_method;
-    cv::Mat transform;
-    std::vector<size_t> inlier_positions;
-};
-
-static LooConsensusStageResult solveLooConsensusStage(
-    const std::vector<cv::Mat>& robot_poses,
-    const std::vector<cv::Mat>& camera_poses,
-    const char* phase) {
-    LooConsensusStageResult stage;
-    if (robot_poses.size() != camera_poses.size()) {
-        stage.failure_reason = "pose_count_mismatch";
-        return stage;
-    }
-    if (robot_poses.size() < static_cast<size_t>(kMinHandEyeFrames)) {
-        stage.failure_reason = "insufficient_frames";
-        return stage;
-    }
-    std::vector<HandEyeMethodResult> methods = solveHandEyeMethods(
-        robot_poses, camera_poses, phase, nullptr, false);
-    if (methods.empty()) {
-        stage.failure_reason = "all_methods_failed";
-        return stage;
-    }
-    stage.consensus = evaluateSolverConsensus(methods, phase, nullptr, false);
-    if (!stage.consensus.passed) {
-        stage.failure_reason = stage.consensus.failure_reason;
-        return stage;
-    }
-    if (stage.consensus.medoid_index >= methods.size()) {
-        stage.failure_reason = "invalid_medoid_index";
-        return stage;
-    }
-    const HandEyeMethodResult& medoid = methods[stage.consensus.medoid_index];
-    const OptimizedMedoidResult optimized = optimizeMedoidOnce(
-        medoid, robot_poses, camera_poses, phase, nullptr, false);
-    if (optimized.transform.empty() ||
-        !cv::checkRange(optimized.transform) ||
-        !std::isfinite(optimized.stats.translation_rms) ||
-        !std::isfinite(optimized.stats.rotation_rms_degrees)) {
-        stage.failure_reason = "invalid_optimized_quality_metrics";
-        return stage;
-    }
-    stage.calculable = true;
-    stage.selected_method = medoid.name;
-    stage.transform = optimized.transform.clone();
-    stage.quality = optimized.stats;
-    return stage;
-}
-
-static LooConsensusStageResult solveFixedInlierLooStage(
-    const std::vector<cv::Mat>& robot_poses,
-    const std::vector<cv::Mat>& camera_poses,
-    const std::string& selected_method) {
-    LooConsensusStageResult stage;
-    if (robot_poses.size() != camera_poses.size()) {
-        stage.failure_reason = "pose_count_mismatch";
-        return stage;
-    }
-    if (robot_poses.size() < static_cast<size_t>(kMinHandEyeFrames)) {
-        stage.failure_reason = "insufficient_frames";
-        return stage;
-    }
-    std::vector<HandEyeMethodResult> methods = solveHandEyeMethods(
-        robot_poses, camera_poses, "loo_fixed", nullptr, false,
-        selected_method);
-    if (methods.empty()) {
-        stage.failure_reason = "selected_method_failed";
-        return stage;
-    }
-    const OptimizedMedoidResult optimized = optimizeMedoidOnce(
-        methods.front(), robot_poses, camera_poses, "loo_fixed",
-        nullptr, false);
-    if (optimized.transform.empty() || !cv::checkRange(optimized.transform) ||
-        !std::isfinite(optimized.stats.translation_rms) ||
-        !std::isfinite(optimized.stats.rotation_rms_degrees)) {
-        stage.failure_reason = "invalid_optimized_quality_metrics";
-        return stage;
-    }
-    stage.calculable = true;
-    stage.consensus.passed = true;
-    stage.selected_method = methods.front().name;
-    stage.transform = optimized.transform.clone();
-    stage.quality = optimized.stats;
-    return stage;
-}
-
-static std::string looQualityFailure(
-    const LooConsensusStageResult& stage) {
-    if (!stage.calculable)
-        return stage.failure_reason;
-    if (!stage.consensus.passed)
-        return stage.consensus.failure_reason;
-    if (stage.quality.translation_rms > kMaxTranslationRmsMeters)
-        return "translation_rms_exceeded";
-    if (stage.quality.translation_p95 > kMaxTranslationP95Meters)
-        return "translation_p95_exceeded";
-    if (stage.quality.rotation_rms_degrees > kMaxRotationRmsDegrees)
-        return "rotation_rms_exceeded";
-    if (stage.quality.rotation_p95_degrees > kMaxRotationP95Degrees)
-        return "rotation_p95_exceeded";
-    return "";
-}
-
-static FullPipelineLooResult runFullPipelineLooTrial(
-    const std::vector<cv::Mat>& robot_poses,
-    const std::vector<cv::Mat>& camera_poses) {
-    FullPipelineLooResult result;
-    LooConsensusStageResult final_stage = solveLooConsensusStage(
-        robot_poses, camera_poses, "loo_full_initial");
-    if (!final_stage.calculable) {
-        result.failure_reason = final_stage.failure_reason;
-        return result;
-    }
-    if (final_stage.quality.translation_errors.size() != robot_poses.size()) {
-        result.failure_reason = "invalid_consistency_error_count";
-        return result;
-    }
-
-    const double median_error = percentile(
-        final_stage.quality.translation_errors, 0.5);
-    std::vector<double> deviations;
-    deviations.reserve(final_stage.quality.translation_errors.size());
-    for (const double value : final_stage.quality.translation_errors)
-        deviations.push_back(std::abs(value - median_error));
-    const double mad = percentile(deviations, 0.5);
-    const double threshold = std::max(
-        kMinimumOutlierThresholdMeters,
-        median_error + kMadScale * 1.4826 * mad);
-
-    std::vector<cv::Mat> filtered_robot;
-    std::vector<cv::Mat> filtered_camera;
-    for (size_t index = 0;
-         index < final_stage.quality.translation_errors.size(); ++index) {
-        if (final_stage.quality.translation_errors[index] <= threshold) {
-            result.inlier_positions.push_back(index);
-            filtered_robot.push_back(robot_poses[index]);
-            filtered_camera.push_back(camera_poses[index]);
-        }
-    }
-    result.filter_set_evaluated = true;
-    const int minimum_inliers = std::max(
-        kMinHandEyeFrames,
-        static_cast<int>(std::ceil(
-            robot_poses.size() * kMinimumInlierRatio)));
-    if (filtered_robot.size() < static_cast<size_t>(minimum_inliers)) {
-        result.failure_reason = "insufficient_inliers";
-        return result;
-    }
-    if (filtered_robot.size() != robot_poses.size()) {
-        final_stage = solveLooConsensusStage(
-            filtered_robot, filtered_camera, "loo_full_refit");
-        if (!final_stage.calculable) {
-            result.failure_reason = final_stage.failure_reason;
-            return result;
-        }
-    }
-    result.failure_reason = looQualityFailure(final_stage);
-    if (!result.failure_reason.empty())
-        return result;
-    result.success = true;
-    result.selected_method = final_stage.selected_method;
-    result.transform = final_stage.transform.clone();
-    return result;
-}
-
-static HandEyeLooSummaryAuditRecord summarizeLooTrials(
-    const std::string& mode,
-    const std::vector<HandEyeLooTrialAuditRecord>& trials) {
-    HandEyeLooSummaryAuditRecord summary;
-    summary.mode = mode;
-    std::vector<double> translations;
-    std::vector<double> rotations;
-    for (const HandEyeLooTrialAuditRecord& trial : trials) {
-        if (trial.mode != mode)
-            continue;
-        ++summary.attempted;
-        if (trial.filter_set_evaluated &&
-            (!trial.filter_set_added_source_indices.empty() ||
-             !trial.filter_set_removed_source_indices.empty())) {
-            ++summary.trials_with_filter_set_changes;
-        }
-        if (!trial.success) {
-            ++summary.failed;
-            continue;
-        }
-        ++summary.successful;
-        translations.push_back(trial.delta_translation_mm);
-        rotations.push_back(trial.delta_rotation_deg);
-        if (summary.translation_max_source_index < 0 ||
-            trial.delta_translation_mm > summary.translation_max_mm) {
-            summary.translation_max_mm = trial.delta_translation_mm;
-            summary.translation_max_frame_id = trial.removed_frame_id;
-            summary.translation_max_source_index = trial.removed_source_index;
-        }
-        if (summary.rotation_max_source_index < 0 ||
-            trial.delta_rotation_deg > summary.rotation_max_deg) {
-            summary.rotation_max_deg = trial.delta_rotation_deg;
-            summary.rotation_max_frame_id = trial.removed_frame_id;
-            summary.rotation_max_source_index = trial.removed_source_index;
-        }
-    }
-    if (!translations.empty()) {
-        summary.translation_mean_mm = std::accumulate(
-            translations.begin(), translations.end(), 0.0) /
-            translations.size();
-        summary.translation_p95_mm = percentile(translations, 0.95);
-        summary.rotation_mean_deg = std::accumulate(
-            rotations.begin(), rotations.end(), 0.0) / rotations.size();
-        summary.rotation_p95_deg = percentile(rotations, 0.95);
-    }
-    return summary;
-}
-
-static bool persistLooProgress(CalibrationSession* session,
-                               const HandEyePhase3Audit& audit,
-                               std::string& error) {
-    return session && session->setHandEyePhase3Audit(audit, error);
-}
-
-static bool runPhase3LooDiagnostics(
-    const std::vector<cv::Mat>& all_robot_poses,
-    const std::vector<cv::Mat>& all_camera_poses,
-    const std::vector<int>& source_indices,
-    const std::vector<bool>& full_mad_inliers,
-    const cv::Mat& full_transform,
-    const std::string& full_selected_method,
-    CalibrationSession* session,
-    HandEyePhase3Audit& audit,
-    std::string& error) {
-    audit.enabled = true;
-    audit.status = "running";
-    audit.full_transform = full_transform.clone();
-    audit.full_selected_method = full_selected_method;
-    const size_t worker_count = std::max<size_t>(1, std::min<size_t>(
-        4, static_cast<size_t>(std::thread::hardware_concurrency())));
-    audit.worker_count = static_cast<int>(worker_count);
-    if (all_robot_poses.size() != all_camera_poses.size() ||
-        all_robot_poses.size() != source_indices.size() ||
-        all_robot_poses.size() != full_mad_inliers.size()) {
-        audit.status = "fail";
-        audit.failure_reason = "phase3_input_size_mismatch";
-        persistLooProgress(session, audit, error);
-        if (error.empty())
-            error = audit.failure_reason;
-        return false;
-    }
-
-    std::vector<size_t> baseline_inlier_positions;
-    std::set<int> baseline_inlier_sources;
-    for (size_t index = 0; index < full_mad_inliers.size(); ++index) {
-        if (!full_mad_inliers[index])
-            continue;
-        baseline_inlier_positions.push_back(index);
-        baseline_inlier_sources.insert(source_indices[index]);
-        audit.full_inlier_source_indices.push_back(source_indices[index]);
-    }
-    if (!persistLooProgress(session, audit, error))
-        return false;
-
-    constexpr size_t kPersistEveryTrials = 25;
-    const auto run_fixed_trial = [&](size_t removed) {
-        HandEyeLooTrialAuditRecord trial;
-        trial.mode = "fixed_final_inliers";
-        const size_t removed_position = baseline_inlier_positions[removed];
-        trial.removed_frame_id = source_indices[removed_position];
-        trial.removed_source_index = source_indices[removed_position];
-        std::vector<cv::Mat> robot_subset;
-        std::vector<cv::Mat> camera_subset;
-        for (const size_t position : baseline_inlier_positions) {
-            if (position == removed_position)
-                continue;
-            robot_subset.push_back(all_robot_poses[position]);
-            camera_subset.push_back(all_camera_poses[position]);
-        }
-        trial.final_inliers = static_cast<int>(robot_subset.size());
-        const LooConsensusStageResult stage = solveFixedInlierLooStage(
-            robot_subset, camera_subset, full_selected_method);
-        trial.failure_reason = looQualityFailure(stage);
-        if (trial.failure_reason.empty()) {
-            trial.success = true;
-            trial.selected_method = stage.selected_method;
-            const TransformDistance delta = measureTransformDistance(
-                full_transform, stage.transform);
-            if (!std::isfinite(delta.translation_meters) ||
-                !std::isfinite(delta.rotation_degrees)) {
-                trial.success = false;
-                trial.failure_reason = "invalid_transform_distance";
-            } else {
-                trial.delta_translation_mm = delta.translation_meters * 1000.0;
-                trial.delta_rotation_deg = delta.rotation_degrees;
-            }
-        }
-        return trial;
-    };
-    size_t next_fixed_persist = kPersistEveryTrials;
-    for (size_t batch = 0; batch < baseline_inlier_positions.size();
-         batch += worker_count) {
-        const size_t batch_end = std::min(
-            batch + worker_count, baseline_inlier_positions.size());
-        std::vector<std::future<HandEyeLooTrialAuditRecord>> futures;
-        for (size_t removed = batch; removed < batch_end; ++removed) {
-            futures.push_back(std::async(
-                std::launch::async, run_fixed_trial, removed));
-        }
-        for (size_t index = 0; index < futures.size(); ++index) {
-            try {
-                audit.trials.push_back(futures[index].get());
-            } catch (const std::exception& exception) {
-                const size_t removed = batch + index;
-                const size_t position = baseline_inlier_positions[removed];
-                HandEyeLooTrialAuditRecord trial;
-                trial.mode = "fixed_final_inliers";
-                trial.removed_frame_id = source_indices[position];
-                trial.removed_source_index = source_indices[position];
-                trial.failure_reason = std::string("worker_exception: ") +
-                    exception.what();
-                audit.trials.push_back(std::move(trial));
-            }
-        }
-        if (batch_end >= next_fixed_persist) {
-            APP_LOG_EVENT_INFO(
-                "calibration.hand_eye", "loo_progress", "running",
-                {{"mode", "fixed_final_inliers"},
-                 {"completed", QString::number(batch_end)},
-                 {"total", QString::number(baseline_inlier_positions.size())}});
-            if (!persistLooProgress(session, audit, error))
-                return false;
-            while (next_fixed_persist <= batch_end)
-                next_fixed_persist += kPersistEveryTrials;
-        }
-    }
-    audit.summaries.push_back(summarizeLooTrials(
-        "fixed_final_inliers", audit.trials));
-    if (!persistLooProgress(session, audit, error))
-        return false;
-
-    const auto run_full_trial = [&](size_t removed) {
-        HandEyeLooTrialAuditRecord trial;
-        trial.mode = "full_pipeline";
-        trial.removed_frame_id = source_indices[removed];
-        trial.removed_source_index = source_indices[removed];
-        std::vector<cv::Mat> robot_subset;
-        std::vector<cv::Mat> camera_subset;
-        std::vector<int> subset_sources;
-        for (size_t index = 0; index < all_robot_poses.size(); ++index) {
-            if (index == removed)
-                continue;
-            robot_subset.push_back(all_robot_poses[index]);
-            camera_subset.push_back(all_camera_poses[index]);
-            subset_sources.push_back(source_indices[index]);
-        }
-        const FullPipelineLooResult run = runFullPipelineLooTrial(
-            robot_subset, camera_subset);
-        trial.failure_reason = run.failure_reason;
-        trial.final_inliers = static_cast<int>(run.inlier_positions.size());
-        trial.filter_set_evaluated = run.filter_set_evaluated;
-        if (run.success) {
-            trial.success = true;
-            trial.selected_method = run.selected_method;
-            const TransformDistance delta = measureTransformDistance(
-                full_transform, run.transform);
-            if (!std::isfinite(delta.translation_meters) ||
-                !std::isfinite(delta.rotation_degrees)) {
-                trial.success = false;
-                trial.failure_reason = "invalid_transform_distance";
-            } else {
-                trial.delta_translation_mm = delta.translation_meters * 1000.0;
-                trial.delta_rotation_deg = delta.rotation_degrees;
-            }
-        }
-        if (run.filter_set_evaluated) {
-            std::set<int> trial_sources;
-            for (const size_t position : run.inlier_positions) {
-                if (position < subset_sources.size())
-                    trial_sources.insert(subset_sources[position]);
-            }
-            std::set<int> expected_sources = baseline_inlier_sources;
-            expected_sources.erase(source_indices[removed]);
-            std::set_difference(
-                trial_sources.begin(), trial_sources.end(),
-                expected_sources.begin(), expected_sources.end(),
-                std::back_inserter(trial.filter_set_added_source_indices));
-            std::set_difference(
-                expected_sources.begin(), expected_sources.end(),
-                trial_sources.begin(), trial_sources.end(),
-                std::back_inserter(trial.filter_set_removed_source_indices));
-        }
-        return trial;
-    };
-    size_t next_full_persist = kPersistEveryTrials;
-    for (size_t batch = 0; batch < all_robot_poses.size();
-         batch += worker_count) {
-        const size_t batch_end = std::min(
-            batch + worker_count, all_robot_poses.size());
-        std::vector<std::future<HandEyeLooTrialAuditRecord>> futures;
-        for (size_t removed = batch; removed < batch_end; ++removed) {
-            futures.push_back(std::async(
-                std::launch::async, run_full_trial, removed));
-        }
-        for (size_t index = 0; index < futures.size(); ++index) {
-            try {
-                audit.trials.push_back(futures[index].get());
-            } catch (const std::exception& exception) {
-                const size_t removed = batch + index;
-                HandEyeLooTrialAuditRecord trial;
-                trial.mode = "full_pipeline";
-                trial.removed_frame_id = source_indices[removed];
-                trial.removed_source_index = source_indices[removed];
-                trial.failure_reason = std::string("worker_exception: ") +
-                    exception.what();
-                audit.trials.push_back(std::move(trial));
-            }
-        }
-        if (batch_end >= next_full_persist) {
-            APP_LOG_EVENT_INFO(
-                "calibration.hand_eye", "loo_progress", "running",
-                {{"mode", "full_pipeline"},
-                 {"completed", QString::number(batch_end)},
-                 {"total", QString::number(all_robot_poses.size())}});
-            if (!persistLooProgress(session, audit, error))
-                return false;
-            while (next_full_persist <= batch_end)
-                next_full_persist += kPersistEveryTrials;
-        }
-    }
-    audit.summaries.push_back(summarizeLooTrials(
-        "full_pipeline", audit.trials));
-    audit.completed = true;
-    audit.status = "pass";
-    for (const HandEyeLooSummaryAuditRecord& summary : audit.summaries) {
-        if (summary.failed > 0) {
-            audit.status = "complete_with_failures";
-            audit.failure_reason = "one_or_more_loo_trials_failed";
-            break;
-        }
-    }
-    if (!persistLooProgress(session, audit, error))
-        return false;
-
-    for (const HandEyeLooSummaryAuditRecord& summary : audit.summaries) {
+    if (optimized.large_refinement_delta) {
+        APP_LOG_EVENT_WARNING(
+            "calibration.hand_eye", "medoid_refinement", "complete",
+            {"phase", phase},
+            {"method", QString::fromStdString(medoid.name)},
+            {"delta_translation_mm", QString::number(
+                 delta.translation_meters * 1000.0, 'f', 6)},
+            {"delta_rotation_deg", QString::number(
+                 delta.rotation_degrees, 'f', 6)},
+            {"large_refinement_delta", "1"},
+            {"publication_policy", "manual_confirmation_required"});
+    } else {
         APP_LOG_EVENT_INFO(
-            "calibration.hand_eye", "loo_summary", audit.status.c_str(),
-            {{"mode", QString::fromStdString(summary.mode)},
-             {"attempted", QString::number(summary.attempted)},
-             {"successful", QString::number(summary.successful)},
-             {"failed", QString::number(summary.failed)},
-             {"translation_mean_mm", QString::number(
-                  summary.translation_mean_mm, 'f', 6)},
-             {"translation_p95_mm", QString::number(
-                  summary.translation_p95_mm, 'f', 6)},
-             {"translation_max_mm", QString::number(
-                  summary.translation_max_mm, 'f', 6)},
-             {"rotation_mean_deg", QString::number(
-                  summary.rotation_mean_deg, 'f', 6)},
-             {"rotation_p95_deg", QString::number(
-                  summary.rotation_p95_deg, 'f', 6)},
-             {"rotation_max_deg", QString::number(
-                  summary.rotation_max_deg, 'f', 6)},
-             {"filter_set_change_trials", QString::number(
-                  summary.trials_with_filter_set_changes)}});
+            "calibration.hand_eye", "medoid_refinement", "complete",
+            {"phase", phase},
+            {"method", QString::fromStdString(medoid.name)},
+            {"delta_translation_mm", QString::number(
+                 delta.translation_meters * 1000.0, 'f', 6)},
+            {"delta_rotation_deg", QString::number(
+                 delta.rotation_degrees, 'f', 6)},
+            {"large_refinement_delta", "0"},
+            {"publication_policy", "automatic_allowed"});
     }
-    return true;
+    std::cout << "[autoCalib] Medoid refinement [" << phase << "] "
+              << medoid.name << ": Δt=" << delta.translation_meters * 1000.0
+              << " mm, ΔR=" << delta.rotation_degrees << " deg" << std::endl;
+    return optimized;
 }
 
 static bool estimateHandEyeTrans(
@@ -1357,7 +851,6 @@ static bool estimateHandEyeTrans(
     if (audit) {
         audit->initial_consistency_errors = initial_errors;
         audit->mad_inliers.assign(initial_errors.size(), false);
-        audit->mad_threshold = outlier_threshold;
     }
 
     publishSolve(CalibrationRuntimeStage::MadFiltering, "mad_filtering");
@@ -1471,7 +964,6 @@ static bool estimateHandEyeTrans(
 
     const bool quality_passed = failure_reason.empty();
     if (audit) {
-        audit->selected_method = medoid.name;
         audit->quality_passed = quality_passed;
     }
 
@@ -1666,7 +1158,6 @@ bool calibrateHandEyeFromDisk(
     const std::string& output_yaml,
     CalibrationSession* session,
     const std::string& intrinsic_source_file,
-    bool enable_loo_diagnostics,
     CalibrationRuntimeStatus* runtime_status,
     const CalibrationRuntimeCallback& runtime_callback) {
 
@@ -1957,13 +1448,6 @@ bool calibrateHandEyeFromDisk(
         robot_poses.push_back(frame.robot_pose);
         camera_poses.push_back(frame.camera_pose);
     }
-    const std::vector<cv::Mat> all_detected_robot_poses = robot_poses;
-    const std::vector<cv::Mat> all_detected_camera_poses = camera_poses;
-    std::vector<int> detected_source_indices;
-    detected_source_indices.reserve(frames.size());
-    for (const FrameRecord& frame : frames)
-        detected_source_indices.push_back(static_cast<int>(frame.source_index));
-
     session->setStage("solve_and_validate");
     HandEyeSolveAudit solve_audit;
     const bool solved = estimateHandEyeTrans(
@@ -2018,23 +1502,6 @@ bool calibrateHandEyeFromDisk(
         }
     }
     session->setFrames(frame_audits);
-
-    if (enable_loo_diagnostics) {
-        session->setStage("loo_stability");
-        HandEyePhase3Audit phase3_audit;
-        std::string phase3_error;
-        if (!runPhase3LooDiagnostics(
-                all_detected_robot_poses, all_detected_camera_poses,
-                detected_source_indices, solve_audit.mad_inliers,
-                result.T_flange_camera, solve_audit.selected_method,
-                session, phase3_audit,
-                phase3_error)) {
-            result.success = false;
-            result.message = "Phase 3 LOO 诊断失败: " + phase3_error;
-            return failSession("loo_stability",
-                               "phase3_loo_diagnostics_failed");
-        }
-    }
 
     std::string finalize_error;
     if (runtime_status) {
