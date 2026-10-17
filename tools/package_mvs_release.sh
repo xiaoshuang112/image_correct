@@ -11,7 +11,6 @@ set -e
 #
 #  产物布局:
 #    <output>/collect-mvs          可执行文件（RPATH 含 $ORIGIN/lib/mvs）
-#    <output>/mvs_hw_acceptance     真机验收工具（发布包必备，缺失则打包失败）
 #    <output>/check_mvs_target.sh   目标机交付校验脚本
 #    <output>/lib/mvs/              MVS 运行库（默认捆绑，可用 --no-bundle-libs 关闭）
 #    <output>/config.yaml           配置样例（若发布目录还没有）
@@ -42,13 +41,8 @@ while [ $# -gt 0 ]; do
 done
 
 BIN="$BUILD_DIR/collect-mvs"
-HW_ACCEPTANCE="$BUILD_DIR/mvs_hw_acceptance"
 if [ ! -x "$BIN" ]; then
     echo "[错误] 未找到 $BIN，请先运行 ./build_hand_eye.sh mvs"
-    exit 1
-fi
-if [ ! -x "$HW_ACCEPTANCE" ]; then
-    echo "[错误] 缺少 mvs_hw_acceptance，请重新执行 MVS Release 构建"
     exit 1
 fi
 
@@ -114,19 +108,16 @@ else
 fi
 
 # ---- 配置样例（不覆盖已有配置） ----
-if [ ! -f "$OUTPUT_DIR/config.yaml" ] && [ -f "$REPO_DIR/build/config.yaml" ]; then
-    cp "$REPO_DIR/build/config.yaml" "$OUTPUT_DIR/config.yaml"
+if [ ! -f "$OUTPUT_DIR/config.yaml" ]; then
+    cp "$REPO_DIR/config/collect.example.yaml" "$OUTPUT_DIR/config.yaml"
     echo "  已复制配置样例 config.yaml"
 fi
 
-# ---- 目标机校验脚本与真机验收工具随包分发 ----
+# ---- 目标机校验脚本随包分发 ----
 cp "$REPO_DIR/tools/check_mvs_target.sh" "$OUTPUT_DIR/check_mvs_target.sh"
 chmod +x "$OUTPUT_DIR/check_mvs_target.sh"
-cp -d "$HW_ACCEPTANCE" "$OUTPUT_DIR/mvs_hw_acceptance"
-chmod +x "$OUTPUT_DIR/mvs_hw_acceptance"
-echo "  已打包真机验收工具 mvs_hw_acceptance"
 
-# ---- RPATH / ldd 校验（主程序 + 验收工具） ----
+# ---- RPATH / ldd 校验 ----
 if [ "$BUNDLE_LIBS" -eq 1 ]; then
     LDD_ENV="LD_LIBRARY_PATH=$OUTPUT_DIR/lib/mvs"
 else
@@ -154,7 +145,6 @@ verify_packed_binary() {
 }
 
 verify_packed_binary "$OUTPUT_DIR/collect-mvs" "collect-mvs"
-verify_packed_binary "$OUTPUT_DIR/mvs_hw_acceptance" "mvs_hw_acceptance"
 
 # ---- 构建身份与校验清单 ----
 GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
@@ -169,11 +159,11 @@ GIT_STATE="$(if [ -z "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; t
     echo "binary_sha256: $(sha256sum "$BIN" | awk '{print $1}')"
 } > "$OUTPUT_DIR/BUILD_INFO.txt"
 
-( cd "$OUTPUT_DIR" && sha256sum \
-    collect-mvs \
-    mvs_hw_acceptance \
-    check_mvs_target.sh \
-    lib/mvs/* 2>/dev/null > SHA256SUMS )
+(
+    cd "$OUTPUT_DIR"
+    shopt -s nullglob
+    sha256sum collect-mvs check_mvs_target.sh lib/mvs/* > SHA256SUMS
+)
 
 echo ""
 echo "  打包完成: $OUTPUT_DIR"

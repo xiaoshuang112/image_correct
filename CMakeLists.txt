@@ -9,7 +9,6 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-
 # MVS is the only supported camera backend. Reject stale backend selections.
 set(CAMERA_BACKEND "MVS" CACHE STRING "Camera backend (MVS only)")
 string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
@@ -19,8 +18,6 @@ endif()
 if(USE_ORB)
     message(FATAL_ERROR "USE_ORB is no longer supported; remove it and use MVS")
 endif()
-set(useMVS TRUE)
-set(useOAK FALSE)
 set(CAITU_GUI_DEFAULT_CAM_WIDTH 4024)
 set(CAITU_GUI_DEFAULT_CAM_HEIGHT 3036)
 set(CAM_SUFFIX "mvs")
@@ -41,16 +38,12 @@ find_package(OpenCV REQUIRED)
 message("System Processor: ${CMAKE_SYSTEM_PROCESSOR}")
 
 # 判断架构
-set(ARCH_DEFINITION "")
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64")
     set(ARCH_TYPE "x86_64")
-    set(ARCH_DEFINITION X86_64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64")
     set(ARCH_TYPE "ARM64")
-    set(ARCH_DEFINITION ARM64)
 elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "armv7|armv7l")
     set(ARCH_TYPE "ARMv7")
-    set(ARCH_DEFINITION ARM)
 else()
     set(ARCH_TYPE "Unknown")
 endif()
@@ -59,21 +52,9 @@ message("Architecture Type: ${ARCH_TYPE}")
 
  
 # 公共源码路径
-if(WIN32)
-    set(CGX_SDK_LIBS )      
-else()
-    # # public
-    set(SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR})
-    include_directories(${SRC_DIR})
-    include_directories(${SRC_DIR}/calibration)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/calibration)
 
-    set(depthai_DIR "/usr/local")
-
-
-endif()
-
-
-# Both the CLI and GUI use the same SDK selection on Linux x86_64/ARM64.
+# Resolve the robot SDK for the GUI and solver tests on Linux x86_64/ARM64.
 set(CGX_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/cr_sdk" CACHE PATH "CGXi robot SDK root")
 if(ARCH_TYPE STREQUAL "x86_64")
     if(EXISTS "${CGX_SDK_DIR}/libs/linux/x64/libcr_sdk.so")
@@ -105,39 +86,33 @@ if(UNIX)
     message(STATUS "Robot SDK: ${CGX_SDK_DIR} (lib: ${CGX_SDK_LIB_DIR})")
 endif()
 
-
-include_directories(${depthai_DIR}/include)
-link_directories(${depthai_DIR}/lib)
-
 # MVS SDK：头文件和当前架构的运行库都必须存在，否则配置直接失败，
 # 不允许生成名为 MVS、实际无相机支持的二进制。
-if(useMVS)
-    set(MVS_SDK_DIR "/opt/MVS" CACHE PATH "MVS SDK install prefix")
-    if(NOT EXISTS "${MVS_SDK_DIR}/include/MvCameraControl.h")
-        message(FATAL_ERROR
-            "CAMERA_BACKEND=MVS 但未找到 MVS SDK 头文件: "
-            "${MVS_SDK_DIR}/include/MvCameraControl.h")
-    endif()
-
-    if(ARCH_TYPE STREQUAL "x86_64")
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/64")
-    elseif(ARCH_TYPE STREQUAL "ARM64")
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/aarch64")
-    else()
-        set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/32")
-    endif()
-    if(NOT EXISTS "${MVS_LIB_DIR}/libMvCameraControl.so")
-        message(FATAL_ERROR
-            "CAMERA_BACKEND=MVS 但未找到 ${ARCH_TYPE} 架构的 MVS 运行库: "
-            "${MVS_LIB_DIR}/libMvCameraControl.so")
-    endif()
-
-    include_directories(${MVS_SDK_DIR}/include)
-    link_directories(${MVS_LIB_DIR})
-    set(CAITU_CAMERA_INCLUDE_DIR "${MVS_SDK_DIR}/include")
-    set(CAITU_CAMERA_LIB_DIR "${MVS_LIB_DIR}")
-    message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
+set(MVS_SDK_DIR "/opt/MVS" CACHE PATH "MVS SDK install prefix")
+if(NOT EXISTS "${MVS_SDK_DIR}/include/MvCameraControl.h")
+    message(FATAL_ERROR
+        "CAMERA_BACKEND=MVS 但未找到 MVS SDK 头文件: "
+        "${MVS_SDK_DIR}/include/MvCameraControl.h")
 endif()
+
+if(ARCH_TYPE STREQUAL "x86_64")
+    set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/64")
+elseif(ARCH_TYPE STREQUAL "ARM64")
+    set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/aarch64")
+else()
+    set(MVS_LIB_DIR "${MVS_SDK_DIR}/lib/32")
+endif()
+if(NOT EXISTS "${MVS_LIB_DIR}/libMvCameraControl.so")
+    message(FATAL_ERROR
+        "CAMERA_BACKEND=MVS 但未找到 ${ARCH_TYPE} 架构的 MVS 运行库: "
+        "${MVS_LIB_DIR}/libMvCameraControl.so")
+endif()
+
+include_directories(${MVS_SDK_DIR}/include)
+link_directories(${MVS_LIB_DIR})
+set(CAITU_CAMERA_INCLUDE_DIR "${MVS_SDK_DIR}/include")
+set(CAITU_CAMERA_LIB_DIR "${MVS_LIB_DIR}")
+message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
 
 # 将安全关键的半自动位姿配置放到每个构建目录，避免发布产物缺失后静默回退。
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/param")
@@ -157,59 +132,14 @@ configure_file(
     "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_reference.yaml"
     COPYONLY)
 
-SET(SRC_LISTS
-calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibration.cpp calibration/eye_to_hand_calibration.cpp calibration/camera_calibration.cpp calibration/calibration_utils.cpp calibration/candidate_planner.cpp calibration/calibration_session.cpp calibration/intrinsic_identity.cpp calibration/semi_auto_eye_in_hand_calibration.cpp
-    calibration/solver_consensus.cpp
-    calibration/mechanical_settling_config.cpp
-    calibration.cpp
-    circlesampler/CircleSampler.cpp circlesampler/Config.cpp
-    piecesampler/PieceSampler.cpp piecesampler/Config.cpp
-    testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
-    utils/robot_util.cpp utils/calib_transform.cpp utils/sampling_utils.cpp
+set(CAITU_CAMERA_SOURCES
+    ${CMAKE_CURRENT_SOURCE_DIR}/cameras/MVSCamera.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_device_selector.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_error.cpp
 )
+set(CAITU_CAMERA_LIBRARIES MvCameraControl)
 
-set(CAITU_CAMERA_SOURCES)
-set(CAITU_CAMERA_LIBRARIES)
-set(CAITU_COMPILE_DEFINITIONS)
-
-if(useOAK)
-    list(APPEND CAITU_COMPILE_DEFINITIONS useOAK)
-    list(APPEND CAITU_CAMERA_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/OAKCamera.cpp
-    )
-    list(APPEND CAITU_CAMERA_LIBRARIES
-        depthai-core
-    )
-endif()
-
-if(useMVS)
-    list(APPEND CAITU_COMPILE_DEFINITIONS useMVS)
-    list(APPEND CAITU_CAMERA_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/MVSCamera.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_device_selector.cpp
-        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_error.cpp
-    )
-    list(APPEND CAITU_CAMERA_LIBRARIES
-        MvCameraControl
-    )
-endif()
-
-
-add_executable(${PROJECT_NAME} ${SRC_LISTS} ${CAITU_CAMERA_SOURCES})
-target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
-target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${CAITU_CAMERA_LIBRARIES})
-
-# MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
-# 开发机上回退到 SDK 安装目录。
-if(useMVS)
-    set_target_properties(${PROJECT_NAME} PROPERTIES
-        BUILD_WITH_INSTALL_RPATH OFF
-        INSTALL_RPATH "$ORIGIN/lib/mvs"
-        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
-endif()
-
-# CLI、GUI 和离线工具共用构建身份，每次 build 刷新，
-# 避免复用 configure 阶段的旧 commit/dirty 状态。
+# GUI 和求解测试共用构建身份，每次 build 刷新。
 set(CALIBRATION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(CALIBRATION_BUILD_INFO_HEADER "${CALIBRATION_BUILD_INFO_DIR}/AppBuildInfo.hpp")
 add_custom_target(calibration_build_info ALL
@@ -224,70 +154,6 @@ add_custom_target(calibration_build_info ALL
     COMMENT "Refreshing calibration audit build metadata"
     VERBATIM
 )
-add_dependencies(${PROJECT_NAME} calibration_build_info)
-target_include_directories(${PROJECT_NAME} PRIVATE ${CALIBRATION_BUILD_INFO_DIR})
-
-# ============================================================
-#  反畸变工具
-# ============================================================
-add_executable(anti_distortion tools/anti_distortion.cpp)
-target_link_libraries(anti_distortion ${OpenCV_LIBS})
-
-# ============================================================
-#  FK 验证工具
-# ============================================================
-add_executable(verify_fk tools/verify_fk.cpp)
-target_link_libraries(verify_fk ${CGX_SDK_LIBS})
-
-# ============================================================
-# 眼在手内离线复算工具（不连接机器人/相机）
-# ============================================================
-set(OFFLINE_HAND_EYE_SOURCES
-    calibration/charuco_detector.cpp
-    calibration/camera_calibration.cpp
-    calibration/calibration_utils.cpp
-    calibration/candidate_planner.cpp
-    calibration/calibration_session.cpp
-    calibration/semi_auto_eye_in_hand_calibration.cpp
-    calibration/solver_consensus.cpp
-    calibration/mechanical_settling_config.cpp
-    utils/calib_transform.cpp
-    utils/robot_util.cpp
-)
-add_executable(offline_eye_in_hand
-    tools/offline_eye_in_hand.cpp
-    ${OFFLINE_HAND_EYE_SOURCES}
-)
-target_include_directories(offline_eye_in_hand PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration
-    ${CGX_SDK_DIR}/include
-    ${CALIBRATION_BUILD_INFO_DIR}
-)
-target_link_libraries(offline_eye_in_hand ${OpenCV_LIBS} ${CGX_SDK_LIBS})
-add_dependencies(offline_eye_in_hand calibration_build_info)
-
-# ============================================================
-#  MVS 真机验收工具（仅 MVS 后端构建；连接真实相机执行冒烟项）
-# ============================================================
-if(useMVS)
-    add_executable(mvs_hw_acceptance
-        tools/mvs_hw_acceptance.cpp
-        cameras/MVSCamera.cpp
-        cameras/mvs_device_selector.cpp
-        cameras/mvs_error.cpp
-    )
-    target_compile_definitions(mvs_hw_acceptance PRIVATE useMVS)
-    target_include_directories(mvs_hw_acceptance PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/calibration
-        ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui
-    )
-    target_link_libraries(mvs_hw_acceptance ${OpenCV_LIBS} MvCameraControl)
-    set_target_properties(mvs_hw_acceptance PROPERTIES
-        INSTALL_RPATH "$ORIGIN/lib/mvs"
-        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
-endif()
 
 # ============================================================
 #  无硬件单元测试（纯 C++ 助手：选机策略/错误码/内参门禁/配置解析）
@@ -353,10 +219,22 @@ if(BUILD_TESTS)
     endif()
 
     # Synthetic pose and disk-preflight regression; no hardware connections.
+    set(EYE_TO_HAND_TEST_SOURCES
+        calibration/charuco_detector.cpp
+        calibration/camera_calibration.cpp
+        calibration/calibration_utils.cpp
+        calibration/candidate_planner.cpp
+        calibration/calibration_session.cpp
+        calibration/semi_auto_eye_in_hand_calibration.cpp
+        calibration/solver_consensus.cpp
+        calibration/mechanical_settling_config.cpp
+        utils/calib_transform.cpp
+        utils/robot_util.cpp
+    )
     add_executable(test_eye_to_hand_solver
         tests/test_eye_to_hand_solver.cpp
         calibration/eye_to_hand_calibration.cpp
-        ${OFFLINE_HAND_EYE_SOURCES}
+        ${EYE_TO_HAND_TEST_SOURCES}
     )
     target_include_directories(test_eye_to_hand_solver PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}

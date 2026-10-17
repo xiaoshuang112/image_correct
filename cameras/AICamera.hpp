@@ -87,7 +87,7 @@ public:
         return {m_config.cam_sn, "", ""};
     }
 
-    // 相机后端名（mvs / oak ...），用于内参安全门禁与审计。
+    // 相机后端名，用于内参安全门禁与审计。
     virtual std::string backendName() const { return "unknown"; }
 
     // 最近一次失败的阶段与 SDK 错误码；无错误时返回默认空值。
@@ -129,29 +129,6 @@ public:
      */
     virtual bool getExposureRange(int& minUs, int& maxUs) = 0;
 
-    // ========== 增益（曝光度）控制接口 ==========
-
-    /**
-     * @brief 设置彩色相机增益
-     * @param gain 增益值（单位由设备定义）
-     * @return true 设置成功
-     */
-    virtual bool setColorGain(int gain) = 0;
-
-    /**
-     * @brief 获取当前彩色相机增益
-     * @return 增益值，失败返回 -1
-     */
-    virtual int getColorGain() = 0;
-
-    /**
-     * @brief 获取增益范围
-     * @param min 输出最小增益
-     * @param max 输出最大增益
-     * @return true 获取成功
-     */
-    virtual bool getGainRange(int& min, int& max) = 0;
-
     // ========== 多曝光采集接口 ==========
     
     /**
@@ -161,16 +138,8 @@ public:
      */
     virtual std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) = 0;
 
-    // 获取内参矩阵 (3x3矩阵)
-    // 如果想得到特定分辨率下的内参，可以传入宽和高，例如 (1280, 720)
-    virtual std::vector<std::vector<float>> getCameraIntrinsics(const int imgWidth, const int imgHight)=0;
-
 protected:
     CONFIG m_config;
-    
-    // 缓存值（供子类使用）
-    bool m_autoExposureCached = true;
-    int m_exposureCached = -1;
 };
 
 #endif // AI_CAMERA_HPP

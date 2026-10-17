@@ -41,8 +41,6 @@ struct RobotMotionDiagnostics {
 CRresult moveToJointPos(int robot_handle, const double joint[6],
                         RobotMotionDiagnostics* diagnostics = nullptr);
 
-CRresult moveToJointPosByLine(int robot_handle, const double flangAxisPos[ROB_AXIS_NUM]);
-
 // 法兰轴角 → 关节角
 bool convertFlangeAxisPos2Joint(int robot_handle, double* flangeAnglePos, double *joint);
 

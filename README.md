@@ -5,7 +5,7 @@
 两端使用同一仓库和启动命令，分别在各自机器编译；不要复制或共享 `build_mvs` 构建目录。
 需要 C++17、CMake、OpenCV（含 contrib）、Qt5 Quick / QuickControls2 及对应 QML 模块、
 海康 MVS 和 CGXi 机器人 SDK。SDK 的动态库必须与目标 CPU 架构一致。
-相机后端仅支持 MVS；无需再选择后端。旧配置中的 `cam_port` 会被忽略。
+工程仅提供 GUI，已移除命令行采样、离线工具和 OAK 后端。相机后端仅支持 MVS；无需再选择后端。旧配置中的 `cam_port` 会被忽略。
 
 ```bash
 ./build_collect.sh -DCGX_SDK_DIR="/path/to/robot-sdk" -DMVS_SDK_DIR=/opt/MVS
@@ -16,7 +16,7 @@
 `libs/linux/x64`、`libs/arm/aarch64` 和旧版的 `libs/x64`、`libs` 布局。
 特殊布局可额外传入 `-DCGX_SDK_LIB_DIR="/path/to/libraries"`。
 路径保存在本机 CMake 缓存，后续直接运行 `./build_collect.sh`。
-GUI 与 CLI 共用父项目解析的 SDK 路径，SDK 文件无需提交到 Git。
+GUI 与测试使用父项目解析的 SDK 路径，SDK 文件无需提交到 Git。
 
 `run_collect.sh` 在 WSLg 下自动补充缺失的 `DISPLAY` 并默认使用 Qt 软件渲染；
 ARM64 沿用本机图形环境。采集配置位于 `build_mvs/config.yaml`。
@@ -170,34 +170,5 @@ fusion_exposures_us: [5000, 8500, 14500, 25000]
 - 掉电持久性保证当前仅适用于 Linux/Jetson。Windows 构建尚未实现等价的
   `FlushFileBuffers`、目录项持久化和覆盖已有目标文件的原子发布语义，不能按
   Phase 1.1 的掉电安全标准验收。
-- 标定结果发布采用单写者模型。同一生产 YAML 路径同一时间只允许一个 GUI、
-  CLI 或离线 Replay 进程写入；当前版本不提供跨进程文件锁。
-- 已封存 Session 是不可变审计数据。Replay 输出必须位于源 Session 目录之外，
-  工具会在复算前解析相对路径、`..` 和符号链接并拒绝越界输出。
-
-## Phase 3 LOO 稳定性诊断
-
-LOO 是显式离线深诊断，不在在线标定或普通 Replay 中默认执行，避免重复求解
-影响产线节拍。对封存 Session 执行：
-
-```text
-offline_eye_in_hand --replay-session <session_dir> <output.yaml> --loo
-```
-
-也可对普通离线数据集执行：
-
-```text
-offline_eye_in_hand <calibration_dir> <camera_params.yaml> <output.yaml> --loo
-```
-
-报告中的 `hand_eye_loo_diagnostics` 同时包含：
-
-- `fixed_final_inliers`：只从最终内点集删除一帧，锁定完整结果选中的 solver，
-  不重新运行 MAD，用于隔离单帧影响；
-- `full_pipeline`：删除一帧后重新运行 MAD、五算法共识、SE(3) medoid 和精化，
-  同时记录最终内点集合相对完整结果的新增和移除项。
-
-两种模式均输出平移和旋转影响的 mean、P95、max、最高影响帧及失败次数。
-深诊断最多使用 4 个并行 worker，结果按原始帧顺序持久化；每 25 次试验保存一次
-进度。计算量随帧数明显增长，建议使用产线标准的约 90 帧数据集执行，超大历史
-数据集应预留更长的离线分析时间。
+- 标定结果发布采用单写者模型。同一生产 YAML 路径同一时间只允许一个 GUI 进程写入；当前版本不提供跨进程文件锁。
+- 已封存 Session 是不可变审计数据。

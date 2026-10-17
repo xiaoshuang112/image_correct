@@ -8,7 +8,7 @@ set -e
 #    ./check_mvs_target.sh [发布包目录]
 #
 #  校验内容:
-#    1. 主程序与真机验收工具均存在、可执行，架构与当前机器一致；
+#    1. 主程序存在、可执行，架构与当前机器一致；
 #    2. ldd 无 not found（优先使用包内 lib/mvs，其次 /opt/MVS）；
 #    3. 未捆绑运行库时，目标机必须已安装 /opt/MVS，否则明确失败；
 #    4. 打印 MVS 运行库版本、相机默认配置是否就位。
@@ -16,7 +16,6 @@ set -e
 
 PKG_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
 BIN="$PKG_DIR/collect-mvs"
-HW_ACCEPTANCE="$PKG_DIR/mvs_hw_acceptance"
 MVS_SDK_DIR="/opt/MVS"
 
 echo "========================================"
@@ -27,19 +26,22 @@ echo "========================================"
 fail() { echo "[失败] $1"; exit 1; }
 
 [ -x "$BIN" ] || fail "未找到可执行文件 $BIN"
-[ -x "$HW_ACCEPTANCE" ] || fail "未找到真机验收工具 $HW_ACCEPTANCE"
 
 # ---- 1. 架构 ----
 HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    x86_64) ELF_ARCH="x86-64" ;;
+    arm64) ELF_ARCH="aarch64" ;;
+    *) ELF_ARCH="$HOST_ARCH" ;;
+esac
 check_arch() {
     local path="$1"
     local name="$2"
-    file "$path" | grep -q "$HOST_ARCH" \
+    file "$path" | grep -Fq "$ELF_ARCH" \
         || fail "$name 架构与目标机($HOST_ARCH)不符: $(file -b "$path")"
 }
 check_arch "$BIN" "collect-mvs"
-check_arch "$HW_ACCEPTANCE" "mvs_hw_acceptance"
-echo "1. 架构: $HOST_ARCH OK（collect-mvs / mvs_hw_acceptance）"
+echo "1. 架构: $HOST_ARCH OK（collect-mvs）"
 
 # ---- 2. 运行库解析 ----
 if [ -d "$PKG_DIR/lib/mvs" ] && compgen -G "$PKG_DIR/lib/mvs/libMvCameraControl.so*" > /dev/null; then
@@ -66,7 +68,6 @@ check_ldd() {
     echo "   $name ldd: 无缺失库"
 }
 check_ldd "$BIN" "collect-mvs"
-check_ldd "$HW_ACCEPTANCE" "mvs_hw_acceptance"
 
 # ---- 3. MVS 运行库版本 ----
 MVS_CORE="$(ls "$LDD_LIBS"/libMvCameraControl.so.* 2>/dev/null | head -1 || true)"

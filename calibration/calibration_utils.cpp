@@ -1072,49 +1072,6 @@ bool loadRobotPosesFromCSV(const std::string& csv_file,
 }
 
 // ============================================================
-// 将 rob_eule.csv（欧拉角）转换为 rob_pos.csv（轴角）
-// ============================================================
-bool convertEulerCsvToAxisCsv(const std::string& save_dir) {
-    std::string euler_file = save_dir + "/rob_eule.csv";
-    std::string axis_file = save_dir + "/rob_pos.csv";
-
-    std::ifstream fin(euler_file);
-    if (!fin.is_open()) {
-        std::cerr << "[calibUtil] 无法打开 " << euler_file << std::endl;
-        return false;
-    }
-
-    std::ofstream fout(axis_file);
-    if (!fout.is_open()) {
-        std::cerr << "[calibUtil] 无法创建 " << axis_file << std::endl;
-        return false;
-    }
-
-    std::string line;
-    int count = 0;
-    while (std::getline(fin, line)) {
-        if (line.empty()) continue;
-        double euler[ROB_AXIS_NUM], axis[ROB_AXIS_NUM];
-        if (!parseDoubles(line, euler, ROB_AXIS_NUM)) {
-            std::cerr << "[calibUtil] rob_eule.csv 行格式错误: " << line << std::endl;
-            continue;
-        }
-        if (cr_Eule2AxisAngle(euler, axis) != sucess) {
-            std::cerr << "[calibUtil] 欧拉→轴角转换失败，第 " << (count + 1) << " 行" << std::endl;
-            return false;
-        }
-        fout << std::fixed << std::setprecision(3);
-        for (int j = 0; j < ROB_AXIS_NUM; j++)
-            fout << axis[j] << (j < ROB_AXIS_NUM - 1 ? "," : "\n");
-        count++;
-    }
-
-    std::cout << "[calibUtil] 转换完成: " << euler_file << " → " << axis_file
-              << " (" << count << " 帧)" << std::endl;
-    return count > 0;
-}
-
-// ============================================================
 // 保存标定结果到 YAML
 // ============================================================
 bool saveCalibrationResult(const std::string& yaml_path,

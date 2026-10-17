@@ -2,9 +2,6 @@
 
 #include "cameras/AICamera.hpp"
 
-#ifdef useOAK
-#include "cameras/OAKCamera.hpp"
-#endif // useOAK
 
 #include "robotapi.h"
 #include "basestruct.h"

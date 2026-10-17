@@ -84,11 +84,6 @@ bool loadRobotPosesFromCSV(const std::string& csv_file,
                             std::vector<cv::Mat>& robot_poses);
 
 /**
- * @brief 将 rob_pos.csv（欧拉角）转换为 rob_axis.csv（轴角）
- */
-bool convertEulerCsvToAxisCsv(const std::string& save_dir);
-
-/**
  * @brief 将标定结果保存到 YAML 文件
  * @param yaml_path      输出路径
  * @param transform_key  "T_flange_camera" 或 "T_base_camera"

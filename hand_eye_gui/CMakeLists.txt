@@ -36,7 +36,7 @@ set(QRC_FILE
     ${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc
 )
 
-# 显式列出采集与标定界面使用的公共源码；采样器和深度测试仅由 CLI 构建。
+# 显式列出采集与标定界面使用的公共源码。
 set(GUI_CORE_SRCS
     ${CMAKE_SOURCE_DIR}/calibration/auto_eye_in_hand_charuco_calibration.cpp
     ${CMAKE_SOURCE_DIR}/calibration/calibration_session.cpp
@@ -109,18 +109,14 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
 # 开发机上回退到 SDK 安装目录。
-if(useMVS)
-    set_target_properties(${PROJECT_NAME} PROPERTIES
-        INSTALL_RPATH "$ORIGIN/lib/mvs"
-        BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
-endif()
+set_target_properties(${PROJECT_NAME} PROPERTIES
+    INSTALL_RPATH "$ORIGIN/lib/mvs"
+    BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
 
-# 与 CLI 共用每次构建刷新的身份信息，避免分别生成不同的时间戳。
+# 使用父项目生成的构建身份信息，与求解测试保持一致。
 add_dependencies(${PROJECT_NAME} calibration_build_info)
 target_include_directories(${PROJECT_NAME} PRIVATE ${CALIBRATION_BUILD_INFO_DIR})
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-    ${CAITU_COMPILE_DEFINITIONS}
-    ${ARCH_DEFINITION}
     DEFAULT_CAM_WIDTH=${CAITU_GUI_DEFAULT_CAM_WIDTH}
     DEFAULT_CAM_HEIGHT=${CAITU_GUI_DEFAULT_CAM_HEIGHT}
     QT_MESSAGELOGCONTEXT

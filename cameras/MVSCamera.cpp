@@ -650,7 +650,6 @@ bool MVSCamera::setExposureLocked(int exposureUs) {
                                    {"actual_us", QString::number(m_exposureUs)}});
         }
     }
-    m_exposureCached = m_exposureUs;
     APP_LOG_EVENT_INFO("camera.mvs",
                        "set_exposure",
                        "success",
@@ -699,7 +698,6 @@ bool MVSCamera::setAutoExposureLocked(bool enable) {
     }
 
     discardFramesLocked(kDiscardFramesAfterParamChange, 200);
-    m_autoExposureCached = enable;
     APP_LOG_EVENT_INFO("camera.mvs",
                        "set_auto_exposure",
                        "success",
@@ -730,49 +728,6 @@ bool MVSCamera::getExposureRange(int& minUs, int& maxUs) {
     if (MV_OK == nRet) {
         minUs = static_cast<int>(stValue.fMin);
         maxUs = static_cast<int>(stValue.fMax);
-        return true;
-    }
-    return false;
-}
-
-bool MVSCamera::setColorGain(int gain) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_isOpened || !m_handle) return false;
-    int nRet = MV_CC_SetFloatValue(m_handle, "Gain", (float)gain);
-    if (MV_OK != nRet) {
-        setError("set_gain", nRet, "value=" + std::to_string(gain));
-        return false;
-    }
-    discardFramesLocked(kDiscardFramesAfterParamChange, 200);
-    MVCC_FLOATVALUE stValue{};
-    if (MV_OK == MV_CC_GetFloatValue(m_handle, "Gain", &stValue))
-        m_gain = stValue.fCurValue;
-    APP_LOG_EVENT_INFO("camera.mvs",
-                       "set_gain",
-                       "success",
-                       {{"requested", QString::number(gain)},
-                        {"actual", QString::number(m_gain, 'f', 2)}});
-    return true;
-}
-
-int MVSCamera::getColorGain() {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_isOpened || !m_handle) return -1;
-    MVCC_FLOATVALUE stValue{};
-    int nRet = MV_CC_GetFloatValue(m_handle, "Gain", &stValue);
-    // 设备浮点增益可能量化（如设 5.0 应用为 4.999），四舍五入避免界面显示掉档
-    if (MV_OK == nRet) return (int)(stValue.fCurValue + 0.5f);
-    return -1;
-}
-
-bool MVSCamera::getGainRange(int& min, int& max) {
-    std::lock_guard<std::recursive_mutex> lock(m_mutex);
-    if (!m_isOpened || !m_handle) return false;
-    MVCC_FLOATVALUE stValue{};
-    int nRet = MV_CC_GetFloatValue(m_handle, "Gain", &stValue);
-    if (MV_OK == nRet) {
-        min = (int)stValue.fMin;
-        max = (int)stValue.fMax;
         return true;
     }
     return false;
@@ -811,8 +766,6 @@ std::vector<cv::Mat> MVSCamera::captureMultiExposureImages(const std::vector<int
         ret = MV_CC_SetEnumValue(m_handle, "ExposureAuto", automatic.nCurValue);
         if (ret != MV_OK) { setError("multi_exposure_restore", ret, "restore automatic mode failed"); ok = false; }
         m_exposureUs = static_cast<int>(previousExposure);
-        m_exposureCached = m_exposureUs;
-        m_autoExposureCached = automatic.nCurValue != 0;
         if (wasGrabbing && !m_isGrabbing) {
             ret = MV_CC_StartGrabbing(m_handle);
             if (ret != MV_OK) { setError("multi_exposure_restore", ret, "restart grabbing failed"); ok = false; }
@@ -848,8 +801,4 @@ std::vector<cv::Mat> MVSCamera::captureMultiExposureImages(const std::vector<int
         throw;
     }
     return images;
-}
-
-std::vector<std::vector<float>> MVSCamera::getCameraIntrinsics(const int imgWidth, const int imgHight) {
-    return std::vector<std::vector<float>>();
 }

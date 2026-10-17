@@ -28,15 +28,7 @@ public:
     bool getAutoExposure() override;
     bool getExposureRange(int& minUs, int& maxUs) override;
 
-    bool setColorGain(int gain) override;
-    int getColorGain() override;
-    bool getGainRange(int& min, int& max) override;
-
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) override;
-
-    // MVS SDK 不提供镜头内参，返回空是正确行为；
-    // 内参安全门禁要求从外部 camera_params.yaml 加载并校验身份。
-    std::vector<std::vector<float>> getCameraIntrinsics(const int imgWidth, const int imgHight) override;
 
 private:
     // ---- 生命周期阶段（用于幂等清理与诊断） ----
