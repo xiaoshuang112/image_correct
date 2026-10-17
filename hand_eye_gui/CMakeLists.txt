@@ -124,6 +124,7 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/CalibrationController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionActions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionPoseRecord.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CollectionImageRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_resolver.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/auth_check.cpp

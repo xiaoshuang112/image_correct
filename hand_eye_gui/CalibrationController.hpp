@@ -17,6 +17,7 @@
 #include "basestruct.h"
 
 class CameraImageProvider;
+namespace collection { struct UndistortionCalibration; class UndistortionMaps; }
 
 /**
  * @brief 手眼标定 QML 控制器
@@ -67,6 +68,9 @@ class CalibrationController : public QObject
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
     Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
     Q_PROPERTY(int savedPoseCount READ savedPoseCount NOTIFY collectionChanged)
+    Q_PROPERTY(bool undistortionReady READ undistortionReady NOTIFY collectionChanged)
+    Q_PROPERTY(bool undistortionEnabled READ undistortionEnabled NOTIFY collectionChanged)
+    Q_PROPERTY(QString undistortionStatus READ undistortionStatus NOTIFY collectionChanged)
 
     // 结构化运行时状态（与 logText 解耦）
     Q_PROPERTY(int     calibrationStage READ calibrationStage NOTIFY calibrationRuntimeChanged)
@@ -111,6 +115,10 @@ public:
     QString lastCapturePath() const { return m_lastCapturePath; }
     int savedImageCount() const { return m_savedImageCount; }
     int savedPoseCount() const { return m_savedPoseCount; }
+    bool undistortionReady() const { return bool(m_undistortionCalibration); }
+    bool undistortionEnabled() const { return bool(m_undistortionMaps); }
+    QString undistortionStatus() const { return m_undistortionStatus; }
+    Q_INVOKABLE void toggleUndistortion();
     Q_INVOKABLE void saveFlangePose(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
@@ -246,6 +254,7 @@ signals:
 
 private:
     void initializeCollection();
+    void loadCollectionUndistortion();
     void beginCollectionOperation();
     void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----
@@ -361,6 +370,9 @@ private:
     QString m_outputDirectory;
     QString m_exposureList = "5000,8500,14500,25000";
     QString m_handEyePath;
+    QString m_undistortionStatus;
+    std::shared_ptr<const collection::UndistortionCalibration> m_undistortionCalibration;
+    std::shared_ptr<const collection::UndistortionMaps> m_undistortionMaps;
     QString m_lastCapturePath;
     int m_savedImageCount = 0;
     int m_savedPoseCount = 0;

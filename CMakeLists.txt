@@ -365,6 +365,15 @@ if(BUILD_TESTS)
     add_test(NAME collection_geometry_and_fusion COMMAND test_collection)
     find_package(Qt5 QUIET COMPONENTS Core Quick Test)
     if(Qt5Core_FOUND)
+        add_executable(test_collection_undistortion
+            tests/test_collection_undistortion.cpp
+            utils/collection_undistortion.cpp
+            hand_eye_gui/CollectionImageRecord.cpp
+            hand_eye_gui/CollectionPoseRecord.cpp
+            utils/calib_transform.cpp)
+        target_include_directories(test_collection_undistortion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(test_collection_undistortion Qt5::Core ${OpenCV_LIBS})
+        add_test(NAME collection_undistortion COMMAND test_collection_undistortion)
         add_executable(test_collection_pose_record
             tests/test_collection_pose_record.cpp
             hand_eye_gui/CollectionPoseRecord.cpp

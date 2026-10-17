@@ -7,6 +7,7 @@
 #include "calibration/intrinsic_identity.hpp"
 #include "calibration/mechanical_settling_config.hpp"
 #include "utils/robot_util.hpp"
+#include "utils/collection_undistortion.hpp"
 #include "DiagnosticLogger.hpp"
 #include "config_resolver.hpp"
 
@@ -172,7 +173,7 @@ void CalibrationController::init(CameraImageProvider* provider)
         APP_LOG_EVENT_WARNING("calibration.audit", "startup_recovery", "recovered",
                               {{"session", QString::fromStdString(session)}});
     }
-    setStatus(m_collectionMode ? "就绪 — 打开相机即可预览和拍照" : "就绪 — 请连接机器人");
+    setStatus(m_collectionMode ? "就绪 — 打开相机即可预览和拍照；" + m_undistortionStatus : "就绪 — 请连接机器人");
 }
 
 void CalibrationController::setupPaths()
@@ -1120,6 +1121,10 @@ void CalibrationController::closeCamera()
         m_camera->close();
     }
     m_cameraOpened = false;
+    if (m_undistortionMaps) {
+        m_undistortionMaps.reset();
+        emit collectionChanged();
+    }
     if (m_cameraActualExposureUs != -1) {
         m_cameraActualExposureUs = -1;
         emit cameraActualExposureUsChanged();
@@ -1366,6 +1371,9 @@ void CalibrationController::onPreviewTick()
         return;
     }
     ++m_previewFrameCount;
+
+    if (m_collectionMode && m_undistortionMaps)
+        frame = m_undistortionMaps->apply(frame);
 
     // ChArUco 检测叠加
     cv::Mat display;

@@ -206,7 +206,17 @@ ApplicationWindow {
                         Rectangle { implicitWidth: 27; implicitHeight: 21; radius: 5; color: "#e99088"; Text { anchors.centerIn: parent; text: "03"; color: "#101820"; font.pixelSize: 11; font.bold: true } }
                             Text { text: "实时预览"; color: root.ink; font.pixelSize: 13; font.weight: Font.Medium }
                         Item { Layout.fillWidth: true }
-                        CollectButton { text: root.controller.previewActive ? "暂停预览" : "开始预览"; implicitHeight: 28; font.pixelSize: 11; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }
+                        CollectButton {
+                            objectName: "undistortionButton"
+                            text: root.controller.undistortionEnabled ? "去畸变已启用" : "一键去畸变"
+                            primary: root.controller.undistortionEnabled
+                            implicitHeight: 28; font.pixelSize: 11; leftPadding: 9; rightPadding: 9
+                            enabled: !root.busy && root.controller.cameraOpened && (root.controller.undistortionReady || root.controller.undistortionEnabled)
+                            onClicked: root.controller.toggleUndistortion()
+                            ToolTip.visible: hovered
+                            ToolTip.text: root.controller.undistortionStatus
+                        }
+                        CollectButton { objectName: "previewButton"; text: root.controller.previewActive ? "暂停预览" : "开始预览"; implicitHeight: 28; font.pixelSize: 11; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }
                         Text {
                             text: root.controller.cameraOpened ? root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight : "LIVE VIEW"
                             color: root.muted; font.family: "DejaVu Sans Mono"; font.pixelSize: 10; font.letterSpacing: 0.7
@@ -268,7 +278,7 @@ ApplicationWindow {
                         Layout.fillWidth: true
                         Text { text: "保持静止，自动融合多曝光"; color: root.muted; font.pixelSize: 10 }
                         Item { Layout.fillWidth: true }
-                        Text { text: root.controller.cameraBackend.toUpperCase() + "  /  原始分辨率"; color: "#6f7e92"; font.pixelSize: 10 }
+                        Text { text: root.controller.cameraBackend.toUpperCase() + "  /  " + (root.controller.undistortionEnabled ? "已去畸变 · 原始尺寸" : "原始分辨率"); color: root.controller.undistortionEnabled ? "#8be0aa" : "#6f7e92"; font.pixelSize: 10 }
                     }
                 }
             }
@@ -342,6 +352,13 @@ ApplicationWindow {
                                 enabled: !root.busy
                             }
                             CollectButton { text: "应用"; font.pixelSize: 12; enabled: !root.busy && previewExposure.acceptableInput; onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text)) }
+                        }
+                        Text {
+                            objectName: "undistortionStatus"
+                            Layout.fillWidth: true
+                            text: root.controller.undistortionEnabled ? "● 去畸变已启用 · 预览 / 拍照" : root.controller.undistortionReady ? "● 去畸变参数已加载 · 未启用" : "○ 去畸变参数不可用"
+                            color: root.controller.undistortionEnabled ? "#8be0aa" : root.muted
+                            font.pixelSize: 10; elide: Text.ElideRight
                         }
                     }
                 }

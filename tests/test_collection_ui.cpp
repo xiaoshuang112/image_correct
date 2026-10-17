@@ -45,6 +45,9 @@ QtObject {
     property bool cameraOpened: false
     property bool previewActive: false
     property bool robotConnected: false
+    property bool undistortionReady: false
+    property bool undistortionEnabled: false
+    property string undistortionStatus: "未找到手眼文件，去畸变不可用"
     property string cameraBackend: "mvs"
     property string cameraIp: "192.168.66.253"
     property string cameraSn: ""
@@ -69,7 +72,7 @@ QtObject {
     property string statusMessage: "界面检查"
     signal frameUpdated()
     function openCamera() { cameraOpened = true }
-    function closeCamera() { previewActive = false; cameraOpened = false }
+    function closeCamera() { previewActive = false; cameraOpened = false; undistortionEnabled = false }
     function startPreview() { previewActive = true; frameUpdated() }
     function stopPreview() { previewActive = false }
     function capturePhoto() { savedImageCount++ }
@@ -86,6 +89,7 @@ QtObject {
     function disconnectRobot() { robotConnected = false }
     function levelCamera() {}
     function cancelCollectionOperation() { collectionBusy = false }
+    function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
 }
 )QML", QUrl());
         controller.reset(mock.create());
@@ -118,6 +122,8 @@ QtObject {
         auto* level = item("levelButton");
         auto* input = item("exposureInput");
         auto* savePose = item("savePoseButton");
+        auto* undistortion = item("undistortionButton");
+        require(!undistortion->isEnabled(), "undistortion enabled without calibration or camera");
         auto* pointName = item("pointNameInput");
         require(!savePose->isEnabled(), "pose enabled without robot");
         require(item("exposureInput5")->property("text").toString().isEmpty(), "fifth exposure is not blank");
@@ -159,6 +165,22 @@ QtObject {
                 button->mapToScene(QPointF(button->width()/2, button->height()/2)).toPoint());
             QTest::qWait(30);
         };
+        require(!undistortion->isEnabled(), "undistortion enabled with missing calibration");
+        controller->setProperty("undistortionReady", true);
+        QTest::qWait(10);
+        require(undistortion->isEnabled(), "undistortion unavailable with camera and calibration");
+        click(undistortion);
+        require(controller->property("undistortionEnabled").toBool() &&
+                undistortion->property("text").toString() == "去畸变已启用", "undistortion switch not visibly enabled");
+        require(item("undistortionStatus")->property("text").toString().contains("预览 / 拍照"),
+                "undistortion status does not describe capture mode");
+        controller->setProperty("collectionBusy", true);
+        QTest::qWait(10);
+        require(!undistortion->isEnabled(), "undistortion can change during capture");
+        controller->setProperty("collectionBusy", false);
+        QTest::qWait(10);
+        click(undistortion);
+        require(!controller->property("undistortionEnabled").toBool(), "undistortion cannot be disabled");
         click(savePose);
         require(window->property("poseEditorOpen").toBool() && pointName->property("text").toString().isEmpty(),
                 "pose editor did not open with an empty name");
@@ -188,7 +210,7 @@ QtObject {
         require(!window->property("poseEditorOpen").toBool(), "Escape did not close point editor");
         window->resize(1024, 740);
         QTest::qWait(50);
-        for (auto* action : {open, capture, level, savePose, item("exposureInput5")}) {
+        for (auto* action : {open, capture, level, savePose, undistortion, item("previewButton"), item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
                 std::cerr << action->objectName().toStdString() << " bounds " << bounds.x() << ',' << bounds.y()
@@ -198,6 +220,8 @@ QtObject {
         auto bounds = [](QQuickItem* target) {
             return QRectF(target->mapToScene(QPointF()), QSizeF(target->width(), target->height()));
         };
+        require(!bounds(undistortion).intersects(bounds(item("previewButton"))),
+                "undistortion and preview controls overlap at minimum window size");
         require(!bounds(capture).intersects(bounds(savePose)) &&
                 !bounds(item("exposureInput5")).intersects(bounds(capture)),
                 "capture controls overlap at minimum window size");

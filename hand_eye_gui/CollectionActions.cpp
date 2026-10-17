@@ -1,6 +1,8 @@
 #include "CalibrationController.hpp"
 #include "DiagnosticLogger.hpp"
 #include "CollectionPoseRecord.hpp"
+#include "CollectionImageRecord.hpp"
+#include "utils/collection_undistortion.hpp"
 #include "utils/collection_utils.hpp"
 #include "utils/calib_transform.hpp"
 #include "utils/robot_util.hpp"
@@ -56,6 +58,51 @@ void CalibrationController::initializeCollection() {
         m_robotPasswd = "123";
     }
     m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
+    if (m_collectionMode) loadCollectionUndistortion();
+}
+
+void CalibrationController::loadCollectionUndistortion() {
+    m_undistortionCalibration.reset();
+    m_undistortionMaps.reset();
+    try {
+        if (!QFileInfo::exists(m_handEyePath))
+            throw std::runtime_error("未找到手眼文件，去畸变不可用");
+        auto calibration = std::make_shared<collection::UndistortionCalibration>(
+            collection::UndistortionCalibration::load(m_handEyePath.toStdString()));
+        m_undistortionStatus = calibration->calibratedSize.empty()
+            ? "去畸变参数已加载；文件未记录标定分辨率，请确认与当前相机一致"
+            : "去畸变参数已加载，标定分辨率 " + QString::number(calibration->calibratedSize.width) +
+                "×" + QString::number(calibration->calibratedSize.height);
+        m_undistortionCalibration = calibration;
+        APP_LOG_EVENT_INFO("collection", "undistortion_load", "success",
+            {{"path", m_handEyePath}, {"message", m_undistortionStatus}});
+    } catch (const std::exception& error) {
+        m_undistortionStatus = QString::fromUtf8(error.what());
+        APP_LOG_EVENT_WARNING("collection", "undistortion_load", "unavailable",
+            {{"path", m_handEyePath}, {"message", m_undistortionStatus}});
+    }
+    emit collectionChanged();
+}
+
+void CalibrationController::toggleUndistortion() {
+    if (!m_collectionMode || m_collectionBusy || m_running) return;
+    if (m_undistortionMaps) {
+        m_undistortionMaps.reset();
+        emit collectionChanged();
+        setStatus("去畸变已关闭，预览和拍照恢复原始图像");
+        return;
+    }
+    if (!m_undistortionCalibration) { setStatus(m_undistortionStatus); return; }
+    if (!m_cameraOpened) { setStatus("请先连接相机再启用去畸变"); return; }
+    try {
+        m_undistortionMaps = std::make_shared<collection::UndistortionMaps>(
+            *m_undistortionCalibration, cv::Size(m_camActualWidth, m_camActualHeight),
+            m_camDeviceSerial.toStdString());
+        emit collectionChanged();
+        setStatus("去畸变已启用，后续预览和拍照使用校正图像，并保留原始融合图");
+    } catch (const std::exception& error) {
+        setStatus("启用去畸变失败：" + QString::fromUtf8(error.what()));
+    }
 }
 
 void CalibrationController::openCollectionFolder() {
@@ -131,6 +178,7 @@ void CalibrationController::capturePhoto() {
         return;
     }
     const auto camera = m_camera;
+    const auto undistortion = m_undistortionMaps;
     const bool robotConnected = m_robotConnected;
     const RobotHandle robotHandle = m_robotHandle;
     // Freeze the date at shutter time so a bracket crossing midnight stays in
@@ -140,7 +188,7 @@ void CalibrationController::capturePhoto() {
     beginCollectionOperation();
     setStatus(QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, robotConnected, robotHandle]() {
+        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, robotConnected, robotHandle, undistortion]() {
             QString message, path;
             try {
                 int minimum = 0, maximum = 0;
@@ -171,22 +219,16 @@ void CalibrationController::capturePhoto() {
                 if (frames.size() != exposures.size())
                     throw std::runtime_error("未采齐全部曝光帧，本次未保存图片");
                 cv::Mat fused = collection::fuseMertens(frames);
+                const cv::Mat corrected = undistortion ? undistortion->apply(fused) : cv::Mat();
                 if (m_cancelRequested) throw std::runtime_error("拍照已取消");
                 if (!QDir().mkpath(directory))
                     throw std::runtime_error("无法创建图片保存目录");
-                path = QDir(directory).filePath("capture_" +
+                const QString rawPath = QDir(directory).filePath("capture_" +
                     captureTime.toString("yyyyMMdd_HHmmss_zzz") + "_" +
                     QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png");
-                std::vector<uchar> encoded;
-                if (!cv::imencode(".png", fused, encoded))
-                    throw std::runtime_error("图片编码失败");
                 if (m_cancelRequested) throw std::runtime_error("拍照已取消");
-                QSaveFile file(path);
-                if (!file.open(QIODevice::WriteOnly) ||
-                    file.write(reinterpret_cast<const char*>(encoded.data()), encoded.size()) != static_cast<qint64>(encoded.size()) ||
-                    !file.commit())
-                    throw std::runtime_error(("图片保存失败: " + file.errorString()).toStdString());
-                message = "多曝光融合完成，图片已保存";
+                path = collection::saveCaptureImages(fused, corrected, rawPath);
+                message = undistortion ? "多曝光融合及去畸变完成，校正图与原始图已保存" : "多曝光融合完成，图片已保存";
                 // Metadata failure is reported separately from the already
                 // committed image. Busy remains set until the read finishes,
                 // keeping the robot handle alive while the SDK uses it.
@@ -203,6 +245,11 @@ void CalibrationController::capturePhoto() {
                     const QString recordError = collection::saveFlangePoseRecords(
                         path, flange.valid ? flange.pose.data() : nullptr);
                     QStringList warnings;
+                    if (undistortion) {
+                        const auto rawRecordError = collection::saveFlangePoseRecords(
+                            rawPath, flange.valid ? flange.pose.data() : nullptr);
+                        if (!rawRecordError.isEmpty()) warnings << rawRecordError;
+                    }
                     if (!flange.error.isEmpty()) warnings << flange.error;
                     if (!recordError.isEmpty()) warnings << recordError;
                     if (!warnings.isEmpty()) message = warnings.join("；");
