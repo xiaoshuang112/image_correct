@@ -19,7 +19,7 @@ ApplicationWindow {
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
     readonly property bool editing: activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined
     readonly property bool compact: width < 1190
-    readonly property int infoWidth: compact ? 252 : 264
+    readonly property int infoWidth: compact ? 288 : 320
     readonly property int ipWidth: compact ? 100 : 110
     readonly property int resolutionWidth: compact ? 46 : 58
     readonly property int connectWidth: compact ? 74 : 86
@@ -101,7 +101,7 @@ ApplicationWindow {
                     id: deviceControls
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                     height: implicitHeight; spacing: 8
-                    CollectCardHeader { number: "01"; title: "设备连接" }
+                    CollectCardHeader { number: "01"; title: "设备连接"; tint: Theme.section1; tintSoft: Theme.section1Soft }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 5
                         Text { text: "相机 IP"; color: Theme.ink2; font.pixelSize: Theme.meta; Layout.preferredWidth: 46 }
@@ -134,7 +134,7 @@ ApplicationWindow {
                     id: calibrationControls
                     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
                     height: implicitHeight; spacing: 8
-                    CollectCardHeader { number: "02"; title: "图像校准" }
+                    CollectCardHeader { number: "02"; title: "图像校准"; tint: Theme.section2; tintSoft: Theme.section2Soft }
                     RowLayout {
                         Layout.fillWidth: true; spacing: 4
                         Text { text: "预览曝光"; color: Theme.ink2; font.pixelSize: Theme.meta }
@@ -401,7 +401,7 @@ ApplicationWindow {
                         }
                         Rectangle {
                             Layout.fillWidth: true
-                            Layout.preferredHeight: Math.max(80, Math.min((root.infoWidth - Theme.padding * 2) * 0.66, root.height - Theme.margin * 2 - 36 - controlDeck.contentHeight - 30 - Theme.gap * 3 - sessionCard.implicitHeight - Theme.gap * 2 - 96 - 106))
+                            Layout.preferredHeight: Math.max(80, Math.min((root.infoWidth - Theme.padding * 2) * 0.56, root.height - Theme.margin * 2 - 36 - controlDeck.contentHeight - 30 - Theme.gap * 3 - sessionCard.implicitHeight - Theme.gap * 2 - 96 - 106))
                             radius: 6; color: Theme.sunken; border.width: 1; border.color: Theme.hairline; clip: true
                             Image { objectName: "recentPhotoImage"; anchors.fill: parent; anchors.margins: 1; source: root.controller.lastCapturePath ? "file://" + root.controller.lastCapturePath : ""; fillMode: Image.PreserveAspectFit }
                             Column {
