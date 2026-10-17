@@ -57,11 +57,6 @@ QString formatDoubleVector(const std::vector<double>& values)
 
 } // namespace
 
-// ===================================================================
-//  采样器模块引用的机器人句柄（CLI 中由 calibration.cpp 定义）
-// ===================================================================
-RobotHandle robotHandle;
-
 // ---- 静态成员 ----
 CalibrationController* CalibrationController::s_instance = nullptr;
 

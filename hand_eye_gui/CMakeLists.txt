@@ -96,7 +96,7 @@ else()
 endif()
 
 # ============================================================
-#  源文件收集（排除 calibration.cpp，它有 main）
+#  GUI 源文件
 # ============================================================
 set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/main.cpp
@@ -121,26 +121,35 @@ set(QRC_FILE
     ${CMAKE_CURRENT_SOURCE_DIR}/resources.qrc
 )
 
-file(GLOB TOP_SRCS
-    ${CMAKE_SOURCE_DIR}/*.cpp
-    ${CMAKE_SOURCE_DIR}/calibration/*.cpp
-    ${CMAKE_SOURCE_DIR}/circlesampler/*.cpp
-    ${CMAKE_SOURCE_DIR}/piecesampler/*.cpp
-    ${CMAKE_SOURCE_DIR}/testcameradeepth/*.cpp
-    ${CMAKE_SOURCE_DIR}/utils/*.cpp
+# 显式列出采集与标定界面使用的公共源码；采样器和深度测试仅由 CLI 构建。
+set(GUI_CORE_SRCS
+    ${CMAKE_SOURCE_DIR}/calibration/auto_eye_in_hand_charuco_calibration.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/calibration_session.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/calibration_utils.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/camera_calibration.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/candidate_planner.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/charuco_detector.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/eye_to_hand_calibration.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/intrinsic_identity.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/mechanical_settling_config.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/semi_auto_eye_in_hand_calibration.cpp
+    ${CMAKE_SOURCE_DIR}/calibration/solver_consensus.cpp
+    ${CMAKE_SOURCE_DIR}/utils/calib_transform.cpp
+    ${CMAKE_SOURCE_DIR}/utils/collection_undistortion.cpp
+    ${CMAKE_SOURCE_DIR}/utils/collection_utils.cpp
+    ${CMAKE_SOURCE_DIR}/utils/exposure_fusion.cpp
+    ${CMAKE_SOURCE_DIR}/utils/robot_util.cpp
 )
-# 排除 calibration.cpp（含 main 函数）
-list(REMOVE_ITEM TOP_SRCS "${CMAKE_SOURCE_DIR}/calibration.cpp")
 
 # 相机源文件：ORB / MVS 互斥
 if(useMVS_QT)
-    list(APPEND TOP_SRCS
+    list(APPEND GUI_CORE_SRCS
         ${CMAKE_SOURCE_DIR}/cameras/MVSCamera.cpp
         ${CMAKE_SOURCE_DIR}/cameras/mvs_device_selector.cpp
         ${CMAKE_SOURCE_DIR}/cameras/mvs_error.cpp
     )
 elseif(useORB_QT)
-    list(APPEND TOP_SRCS ${CMAKE_SOURCE_DIR}/cameras/OrbbecCamera.cpp)
+    list(APPEND GUI_CORE_SRCS ${CMAKE_SOURCE_DIR}/cameras/OrbbecCamera.cpp)
 endif()
 
 # ============================================================
@@ -149,7 +158,7 @@ endif()
 add_executable(${PROJECT_NAME}
     ${GUI_SRCS}
     ${GUI_HDRS}
-    ${TOP_SRCS}
+    ${GUI_CORE_SRCS}
     ${QRC_FILE}
 )
 
