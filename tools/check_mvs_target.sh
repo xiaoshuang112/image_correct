@@ -2,7 +2,7 @@
 set -e
 
 # ============================================================
-#  hand-eye-mvs 目标机交付校验脚本
+#  collect-mvs 目标机交付校验脚本
 #
 #  用法（在目标机上、发布包目录内执行）:
 #    ./check_mvs_target.sh [发布包目录]
@@ -15,12 +15,12 @@ set -e
 # ============================================================
 
 PKG_DIR="${1:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)}"
-BIN="$PKG_DIR/hand-eye-mvs"
+BIN="$PKG_DIR/collect-mvs"
 HW_ACCEPTANCE="$PKG_DIR/mvs_hw_acceptance"
 MVS_SDK_DIR="/opt/MVS"
 
 echo "========================================"
-echo "  hand-eye-mvs 目标机交付校验"
+echo "  collect-mvs 目标机交付校验"
 echo "  目录: $PKG_DIR"
 echo "========================================"
 
@@ -37,9 +37,9 @@ check_arch() {
     file "$path" | grep -q "$HOST_ARCH" \
         || fail "$name 架构与目标机($HOST_ARCH)不符: $(file -b "$path")"
 }
-check_arch "$BIN" "hand-eye-mvs"
+check_arch "$BIN" "collect-mvs"
 check_arch "$HW_ACCEPTANCE" "mvs_hw_acceptance"
-echo "1. 架构: $HOST_ARCH OK（hand-eye-mvs / mvs_hw_acceptance）"
+echo "1. 架构: $HOST_ARCH OK（collect-mvs / mvs_hw_acceptance）"
 
 # ---- 2. 运行库解析 ----
 if [ -d "$PKG_DIR/lib/mvs" ] && compgen -G "$PKG_DIR/lib/mvs/libMvCameraControl.so*" > /dev/null; then
@@ -65,7 +65,7 @@ check_ldd() {
     fi
     echo "   $name ldd: 无缺失库"
 }
-check_ldd "$BIN" "hand-eye-mvs"
+check_ldd "$BIN" "collect-mvs"
 check_ldd "$HW_ACCEPTANCE" "mvs_hw_acceptance"
 
 # ---- 3. MVS 运行库版本 ----

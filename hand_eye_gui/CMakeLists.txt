@@ -103,39 +103,21 @@ target_link_libraries(${PROJECT_NAME}
 #  编译选项
 # ============================================================
 set_target_properties(${PROJECT_NAME} PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    CXX_EXTENSIONS OFF
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
     OUTPUT_NAME "collect-${CAM_SUFFIX}"
 )
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
-# 开发机上回退到 SDK 安装目录；ORB 产物不引用任何 MVS 路径。
+# 开发机上回退到 SDK 安装目录。
 if(useMVS)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         INSTALL_RPATH "$ORIGIN/lib/mvs"
         BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
 endif()
 
-# 构建身份必须在每次 build 时重新获取。若只在 configure 阶段执行，提交或
-# 修改工作区后直接 cmake --build 会把旧 commit/dirty 状态编进新程序。
-set(APP_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-set(APP_BUILD_INFO_HEADER "${APP_BUILD_INFO_DIR}/AppBuildInfo.hpp")
-add_custom_target(hand_eye_app_build_info ALL
-    COMMAND ${CMAKE_COMMAND}
-        -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
-        -DOUTPUT_FILE=${APP_BUILD_INFO_HEADER}
-        -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-        -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
-        -DAPP_VERSION=${CAITU_VERSION}
-        -P ${CMAKE_CURRENT_SOURCE_DIR}/GenerateBuildInfo.cmake
-    BYPRODUCTS ${APP_BUILD_INFO_HEADER}
-    COMMENT "Refreshing hand-eye build metadata"
-    VERBATIM
-)
-add_dependencies(${PROJECT_NAME} hand_eye_app_build_info)
-target_include_directories(${PROJECT_NAME} PRIVATE ${APP_BUILD_INFO_DIR})
+# 与 CLI 共用每次构建刷新的身份信息，避免分别生成不同的时间戳。
+add_dependencies(${PROJECT_NAME} calibration_build_info)
+target_include_directories(${PROJECT_NAME} PRIVATE ${CALIBRATION_BUILD_INFO_DIR})
 target_compile_definitions(${PROJECT_NAME} PRIVATE
     ${CAITU_COMPILE_DEFINITIONS}
     ${ARCH_DEFINITION}

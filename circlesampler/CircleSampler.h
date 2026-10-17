@@ -5,7 +5,6 @@
 #include <opencv2/opencv.hpp>
 #include "cameras/AICamera.hpp"
 #include "Config.h"
-#include "robotapi.h"
 
 class CircleSampler {
 public:
@@ -20,9 +19,7 @@ private:
                            double r, double yaw_deg, double theta_deg, double out_pose[6]);
     int captureExposures(const std::string& prefix);
     int captureExposures(const std::string& prefix, const std::vector<int>& indices);
-    CRresult moveToFlangeAxisPos(double axisAnglePos[6]);
     void genExposures();
-    void printProgress(int current, int total) const;
 
     // Checkpoint helpers (test mode)
     std::string checkpointPath() const;

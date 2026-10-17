@@ -20,7 +20,6 @@ class CalibrationSession;
  * @brief 逐点运动 + 采集
  */
 bool executeCollection(int robot_handle,
-                       char* pchRobotIP,
                        std::shared_ptr<AICamera>& camera,
                        CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,

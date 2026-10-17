@@ -384,8 +384,6 @@ bool planPoseCandidates(std::vector<PoseCandidate>& candidates,
             if (maximumStep > report.maximum_joint_step_degrees) {
                 report.maximum_joint_step_degrees = maximumStep;
                 report.maximum_step_axis = maximumAxis;
-                report.maximum_step_from_source_index = previousSource;
-                report.maximum_step_to_source_index = candidate.source_index;
             }
             report.maximum_j6_step_degrees = std::max(
                 report.maximum_j6_step_degrees, j6Step);

@@ -113,15 +113,8 @@ CRresult moveToJointPosByLine(int robot_handle, const double tcpAxisPos[ROB_AXIS
 		pointControlPara.tcpOffset[index] = 0;
 		pointControlPara.coordinatePose[index] = 0;
 
-#ifdef X86_64
-		pointControlPara.speed[index] = 150;
-		pointControlPara.acc[index] = 250;
-
-#else
-		pointControlPara.speed[index] = 150;
-		pointControlPara.acc[index] = 250;
-
-#endif // X86_64
+        pointControlPara.speed[index] = 150;
+        pointControlPara.acc[index] = 250;
         
         
         pointControlPara.jerk[index] = 60;

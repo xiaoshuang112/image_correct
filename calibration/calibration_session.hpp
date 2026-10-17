@@ -165,7 +165,7 @@ struct CalibrationSessionOptions {
     std::string camera_endpoint;
     std::string camera_stream = "color";
     // 生产审计扩展：后端、传输层与打开后回读的实际值（非请求值）
-    std::string camera_backend;        // orbbec / mvs
+    std::string camera_backend;        // mvs
     std::string camera_transport;      // gige / usb / eth
     std::string camera_pixel_format;   // 输出给上层的实际像素格式
     int camera_exposure_us = -1;       // 回读的实际曝光

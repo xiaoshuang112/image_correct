@@ -12,7 +12,7 @@ struct CameraDeviceAuditInfo {
     std::string model;
     std::string firmware;
     // 以下为生产审计扩展字段；SDK 提供不了的派生类保持默认空值即可。
-    std::string transport;      // gige / usb / eth(orb) 等
+    std::string transport;      // gige / usb 等
     std::string current_ip;     // 设备当前 IP（无 IP 的设备为空）
     int actual_width = 0;       // 打开后回读的实际流分辨率
     int actual_height = 0;
@@ -87,7 +87,7 @@ public:
         return {m_config.cam_sn, "", ""};
     }
 
-    // 相机后端名（orbbec / mvs / oak ...），用于内参安全门禁与审计。
+    // 相机后端名（mvs / oak ...），用于内参安全门禁与审计。
     virtual std::string backendName() const { return "unknown"; }
 
     // 最近一次失败的阶段与 SDK 错误码；无错误时返回默认空值。

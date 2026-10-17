@@ -5,7 +5,6 @@
 #include <opencv2/opencv.hpp>
 #include "cameras/AICamera.hpp"
 #include "Config.h"
-#include "robotapi.h"
 
 class PieceSampler {
 public:
@@ -22,12 +21,6 @@ private:
 
     // Generate log-spaced exposure list
     void genExposures();
-
-    // Move robot to flange axis-angle pose
-    CRresult moveToFlangeAxisPos(double axisAnglePos[6]);
-
-    // Progress display
-    void printProgress(int current, int total) const;
 
     // Checkpoint helpers
     std::string checkpointPath() const;

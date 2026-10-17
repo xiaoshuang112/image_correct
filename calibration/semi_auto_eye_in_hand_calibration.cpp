@@ -224,8 +224,7 @@ bool semiAutoEyeInHandCalibration(
         session_options.camera_serial = deviceInfo.serial;
         session_options.camera_model = deviceInfo.model;
         session_options.camera_firmware = deviceInfo.firmware;
-        session_options.camera_endpoint = config.cam_ip + ":" +
-            std::to_string(config.cam_port);
+        session_options.camera_endpoint = config.cam_ip;
         session_options.image_width = config.cam_width;
         session_options.image_height = config.cam_height;
     }
@@ -317,7 +316,7 @@ bool semiAutoEyeInHandCalibration(
 
     // ---- Phase 3: 逐点采集 ----
     session->setStage("collection");
-    if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
+    if (!executeCollection(robot_handle, camera, detector,
                             candidates, session->framesDirectory(), callback,
                             session.get(), session->robotPosesDirectory())) {
         result.message = "采集失败";

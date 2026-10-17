@@ -47,8 +47,6 @@ struct CandidatePlanningReport {
     double maximum_j6_step_degrees = 0.0;
     std::array<double, 6> maximum_axis_step_degrees{};
     int maximum_step_axis = -1;
-    int maximum_step_from_source_index = -1;
-    int maximum_step_to_source_index = -1;
 };
 
 // 对可达候选建立安全关节图，从示教起点的连通分量中选取覆盖目标，并在

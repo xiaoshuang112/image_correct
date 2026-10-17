@@ -217,23 +217,6 @@ ApplicationWindow {
                         onEditingFinished: calibrationController.cameraIp = text
                     }
 
-                    // MVS 通过 IP/序列号寻址，端口仅 Orbbec 使用
-                    Label {
-                        text: ":"; color: textDim; font.pixelSize: 22
-                        visible: calibrationController.cameraPortRelevant
-                    }
-                    TextField {
-                        visible: calibrationController.cameraPortRelevant
-                        text: calibrationController.cameraPort
-                        font.pixelSize: 22; color: textPrimary
-                        Layout.preferredWidth: 65
-                        background: Rectangle { radius: 4; color: "#0d1117"; border.color: borderColor }
-                        onEditingFinished: {
-                            var v = parseInt(text)
-                            if (!isNaN(v)) calibrationController.cameraPort = v
-                        }
-                    }
-
                     Label { text: "序列号:"; color: textDim; font.pixelSize: 22 }
                     TextField {
                         text: calibrationController.cameraSn

@@ -61,8 +61,6 @@ public:
 #endif
     }
 
-    const CharucoBoardConfig& getConfig() const { return config_; }
-
     const std::vector<cv::Point3f>& getChessboardCorners3D() const {
         return board_corners_3d_;
     }
@@ -85,7 +83,6 @@ private:
                        float thresh,
                        cv::Mat* viz_image = nullptr) const;
 
-    CharucoBoardConfig config_;
     int min_ids_;
     float filter_thresh_;
 

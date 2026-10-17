@@ -20,7 +20,6 @@ struct Selection {
     std::vector<std::size_t> excluded;
     std::vector<std::vector<std::size_t>> largest_clusters;
     std::size_t medoid_index = 0;
-    double medoid_distance_sum = 0.0;
     double cluster_max_translation = 0.0;
     double cluster_p95_translation = 0.0;
     double cluster_max_rotation = 0.0;

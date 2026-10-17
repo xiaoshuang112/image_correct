@@ -1,9 +1,6 @@
 #include "auto_eye_in_hand_charuco_calibration.hpp"
 
 #include "cameras/AICamera.hpp"
-#ifdef useORB
-#include "cameras/OrbbecCamera.hpp"
-#endif // useORB
 
 #ifdef useOAK
 #include "cameras/OAKCamera.hpp"
@@ -225,12 +222,9 @@ static double visualAlignmentCost(const VisualAlignmentMetrics& metrics,
 // ============================================================
 
 // 评价当前位姿检测质量
-// use_center=true:  score = ids.size() * 10000 - 中心距像素
-// use_center=false: score = ids.size() * 1000000 + 凸包面积
 static std::tuple<double, int, cv::Point2f> evaluatePose(
     std::shared_ptr<AICamera>& camera,
-    CharucoDetector& detector,
-    bool use_center) {
+    CharucoDetector& detector) {
     if (!camera) {
         APP_LOG_EVENT_ERROR("calibration.pose_search",
                             "pose_evaluation",
@@ -285,13 +279,8 @@ static std::tuple<double, int, cv::Point2f> evaluatePose(
     bc.x /= (float)c.size(); bc.y /= (float)c.size();
     double pd = ((bc.x-cx)*(bc.x-cx) + (bc.y-cy)*(bc.y-cy));
     double angle_diff = -computeBoardAngle(c, i, board_sz.width, board_sz.height, f.cols, f.rows) * 180.0 / CV_PI;
-    // if (use_center) {
-    //     score -= pd;
-    // } else {
     double hull_area = cv::contourArea(h);
-    //double    score = (double)i.size() * 1000000.0 + hull_area - pd - fabs(angle_diff) * 100;
     double    score = (double)i.size() * 100000.0 + hull_area - pd - fabs(angle_diff) * 100;
-    // }
     return {score, (int)i.size(), bc};
 }
 
@@ -806,7 +795,6 @@ static std::filesystem::path observationReferencePosePath(
 
 // 尝试一组候选欧拉位姿，选评分最高的
 // candidates: 欧拉位姿列表 [x,y,z,rx,ry,rz] (mm, deg)
-// use_center: 评分模式 (true=中心距, false=面积)
 // best_joint: 输出，最佳候选的关节角
 // 返回最佳评分（运动或基础设施失败时返回负无穷，调用方必须立即终止）
 // 注意：函数会临时运动到候选位姿做评估，返回前会回到原始位置
@@ -816,7 +804,6 @@ static constexpr double kCandidateSearchFailure =
 static double tryCandidatePoses(int robot_handle,
     std::shared_ptr<AICamera>& camera,
     CharucoDetector& detector,
-    bool use_center,
     const char* search_phase,
     const std::vector<std::array<double, 6>>& candidates,
     double bestFlangeEule[6]) {
@@ -877,7 +864,7 @@ static double tryCandidatePoses(int robot_handle,
         }
 
         double s; int n; cv::Point2f bc;
-        std::tie(s, n, bc) = evaluatePose(camera, detector, use_center);
+        std::tie(s, n, bc) = evaluatePose(camera, detector);
         APP_LOG_EVENT_DEBUG("calibration.pose_search",
                            "candidate_evaluation",
                            "sampled",
@@ -972,7 +959,7 @@ static bool searchXYSteps(int robot_handle,
     for (int i = 0; i < num_steps; i++) {
         double step = steps[i];
         double score; int n; cv::Point2f bc;
-        std::tie(score, n, bc) = evaluatePose(camera, detector, false);
+        std::tie(score, n, bc) = evaluatePose(camera, detector);
         std::vector<std::array<double, 6>> xy_candidates;
         // 沿邻接的环形路径走完 8 个方向，避免旧笛卡尔顺序在对角点之间来回跨越。
         const std::array<std::array<int, 2>, 8> xyOrder{{
@@ -987,7 +974,7 @@ static bool searchXYSteps(int robot_handle,
         }
         double bestFlangeEule[ROB_AXIS_NUM];
         const double candidateScore = tryCandidatePoses(
-            robot_handle, camera, detector, false, "coarse_xy",
+            robot_handle, camera, detector, "coarse_xy",
             xy_candidates, bestFlangeEule);
         if (!std::isfinite(candidateScore)) {
             APP_LOG_EVENT_ERROR("calibration.pose_search",
@@ -1112,7 +1099,7 @@ bool autoFindBestPose(int robot_handle,
     double cur_score;
     int cur_codes;
     cv::Point2f cur_bc;
-    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
+    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector);
 
     // 只有完整识别 24/24 时才跳过粗搜索。0 个角点通常意味着起始距离
     // 过远，恰恰需要用粗粒度 Z/XY 搜索恢复，不能直接进入精细拟合。
@@ -1139,7 +1126,7 @@ bool autoFindBestPose(int robot_handle,
         }
         double bestFlangeEule[ROB_AXIS_NUM];
         double best_s = tryCandidatePoses(
-            robot_handle, camera, detector, false, "coarse_z_approach",
+            robot_handle, camera, detector, "coarse_z_approach",
             approachCandidates, bestFlangeEule);
         if (!std::isfinite(best_s)) {
             APP_LOG_EVENT_ERROR("calibration.pose_search",
@@ -1157,7 +1144,7 @@ bool autoFindBestPose(int robot_handle,
                     flangeEulePos[3], flangeEulePos[4], flangeEulePos[5]});
             }
             best_s = tryCandidatePoses(
-                robot_handle, camera, detector, false, "coarse_z_retreat",
+                robot_handle, camera, detector, "coarse_z_retreat",
                 retreatCandidates, bestFlangeEule);
             if (!std::isfinite(best_s)) {
                 APP_LOG_EVENT_ERROR("calibration.pose_search",
@@ -1211,7 +1198,7 @@ bool autoFindBestPose(int robot_handle,
     // Phase 2: XY 搜索 — 码不全时找更好的水平位置
     // ================================================================
     
-    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector, false);
+    std::tie(cur_score, cur_codes, cur_bc) = evaluatePose(camera, detector);
 
     if (cur_codes < total_corners) {
         std::cout << "[autoFindBestPose] Phase2: XY 搜索 (码=" << cur_codes
@@ -1359,7 +1346,7 @@ bool autoFindBestPose(int robot_handle,
 
         // 在 0.2~1.0 比例下尝试 Z+rz 组合，选评分最高的
         double cur_s; int n; cv::Point2f bc;
-        std::tie(cur_s, n, bc) = evaluatePose(camera, detector, false);
+        std::tie(cur_s, n, bc) = evaluatePose(camera, detector);
 
         std::vector<std::array<double, 6>> zrz_candidates;
         for (int fracStep = 1; fracStep <= 2; ++fracStep) {
@@ -1371,7 +1358,7 @@ bool autoFindBestPose(int robot_handle,
 
         double bestFlangeEulePos[ROB_AXIS_NUM];
         const double candidateScore = tryCandidatePoses(
-            robot_handle, camera, detector, false, "refine_zrz",
+            robot_handle, camera, detector, "refine_zrz",
             zrz_candidates, bestFlangeEulePos);
         if (!std::isfinite(candidateScore)) {
             APP_LOG_EVENT_ERROR("calibration.pose_search",
@@ -1763,7 +1750,7 @@ bool autoEyeInHandCharucoCalibration(
         session_options.camera_transport = device_info.transport;
         session_options.camera_endpoint = !device_info.current_ip.empty()
             ? device_info.current_ip
-            : camera_config.cam_ip + ":" + std::to_string(camera_config.cam_port);
+            : camera_config.cam_ip;
         // Session 记录打开后回读的实际流分辨率，而不是请求值
         session_options.image_width = device_info.actual_width > 0
             ? device_info.actual_width : camera_config.cam_width;
@@ -1971,7 +1958,7 @@ bool autoEyeInHandCharucoCalibration(
 
     // ---- Phase 4: 逐点运动 + 采集 ----
     session->setStage("collection");
-    if (!executeCollection(robot_handle, pchRobotIP, camera, detector,
+    if (!executeCollection(robot_handle, camera, detector,
                             candidates, session->framesDirectory(), callback,
                             session.get(), session->robotPosesDirectory(),
                             &runtime_status, runtime_callback)) {

@@ -31,17 +31,12 @@
 #include "my_base.h"
 #include "cameras/AICamera.hpp"
 
-#ifdef useORB
-#include "cameras/OrbbecCamera.hpp"
-#endif // REL_DBG
 
 #ifdef useOAK
 #include "cameras/OAKCamera.hpp"
 #endif // REL_DBG
 
-#ifdef useMVS
 #include "cameras/MVSCamera.hpp"
-#endif // useMVS
 
 
 #include "robotapi.h"
@@ -133,11 +128,8 @@ int load_config(std::string cfg_file) {
         return -1;
     }
 
-    // Select camera section based on compile flags
+    // Select the MVS camera profile
     std::string cam_section;
-#ifdef useORB
-    cam_section = "camera_obb_100";
-#elif defined(useMVS)
     int choice = 1;
     std::cout << "\n请选择 MVS 相机型号:" << std::endl;
     std::cout << "  1. camera_mvs_130 (1280x1024)" << std::endl;
@@ -145,26 +137,17 @@ int load_config(std::string cfg_file) {
     std::cout << "  请选择 (1-2): " << std::flush;
     std::cin >> choice;
     cam_section = (choice == 2) ? "camera_mvs_500" : "camera_mvs_130";
-#else
-    cam_section = "camera_obb_100";
-#endif
 
     // Read camera-specific params from the selected section
     cv::FileNode cam_node = fs[cam_section];
     if (!cam_node.empty()) {
         cam_node["cam_ip"] >> g_cfg.cam_ip;
-        cam_node["cam_port"] >> g_cfg.cam_port;
         cam_node["fps"] >> g_cfg.fps;
         cam_node["cam_width"] >> g_cfg.cam_width;
         cam_node["cam_height"] >> g_cfg.cam_height;
     } else {
         std::cerr << "[load_config] 配置中未找到 '" << cam_section << "' 节，使用默认参数" << std::endl;
     }
-
-    // Calibration grid params (always at root level)
-    fs["grid_num_heng"] >> g_cfg.grid_num_heng;
-    fs["grid_num_shu"] >> g_cfg.grid_num_shu;
-    fs["grid_size"] >> g_cfg.grid_size;
 
     // Robot connection params
     fs["robot_ip"] >> g_cfg.robot_ip;
@@ -416,9 +399,7 @@ static void circle_test_collection(int argc, char** argv) {
 
     // Open camera if needed
     if (!g_camera || !g_camera->isOpened()) {
-#ifdef useORB
-        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
-#elif defined(useOAK)
+#ifdef useOAK
         g_camera = std::make_shared<OAKCamera>(g_cfg);
 #else
         g_camera = std::make_shared<MVSCamera>(g_cfg);
@@ -472,9 +453,7 @@ static void piece_sampling() {
 
     // Open camera if needed
     if (!g_camera || !g_camera->isOpened()) {
-#ifdef useORB
-        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
-#elif defined(useOAK)
+#ifdef useOAK
         g_camera = std::make_shared<OAKCamera>(g_cfg);
 #else
         g_camera = std::make_shared<MVSCamera>(g_cfg);
@@ -503,9 +482,7 @@ static void depth_test(const std::string& cfg_path) {
 
     // Open camera
     if (!g_camera || !g_camera->isOpened()) {
-#ifdef useORB
-        g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
-#elif defined(useOAK)
+#ifdef useOAK
         g_camera = std::make_shared<OAKCamera>(g_cfg);
 #else
         g_camera = std::make_shared<MVSCamera>(g_cfg);
@@ -691,7 +668,6 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
     }
 
     bool bootstrap_intrinsics = camera_matrix.empty() || dist_coeffs.empty();
-#ifdef useMVS
     if (g_camera) {
         const CameraDeviceAuditInfo device_info = g_camera->getDeviceAuditInfo();
         intrinsic_gate::IntrinsicIdentity identity;
@@ -719,7 +695,6 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
             std::cout << "[semiAutoEyeInHand] 使用已验证的 MVS 内参" << std::endl;
         }
     }
-#endif
     std::string save_dir = g_paramPath + "semi_eye_in_hand/";
 
     CalibrationResult result;
@@ -731,7 +706,6 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
         g_paramPath + "hand_eye_result.yaml");
 
     if (ok) {
-#ifdef useMVS
         if (bootstrap_intrinsics && g_camera) {
             const CameraDeviceAuditInfo device_info = g_camera->getDeviceAuditInfo();
             const CONFIG& camera_config = g_camera->getConfig();
@@ -754,9 +728,6 @@ static void semi_auto_eye_in_hand_calibration_wrapper(char* pchRobotIP) {
                           << cam_file << std::endl;
             }
         }
-#else
-        saveCalibratedCameraParams(camera_matrix, result.camera_matrix, result.dist_coeffs);
-#endif
     } else {
         std::cerr << "\n[semiAutoEyeInHand] 标定失败: " << result.message << std::endl;
     }
@@ -1320,11 +1291,7 @@ int main(int argc, char** argv) {
     }
     // 使用默认配置
 
-#ifdef useORB
-    g_camera = std::make_shared<OrbbecCameraV2>(g_cfg);
-#else    
     g_camera = std::make_shared<MVSCamera>(g_cfg);
-#endif
     
     while (true) {
         display_menu();

@@ -36,7 +36,6 @@ class CalibrationController : public QObject
     Q_PROPERTY(int     cameraToTcpEnd READ cameraToTcpEnd WRITE setCameraToTcpEnd NOTIFY cameraToTcpEndChanged)
     Q_PROPERTY(QString calibrationType READ calibrationType WRITE setCalibrationType NOTIFY calibrationTypeChanged)
     Q_PROPERTY(QString cameraIp       READ cameraIp       WRITE setCameraIp       NOTIFY cameraIpChanged)
-    Q_PROPERTY(int     cameraPort     READ cameraPort     WRITE setCameraPort     NOTIFY cameraPortChanged)
     Q_PROPERTY(QString cameraSn       READ cameraSn       WRITE setCameraSn       NOTIFY cameraSnChanged)
     Q_PROPERTY(int     previewWidth   READ previewWidth   WRITE setPreviewWidth   NOTIFY previewWidthChanged)
     Q_PROPERTY(int     previewHeight  READ previewHeight  WRITE setPreviewHeight  NOTIFY previewHeightChanged)
@@ -45,7 +44,6 @@ class CalibrationController : public QObject
     Q_PROPERTY(int     mechanicalSettlingMs READ mechanicalSettlingMs NOTIFY mechanicalSettlingMsChanged)
     // 相机后端与实际设备信息（只读审计，打开相机后刷新）
     Q_PROPERTY(QString cameraBackend     READ cameraBackend     CONSTANT)
-    Q_PROPERTY(bool    cameraPortRelevant READ cameraPortRelevant CONSTANT)
     Q_PROPERTY(QString cameraModel       READ cameraModel       NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(QString cameraSerial      READ cameraSerial      NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(QString cameraFirmware    READ cameraFirmware    NOTIFY cameraDeviceInfoChanged)
@@ -130,7 +128,6 @@ public:
     int     cameraToTcpEnd() const  { return m_cameraToTcpEnd; }
     QString calibrationType() const { return m_calibrationType; }
     QString cameraIp() const        { return m_cameraIp; }
-    int     cameraPort() const      { return m_cameraPort; }
     QString cameraSn() const        { return m_cameraSn; }
     int     previewWidth() const    { return m_previewWidth; }
     int     previewHeight() const   { return m_previewHeight; }
@@ -138,7 +135,6 @@ public:
     int     cameraActualExposureUs() const { return m_cameraActualExposureUs; }
     int     mechanicalSettlingMs() const { return m_mechanicalSettlingMs; }
     QString cameraBackend() const;
-    bool    cameraPortRelevant() const;
     QString cameraModel() const     { return m_camDeviceModel; }
     QString cameraSerial() const    { return m_camDeviceSerial; }
     QString cameraFirmware() const  { return m_camDeviceFirmware; }
@@ -190,7 +186,6 @@ public:
     void setCameraToTcpEnd(int v);
     void setCalibrationType(const QString& v);
     void setCameraIp(const QString& v);
-    void setCameraPort(int v);
     void setCameraSn(const QString& v);
     void setPreviewWidth(int v);
     void setPreviewHeight(int v);
@@ -228,7 +223,6 @@ signals:
     void cameraToTcpEndChanged();
     void calibrationTypeChanged();
     void cameraIpChanged();
-    void cameraPortChanged();
     void cameraSnChanged();
     void cameraDeviceInfoChanged();
     void previewWidthChanged();
@@ -308,7 +302,6 @@ private:
     int      m_cameraToTcpEnd = 150;
     QString  m_calibrationType = "eye_to_hand";   // 或 "eye_in_hand"
     QString  m_cameraIp     = "192.168.66.253";
-    int      m_cameraPort   = 8090;
     QString  m_cameraSn;                        // 可选；配置后优先于 IP
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
     // 内参兼容开关（config.yaml: allow_legacy_intrinsics: 1），默认关闭

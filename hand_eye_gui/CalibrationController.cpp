@@ -23,12 +23,7 @@
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/utils/filesystem.hpp>
 
-#ifdef useMVS
 #include "cameras/MVSCamera.hpp"
-#endif
-#ifdef useORB
-#include "cameras/OrbbecCamera.hpp"
-#endif
 
 #include <fstream>
 #include <iterator>
@@ -221,7 +216,6 @@ void CalibrationController::loadConfigYaml()
     // 解析逻辑在纯 C++ 助手 config_resolver 中，可无硬件单测。
     config_resolver::CameraConfig defaults;
     defaults.cam_ip = m_cameraIp.toStdString();
-    defaults.cam_port = m_cameraPort;
     defaults.cam_width = m_previewWidth;
     defaults.cam_height = m_previewHeight;
     defaults.exposure_us = m_cameraExposureUs;
@@ -255,7 +249,6 @@ void CalibrationController::loadConfigYaml()
     for (const auto& warning : collectionConfig.warnings)
         APP_LOG_EVENT_WARNING("config", "config_load", "invalid_value", {{"message", QString::fromStdString(warning)}});
     m_cameraIp = QString::fromStdString(resolved.cam_ip);
-    m_cameraPort = resolved.cam_port;
     m_previewWidth = resolved.cam_width;
     m_previewHeight = resolved.cam_height;
     m_cameraExposureUs = resolved.exposure_us;
@@ -292,7 +285,7 @@ void CalibrationController::loadConfigYaml()
                        "config_load",
                        "success",
                        {{"path", QString::fromStdString(cfg_file)},
-                        {"camera", m_cameraIp + ":" + QString::number(m_cameraPort)},
+                        {"camera", m_cameraIp},
                         {"camera_sn", m_cameraSn},
                         {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
@@ -430,25 +423,6 @@ void CalibrationController::setCameraIp(const QString& v) {
         persistCollectionString("cam_ip", v);
     }
 }
-void CalibrationController::setCameraPort(int v) {
-    if (m_running || m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "camera_port"},
-                               {"reason", "calibration_running"}});
-        return;
-    }
-    if (m_cameraPort != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "camera_port"},
-                            {"from", QString::number(m_cameraPort)},
-                            {"to", QString::number(v)}});
-        m_cameraPort = v; emit cameraPortChanged();
-    }
-}
 void CalibrationController::setCameraSn(const QString& v) {
     if (m_running || m_collectionBusy) {
         APP_LOG_EVENT_WARNING("config",
@@ -554,23 +528,7 @@ QString CalibrationController::diagnosticLogPath() const
 
 QString CalibrationController::cameraBackend() const
 {
-#ifdef useORB
-    return QStringLiteral("orbbec");
-#elif defined(useMVS)
     return QStringLiteral("mvs");
-#else
-    return QStringLiteral("unknown");
-#endif
-}
-
-bool CalibrationController::cameraPortRelevant() const
-{
-    // MVS GigE 相机通过 IP/序列号寻址，cam_port 仅对 Orbbec 有效
-#ifdef useMVS
-    return false;
-#else
-    return true;
-#endif
 }
 
 QString CalibrationController::calibrationStageText() const
@@ -926,14 +884,9 @@ void CalibrationController::openCamera()
     APP_LOG_EVENT_INFO("camera",
                        "camera_open",
                        "start",
-                       {{"endpoint", QString("%1:%2").arg(m_cameraIp).arg(m_cameraPort)},
+                       {{"endpoint", m_cameraIp},
                         {"requested", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)},
-#ifdef useORB
-                        {"backend", "orbbec"}
-#else
-                        {"backend", "mvs"}
-#endif
-                       ,
+                        {"backend", "mvs"},
                         {"status", "opening"}});
     try {
 
@@ -946,7 +899,6 @@ void CalibrationController::openCamera()
     // 根据当前 UI 配置创建相机
     CONFIG cfg;
     cfg.cam_ip   = m_cameraIp.toStdString();
-    cfg.cam_port = static_cast<uint16_t>(m_cameraPort);
     cfg.cam_sn   = m_collectionMode ? std::string{} : m_cameraSn.toStdString();
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
@@ -957,17 +909,13 @@ void CalibrationController::openCamera()
     APP_LOG_EVENT_INFO("camera",
                        "camera_open",
                        "instance_create",
-                       {{"endpoint", QString("%1:%2").arg(QString::fromStdString(cfg.cam_ip)).arg(cfg.cam_port)},
+                       {{"endpoint", QString::fromStdString(cfg.cam_ip)},
                         {"cam_sn", QString::fromStdString(cfg.cam_sn)},
                         {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)},
                         {"exposure_us", QString::number(cfg.exposure_us)},
                         {"gain", QString::number(cfg.gain)}});
 
-#ifdef useORB
-    m_camera = std::make_shared<OrbbecCameraV2>(cfg);
-#else
     m_camera = std::make_shared<MVSCamera>(cfg);
-#endif
 
     setStatus("正在打开相机...");
     if (!m_camera->open()) {
@@ -1023,57 +971,11 @@ void CalibrationController::openCamera()
                             {"sdk_version", QString::fromStdString(audit.sdk_version)}});
     }
 
-#ifndef useMVS
-    // 读取并保存相机内参（仅 Orbbec：SDK 能提供镜头内参。
-    // MVS 不提供内参，禁止在打开相机时覆盖已有 camera_params.yaml，
-    // 内参必须由外部文件提供并通过身份校验，见内参安全门禁。）
-    auto intrinsics = m_camera->getCameraIntrinsics(m_previewWidth, m_previewHeight);
-    const bool validIntrinsics =
-        intrinsics.size() >= 4 &&
-        intrinsics[0].size() >= 3 &&
-        intrinsics[1].size() >= 3;
-    if (validIntrinsics) {
-        cv::FileStorage out(m_paramPath + "camera_params.yaml",
-                            cv::FileStorage::WRITE);
-        cv::Mat camera_matrix = cv::Mat::zeros(3, 3, CV_64F);
-        cv::Mat dist_coeffs   = cv::Mat::zeros(5, 1, CV_64F);
-
-        camera_matrix.at<double>(0, 0) = intrinsics[0][0];
-        camera_matrix.at<double>(1, 1) = intrinsics[1][1];
-        camera_matrix.at<double>(2, 2) = 1.0;
-        camera_matrix.at<double>(0, 2) = intrinsics[0][2];
-        camera_matrix.at<double>(1, 2) = intrinsics[1][2];
-
-        const size_t distortionCount = std::min<size_t>(5, intrinsics[3].size());
-        for (size_t i = 0; i < distortionCount; i++)
-            dist_coeffs.at<double>(static_cast<int>(i), 0) = intrinsics[3][i];
-
-        out << "camera_matrix" << camera_matrix;
-        out << "distortion_coefficients" << dist_coeffs;
-        out.release();
-        APP_LOG_EVENT_INFO("camera",
-                           "camera_intrinsics",
-                           "saved",
-                           {{"path", QString::fromStdString(m_paramPath + "camera_params.yaml")},
-                            {"fx", QString::number(camera_matrix.at<double>(0, 0), 'f', 4)},
-                            {"fy", QString::number(camera_matrix.at<double>(1, 1), 'f', 4)},
-                            {"cx", QString::number(camera_matrix.at<double>(0, 2), 'f', 4)},
-                            {"cy", QString::number(camera_matrix.at<double>(1, 2), 'f', 4)},
-                            {"distortion_count", QString::number(static_cast<int>(distortionCount))}});
-    } else {
-        APP_LOG_EVENT_WARNING("camera",
-                              "camera_intrinsics",
-                              "skip",
-                              {{"reason", "invalid_intrinsics"},
-                               {"outer_size", QString::number(intrinsics.size())}});
-    }
-#else
     APP_LOG_EVENT_INFO("camera",
                        "camera_intrinsics",
                        "skip",
                        {{"reason", "mvs_sdk_intrinsics_unavailable"},
                          {"note", "打开相机阶段不写内参；首次眼在手内标定将在采集后生成 camera_params.yaml"}});
-#endif
 
     setStatus("相机已打开");
     APP_LOG_EVENT_INFO("camera",
@@ -1523,7 +1425,7 @@ void CalibrationController::startCalibration()
                        "start",
                        {{"type", m_calibrationType},
                         {"robot", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
-                        {"camera", QString("%1:%2").arg(m_cameraIp).arg(m_cameraPort)},
+                        {"camera", m_cameraIp},
                         {"resolution", QString("%1x%2").arg(m_previewWidth).arg(m_previewHeight)},
                         {"camera_to_tcp_end", QString::number(m_cameraToTcpEnd)}});
 
@@ -1767,24 +1669,6 @@ void CalibrationController::calibrationThreadFunc(
             }
 
             if (ok) {
-#ifndef useMVS
-                // 保存相机内参（如果标定过程中更新了）。
-                // MVS 的首次标定内参已由核心流程连同相机身份原子发布，
-                // 此处只保留其他相机后端的兼容保存逻辑。
-                if (!camera_matrix.empty()) {
-                    const std::string cameraOutput = m_appPath + "camera_params.yaml";
-                    cv::FileStorage outCam(cameraOutput,
-                                           cv::FileStorage::WRITE);
-                    outCam << "camera_matrix" << result.camera_matrix;
-                    outCam << "distortion_coefficients" << result.dist_coeffs;
-                    outCam.release();
-                    APP_LOG_EVENT_INFO("calibration",
-                                       "calibration_output",
-                                       "intrinsics_saved",
-                                       {{"type", "eye_in_hand"},
-                                        {"path", QString::fromStdString(cameraOutput)}});
-                }
-#endif
 
                 std::stringstream ss_in;
                 ss_in << result.T_flange_camera;

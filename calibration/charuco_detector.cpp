@@ -9,8 +9,7 @@
 CharucoDetector::CharucoDetector(const CharucoBoardConfig& config,
                                   const std::string& camera_params_file,
                                   int min_ids, float filter_thresh)
-    : config_(config)
-    , min_ids_(min_ids)
+    : min_ids_(min_ids)
     , filter_thresh_(filter_thresh) {
 
     int dict_id;

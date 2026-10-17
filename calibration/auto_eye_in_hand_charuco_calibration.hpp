@@ -44,7 +44,7 @@ struct CalibrationResult {
  * @param robot_handle    CGXi RobotHandle（来自 cr_create_robot）
  * @param init_tcp_pose   起始 TCP 轴角位姿 [x,y,z,rx,ry,rz] (mm, deg)
  * @param tcp_offset      TCP 偏移量 [x,y,z,rx,ry,rz] (mm, deg)
- * @param camera          已打开的 OrbbecCameraV2
+ * @param camera          已打开的相机
  * @param board_config    ChArUco 标定板参数
  * @param camera_matrix   输入：已知内参 / 空 Mat 则自动标定；输出：最终内参
  * @param dist_coeffs     同上

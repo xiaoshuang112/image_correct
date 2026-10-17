@@ -11,7 +11,7 @@
 #include <sys/types.h>
 #include "robotapi.h"
 #include "basestruct.h"
-#include "utils/robot_util.hpp"
+#include "utils/sampling_utils.hpp"
 
 extern RobotHandle robotHandle;
 
@@ -35,15 +35,6 @@ CircleSampler::CircleSampler(std::shared_ptr<AICamera>& camera, const CircleTest
 
     m_R_f_c = config.T_flange_camera(cv::Rect(0, 0, 3, 3)).clone();
     m_t_f_c = config.T_flange_camera(cv::Rect(3, 0, 1, 3)).clone();
-}
-
-CRresult CircleSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
-    double ref_j[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos(robotHandle, ref_j) != sucess)
-        return error;
-    if (cr_kineInverse(robotHandle, axisAnglePos, ref_j, joint) != sucess)
-        return error;
-    return moveToJointPos(robotHandle, joint);
 }
 
 bool CircleSampler::computeLookAtPose(double cx, double cy, double cz,
@@ -172,19 +163,6 @@ int CircleSampler::captureExposures(const std::string& prefix, const std::vector
         count++;
     }
     return count;
-}
-
-// ============================================================
-// Progress bar
-// ============================================================
-void CircleSampler::printProgress(int current, int total) const {
-    int bar_width = 50;
-    int filled = current * bar_width / total;
-    int pct = current * 100 / total;
-    std::cout << "\r[";
-    for (int i = 0; i < bar_width; i++)
-        std::cout << (i < filled ? '#' : (i == filled ? '>' : ' '));
-    std::cout << "] " << pct << "% (" << current << "/" << total << ")" << std::flush;
 }
 
 // ============================================================
@@ -357,7 +335,7 @@ int CircleSampler::runTestCollection() {
                         continue;
                     }
 
-                    if (sucess != moveToFlangeAxisPos(pose)) {
+                    if (sucess != sampling::moveToFlangeAxisPos(robotHandle, pose)) {
                         std::cerr << "[CircleTest] Move failed at θ=" << theta << ", skip" << std::endl;
                         saveCheckpoint(bi, ci, li, pi + 1);
                         continue;
@@ -376,7 +354,7 @@ int CircleSampler::runTestCollection() {
                     saveCheckpoint(bi, ci, li, pi + 1);
 
                     cumulative++;
-                    printProgress(cumulative, total_expected);
+                    sampling::printProgress(cumulative, total_expected);
                 } // points
                 start_point = 0; // reset for next layer
             } // layers
@@ -451,7 +429,7 @@ int CircleSampler::run() {
                               << "°  pos=(" << std::fixed << std::setprecision(1)
                               << pose[0] << "," << pose[1] << "," << pose[2] << ")" << std::endl;
 
-                    if ( sucess !=moveToFlangeAxisPos(pose)) {
+                    if (sucess != sampling::moveToFlangeAxisPos(robotHandle, pose)) {
                         std::cerr << "[CircleSampler] Move failed at θ=" << theta << ", skipping" << std::endl;
                         continue;
                     }

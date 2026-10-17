@@ -111,7 +111,6 @@ std::string formatMotionDiagnostics(const RobotMotionDiagnostics& motion)
 } // namespace
 
 bool executeCollection(int robot_handle,
-                       char* pchRobotIP,
                        std::shared_ptr<AICamera>& camera,
                        CharucoDetector& detector,
                        const std::vector<PoseCandidate>& candidates,
@@ -152,8 +151,6 @@ bool executeCollection(int robot_handle,
 
     if (runtime_status) {
         runtime_status->candidate_reachable = total;
-        runtime_status->current_candidate_index = -1;
-        runtime_status->current_corner_count = -1;
         publishCollection("collection_start");
     }
 
@@ -187,11 +184,6 @@ bool executeCollection(int robot_handle,
                   << " (有效: " << captured << ")"
                   << std::flush;
 #endif
-
-        if (runtime_status) {
-            runtime_status->current_candidate_index = i;
-            runtime_status->current_corner_count = 0;
-        }
 
         int progress = 0;
         {
@@ -445,8 +437,6 @@ bool executeCollection(int robot_handle,
                                    {"image_h", QString::number(frame.rows)},
                                    {"attempts", QString::number(capture_attempts)},
                                    {"detection_failures", QString::number(detection_failures)}});
-            if (runtime_status)
-                runtime_status->current_corner_count = 0;
             ++skipped;
             publishCollection("candidate_skip_detection_failed");
             continue;
@@ -465,8 +455,6 @@ bool executeCollection(int robot_handle,
                                    {"corners", QString::number(ids.size())},
                                    {"minimum", "12"},
                                    {"attempts", QString::number(capture_attempts)}});
-            if (runtime_status)
-                runtime_status->current_corner_count = static_cast<int>(ids.size());
             ++skipped;
             publishCollection("candidate_skip_insufficient_corners");
             continue;
@@ -633,8 +621,6 @@ bool executeCollection(int robot_handle,
         }
 
         captured++;
-        if (runtime_status)
-            runtime_status->current_corner_count = static_cast<int>(ids.size());
         if (session)
             session->appendEvent("collection_frame", "captured",
                 "frame=" + std::to_string(captured - 1) +

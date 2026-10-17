@@ -2,15 +2,15 @@
 set -e
 
 # ============================================================
-#  hand-eye-mvs 发布包打包脚本
+#  collect-mvs 发布包打包脚本
 #
 #  用法:
 #    ./tools/package_mvs_release.sh
-#    ./tools/package_mvs_release.sh --build-dir build_mvs --output dist/hand-eye-mvs
+#    ./tools/package_mvs_release.sh --build-dir build_mvs --output dist/collect-mvs
 #    ./tools/package_mvs_release.sh --no-bundle-libs
 #
 #  产物布局:
-#    <output>/hand-eye-mvs          可执行文件（RPATH 含 $ORIGIN/lib/mvs）
+#    <output>/collect-mvs          可执行文件（RPATH 含 $ORIGIN/lib/mvs）
 #    <output>/mvs_hw_acceptance     真机验收工具（发布包必备，缺失则打包失败）
 #    <output>/check_mvs_target.sh   目标机交付校验脚本
 #    <output>/lib/mvs/              MVS 运行库（默认捆绑，可用 --no-bundle-libs 关闭）
@@ -41,7 +41,7 @@ while [ $# -gt 0 ]; do
     esac
 done
 
-BIN="$BUILD_DIR/hand-eye-mvs"
+BIN="$BUILD_DIR/collect-mvs"
 HW_ACCEPTANCE="$BUILD_DIR/mvs_hw_acceptance"
 if [ ! -x "$BIN" ]; then
     echo "[错误] 未找到 $BIN，请先运行 ./build_hand_eye.sh mvs"
@@ -53,12 +53,12 @@ if [ ! -x "$HW_ACCEPTANCE" ]; then
 fi
 
 if [ -z "$OUTPUT_DIR" ]; then
-    OUTPUT_DIR="$REPO_DIR/dist/hand-eye-mvs-$(date +%Y%m%d-%H%M%S)"
+    OUTPUT_DIR="$REPO_DIR/dist/collect-mvs-$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p "$OUTPUT_DIR/lib/mvs" "$OUTPUT_DIR/param"
 
 echo "========================================"
-echo "  打包 hand-eye-mvs → $OUTPUT_DIR"
+echo "  打包 collect-mvs → $OUTPUT_DIR"
 echo "========================================"
 
 # ---- 架构检查 ----
@@ -67,7 +67,7 @@ if ! file "$BIN" | grep -q "aarch64"; then
     file "$BIN"
 fi
 
-cp -d "$BIN" "$OUTPUT_DIR/hand-eye-mvs"
+cp -d "$BIN" "$OUTPUT_DIR/collect-mvs"
 
 # ---- MVS 运行库 ----
 case "$(uname -m)" in
@@ -153,7 +153,7 @@ verify_packed_binary() {
     echo "  $name ldd: 无缺失库"
 }
 
-verify_packed_binary "$OUTPUT_DIR/hand-eye-mvs" "hand-eye-mvs"
+verify_packed_binary "$OUTPUT_DIR/collect-mvs" "collect-mvs"
 verify_packed_binary "$OUTPUT_DIR/mvs_hw_acceptance" "mvs_hw_acceptance"
 
 # ---- 构建身份与校验清单 ----
@@ -170,7 +170,7 @@ GIT_STATE="$(if [ -z "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; t
 } > "$OUTPUT_DIR/BUILD_INFO.txt"
 
 ( cd "$OUTPUT_DIR" && sha256sum \
-    hand-eye-mvs \
+    collect-mvs \
     mvs_hw_acceptance \
     check_mvs_target.sh \
     lib/mvs/* 2>/dev/null > SHA256SUMS )

@@ -10,52 +10,21 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 
-# ============================================================
-#  相机后端选择：CAMERA_BACKEND=ORB|MVS（默认 ORB，保持现有产线产物）
-#  兼容旧入口 -DUSE_ORB=ON/OFF；两者同时给出且矛盾时直接报错。
-# ============================================================
-set(CAMERA_BACKEND "" CACHE STRING "Camera backend: ORB or MVS (default ORB)")
-if(CAMERA_BACKEND STREQUAL "")
-    if(DEFINED USE_ORB)
-        if(USE_ORB)
-            set(CAMERA_BACKEND "ORB")
-        else()
-            set(CAMERA_BACKEND "MVS")
-        endif()
-    else()
-        set(CAMERA_BACKEND "ORB")
-    endif()
-    set(CAMERA_BACKEND "${CAMERA_BACKEND}" CACHE STRING "Camera backend: ORB or MVS (default ORB)" FORCE)
-else()
-    string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
-    set(CAMERA_BACKEND "${CAMERA_BACKEND}" CACHE STRING "Camera backend: ORB or MVS (default ORB)" FORCE)
-    if(DEFINED USE_ORB)
-        if((USE_ORB AND NOT CAMERA_BACKEND STREQUAL "ORB") OR
-           (NOT USE_ORB AND NOT CAMERA_BACKEND STREQUAL "MVS"))
-            message(FATAL_ERROR
-                "USE_ORB=${USE_ORB} 与 CAMERA_BACKEND=${CAMERA_BACKEND} 矛盾，请只保留一种写法")
-        endif()
-    endif()
+# MVS is the only supported camera backend. Reject stale backend selections.
+set(CAMERA_BACKEND "MVS" CACHE STRING "Camera backend (MVS only)")
+string(TOUPPER "${CAMERA_BACKEND}" CAMERA_BACKEND)
+if(NOT CAMERA_BACKEND STREQUAL "MVS")
+    message(FATAL_ERROR "Only CAMERA_BACKEND=MVS is supported; clear the old backend selection")
 endif()
-if(NOT CAMERA_BACKEND STREQUAL "ORB" AND NOT CAMERA_BACKEND STREQUAL "MVS")
-    message(FATAL_ERROR "CAMERA_BACKEND 只支持 ORB 或 MVS，当前值: '${CAMERA_BACKEND}'")
+if(USE_ORB)
+    message(FATAL_ERROR "USE_ORB is no longer supported; remove it and use MVS")
 endif()
-
-SET(useORB FALSE)
-SET(useOAK FALSE)
-SET(useMVS FALSE)
-if(CAMERA_BACKEND STREQUAL "ORB")
-    SET(useORB TRUE)
-    set(CAITU_GUI_DEFAULT_CAM_WIDTH 1280)
-    set(CAITU_GUI_DEFAULT_CAM_HEIGHT 800)
-elseif(CAMERA_BACKEND STREQUAL "MVS")
-    SET(useMVS TRUE)
-    set(CAITU_GUI_DEFAULT_CAM_WIDTH 4024)
-    set(CAITU_GUI_DEFAULT_CAM_HEIGHT 3036)
-endif()
-string(TOLOWER "${CAMERA_BACKEND}" CAM_SUFFIX)
+set(useMVS TRUE)
+set(useOAK FALSE)
+set(CAITU_GUI_DEFAULT_CAM_WIDTH 4024)
+set(CAITU_GUI_DEFAULT_CAM_HEIGHT 3036)
+set(CAM_SUFFIX "mvs")
 message(STATUS "Camera backend: ${CAMERA_BACKEND}")
-
 
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
@@ -89,9 +58,8 @@ endif()
 message("Architecture Type: ${ARCH_TYPE}")
 
  
-# Orbbec SDK v2 路径
+# 公共源码路径
 if(WIN32)
-	set(ORBBEC_SDK_V2_DIR "F:/Program Files/OrbbecSDK 2.4.11")
     set(CGX_SDK_LIBS )      
 else()
     # # public
@@ -101,7 +69,6 @@ else()
 
     set(depthai_DIR "/usr/local")
 
-    set(ORBBEC_SDK_V2_DIR "/usr/local")
 
 endif()
 
@@ -139,22 +106,8 @@ if(UNIX)
 endif()
 
 
-include_directories(${ORBBEC_SDK_V2_DIR}/include)
-link_directories(${ORBBEC_SDK_V2_DIR}/lib)
-
 include_directories(${depthai_DIR}/include)
 link_directories(${depthai_DIR}/lib)
-
-# ORB SDK 校验与路径解析由父项目统一处理，CLI/GUI 使用相同结果。
-if(useORB)
-    if(NOT EXISTS "${ORBBEC_SDK_V2_DIR}/include/libobsensor/ObSensor.hpp")
-        message(FATAL_ERROR
-            "CAMERA_BACKEND=ORB 但未找到 Orbbec SDK 头文件: "
-            "${ORBBEC_SDK_V2_DIR}/include/libobsensor/ObSensor.hpp")
-    endif()
-    set(CAITU_CAMERA_INCLUDE_DIR "${ORBBEC_SDK_V2_DIR}/include")
-    set(CAITU_CAMERA_LIB_DIR "${ORBBEC_SDK_V2_DIR}/lib")
-endif()
 
 # MVS SDK：头文件和当前架构的运行库都必须存在，否则配置直接失败，
 # 不允许生成名为 MVS、实际无相机支持的二进制。
@@ -212,22 +165,12 @@ calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibratio
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
-    utils/robot_util.cpp utils/calib_transform.cpp
+    utils/robot_util.cpp utils/calib_transform.cpp utils/sampling_utils.cpp
 )
 
 set(CAITU_CAMERA_SOURCES)
 set(CAITU_CAMERA_LIBRARIES)
 set(CAITU_COMPILE_DEFINITIONS)
-
-if(useORB)
-    list(APPEND CAITU_COMPILE_DEFINITIONS useORB)
-    list(APPEND CAITU_CAMERA_SOURCES
-        ${CMAKE_CURRENT_SOURCE_DIR}/cameras/OrbbecCamera.cpp
-    )
-    list(APPEND CAITU_CAMERA_LIBRARIES
-        OrbbecSDK
-    )
-endif()
 
 if(useOAK)
     list(APPEND CAITU_COMPILE_DEFINITIONS useOAK)
@@ -257,7 +200,7 @@ target_compile_definitions(${PROJECT_NAME} PRIVATE ${CAITU_COMPILE_DEFINITIONS})
 target_link_libraries(${PROJECT_NAME} ${OpenCV_LIBS} ${CGX_SDK_LIBS} ${CAITU_CAMERA_LIBRARIES})
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
-# 开发机上回退到 SDK 安装目录。ORB 产物不引用任何 MVS 路径。
+# 开发机上回退到 SDK 安装目录。
 if(useMVS)
     set_target_properties(${PROJECT_NAME} PROPERTIES
         BUILD_WITH_INSTALL_RPATH OFF
@@ -265,8 +208,8 @@ if(useMVS)
         BUILD_RPATH "$ORIGIN/lib/mvs;${MVS_LIB_DIR}")
 endif()
 
-# 标定审计报告需要记录构建身份。与 GUI 使用同一个生成脚本，并在每次
-# build 时刷新，避免复用 configure 阶段的旧 commit/dirty 状态。
+# CLI、GUI 和离线工具共用构建身份，每次 build 刷新，
+# 避免复用 configure 阶段的旧 commit/dirty 状态。
 set(CALIBRATION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
 set(CALIBRATION_BUILD_INFO_HEADER "${CALIBRATION_BUILD_INFO_DIR}/AppBuildInfo.hpp")
 add_custom_target(calibration_build_info ALL

@@ -18,7 +18,6 @@ const char* kCfgPath = "caitu_test_config.yaml";
 CameraConfig makeDefaults() {
     CameraConfig d;
     d.cam_ip = "10.0.0.1";
-    d.cam_port = 8090;
     d.cam_width = 1280;
     d.cam_height = 800;
     d.exposure_us = 30000;
@@ -56,7 +55,8 @@ int test_config_resolver() {
     std::string err;
     CameraConfig out;
 
-    // ---- 旧版纯平铺配置（无 camera_profile）：完全兼容 ----
+    // 旧配置中的 cam_port 已废弃，忽略该字段且保留其他配置的读取。
+    // ---- 旧版纯平铺配置（无 camera_profile）：兼容读取 ----
     writeFile(
         "%YAML:1.0\n---\n"
         "cam_ip: \"192.168.1.11\"\n"
@@ -70,7 +70,7 @@ int test_config_resolver() {
                                                         makeDefaults(), out,
                                                         err),
                "legacy_flat_loads");
-    TEST_CHECK(out.cam_ip == "192.168.1.11" && out.cam_port == 8090 &&
+    TEST_CHECK(out.cam_ip == "192.168.1.11" &&
                    out.cam_width == 2448 && out.cam_height == 2048,
                "legacy_flat_values");
     TEST_CHECK(out.exposure_us == 28000 && out.gain == 0,
@@ -81,6 +81,7 @@ int test_config_resolver() {
                "legacy_flat_no_profile");
     TEST_CHECK(hasSource(out, "cam_ip=192.168.1.11(flat)"),
                "legacy_flat_source_audit");
+    TEST_CHECK(!hasSource(out, "cam_port="), "obsolete_port_ignored");
 
     // ---- 平铺键优先于嵌套节 ----
     writeFile(
@@ -100,7 +101,8 @@ int test_config_resolver() {
                                                         err),
                "profile_loads");
     TEST_CHECK(out.cam_ip == "192.168.3.10", "flat_beats_profile_ip");
-    TEST_CHECK(out.cam_port == 9000, "profile_fills_missing_port");
+    TEST_CHECK(out.cam_width == 2448 && out.cam_height == 2048,
+               "profile_fills_missing_resolution");
     TEST_CHECK(out.cam_sn == "DA1234567", "profile_fills_missing_sn");
     TEST_CHECK(out.exposure_us == 32000 && out.gain == 4,
                "profile_fills_exposure_gain");
@@ -121,7 +123,7 @@ int test_config_resolver() {
                "missing_profile_loads");
     TEST_CHECK(out.profile == "cam_missing" && !out.profile_found,
                "missing_profile_flagged");
-    TEST_CHECK(out.cam_ip == "192.168.3.10" && out.cam_port == 8090,
+    TEST_CHECK(out.cam_ip == "192.168.3.10" && out.cam_width == 1280,
                "missing_profile_falls_back");
 
     // ---- 无平铺键时嵌套节全权提供 ----
@@ -141,7 +143,7 @@ int test_config_resolver() {
                    out.cam_height == 2048,
                "profile_only_values");
     TEST_CHECK(out.allow_legacy_intrinsics, "profile_bool_set");
-    TEST_CHECK(out.cam_port == 8090, "profile_only_port_default");
+    TEST_CHECK(out.exposure_us == 30000, "profile_only_exposure_default");
 
     // ---- 布尔开关：平铺显式 0 不被嵌套节 1 覆盖 ----
     writeFile(

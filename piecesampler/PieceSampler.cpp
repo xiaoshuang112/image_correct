@@ -9,7 +9,7 @@
 #include <filesystem>
 #include "robotapi.h"
 #include "basestruct.h"
-#include "utils/robot_util.hpp"
+#include "utils/sampling_utils.hpp"
 
 extern RobotHandle robotHandle;
 
@@ -58,15 +58,6 @@ void PieceSampler::computeFixedPose(double px, double py, double pz, double flan
     }
 }
 
-CRresult PieceSampler::moveToFlangeAxisPos(double axisAnglePos[6]) {
-    double ref_j[ROB_AXIS_NUM], joint[ROB_AXIS_NUM];
-    if (cr_get_jointActualPos(robotHandle, ref_j) != sucess)
-        return error;
-    if (cr_kineInverse(robotHandle, axisAnglePos, ref_j, joint) != sucess)
-        return error;
-    return moveToJointPos(robotHandle, joint);
-}
-
 void PieceSampler::genExposures() {
     int minExp = 10, maxExp = 1800;
     m_camera->getExposureRange(minExp, maxExp);
@@ -78,19 +69,12 @@ void PieceSampler::genExposures() {
 
     _exp_values.resize(n);
 
-#ifdef useORB
-    for (int i = 0; i < n; i++) {
-        _exp_values[i] = minExp + (maxExp - minExp) * i / (n - 1);     
-    }
-#endif
-#ifdef useMVS
-     double logMin = std::log10(minExp + 1.0);
+    double logMin = std::log10(minExp + 1.0);
     double logMax = std::log10(maxExp);
     for (int i = 0; i < n; i++) {
         double logVal = logMin + (logMax - logMin) * i / (n - 1);     
         _exp_values[i] = (int)std::round(std::pow(10.0, logVal));
     }
- #endif
     
 
     std::cout << "  Exposure range: " << minExp << " ~ " << maxExp << " us, using "
@@ -130,16 +114,6 @@ int PieceSampler::captureExposures(const std::string& prefix, const std::vector<
         count++;
     }
     return count;
-}
-
-void PieceSampler::printProgress(int current, int total) const {
-    int bar_width = 50;
-    int filled = current * bar_width / total;
-    int pct = current * 100 / total;
-    std::cout << "\r[";
-    for (int i = 0; i < bar_width; i++)
-        std::cout << (i < filled ? '#' : (i == filled ? '>' : ' '));
-    std::cout << "] " << pct << "% (" << current << "/" << total << ")" << std::flush;
 }
 
 // ============================================================
@@ -275,7 +249,7 @@ int PieceSampler::run() {
                     double pose[6];
                     computeFixedPose(cx + dx, cy + dy, cz + dz, cur_flange, pose);
 
-                    if (sucess != moveToFlangeAxisPos(pose)) {
+                    if (sucess != sampling::moveToFlangeAxisPos(robotHandle, pose)) {
                         std::cerr << "[PieceSampler] Move failed at "
                                   << "Z=" << dz << " X=" << dx << " Y=" << dy << std::endl;
                         saveCheckpoint(bi, wi, zi, xyi + 1);
@@ -293,7 +267,7 @@ int PieceSampler::run() {
 
                     saveCheckpoint(bi, wi, zi, xyi + 1);
                     cumulative++;
-                    printProgress(cumulative, total_poses);
+                    sampling::printProgress(cumulative, total_poses);
                 } // xy
                 start_xy = 0;
             } // z

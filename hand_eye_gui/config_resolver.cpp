@@ -204,7 +204,6 @@ CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
     }
 
     resolveString(fs, profileNode, out.profile, "cam_ip", out.cam_ip, out.sources);
-    resolveInt(fs, profileNode, out.profile, "cam_port", out.cam_port, out.sources);
     resolveInt(fs, profileNode, out.profile, "cam_width", out.cam_width, out.sources);
     resolveInt(fs, profileNode, out.profile, "cam_height", out.cam_height, out.sources);
     resolveInt(fs, profileNode, out.profile, "camera_exposure_us",

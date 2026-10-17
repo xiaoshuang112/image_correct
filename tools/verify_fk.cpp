@@ -93,9 +93,7 @@ int main(int argc, char** argv) {
     double sum_pos_err = 0, sum_ang_err = 0;
 
     for (int i = 0; i < nj; i++) {
-        double joint_in_[6], fk_out[6];
-        // for (int j = 0; j < 6; j++)
-        //     joint_in[j] = joints[i][j];
+        double fk_out[6];
 
         ret = cr_kineForward(robotHandle, (double*)joints[i].data(), fk_out);
         if (ret != sucess) {

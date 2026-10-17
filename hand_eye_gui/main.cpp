@@ -14,9 +14,7 @@
 #include "DiagnosticLogger.hpp"
 #include "AppBuildInfo.hpp"
 
-#ifdef useMVS
 #include "MvCameraControl.h"
-#endif
 
 int main(int argc, char* argv[])
 {
@@ -52,9 +50,7 @@ int main(int argc, char* argv[])
                         {"git", QStringLiteral(APP_GIT_COMMIT)},
                         {"git_state", QStringLiteral(APP_GIT_WORKTREE_STATE)},
                         {"camera_backend", QStringLiteral(APP_CAMERA_BACKEND)},
-#ifdef useMVS
                         {"mvs_sdk_version", QString::number(MV_CC_GetSDKVersion(), 16)},
-#endif
                         {"qt", QString::fromLatin1(qVersion())},
                         {"opencv", QString::fromLatin1(CV_VERSION)},
                         {"kernel", QSysInfo::kernelVersion()},

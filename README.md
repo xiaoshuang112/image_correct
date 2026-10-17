@@ -5,6 +5,7 @@
 两端使用同一仓库和启动命令，分别在各自机器编译；不要复制或共享 `build_mvs` 构建目录。
 需要 C++17、CMake、OpenCV（含 contrib）、Qt5 Quick / QuickControls2 及对应 QML 模块、
 海康 MVS 和 CGXi 机器人 SDK。SDK 的动态库必须与目标 CPU 架构一致。
+相机后端仅支持 MVS；无需再选择后端。旧配置中的 `cam_port` 会被忽略。
 
 ```bash
 ./build_collect.sh -DCGX_SDK_DIR="/path/to/robot-sdk" -DMVS_SDK_DIR=/opt/MVS

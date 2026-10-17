@@ -146,7 +146,6 @@ Selection selectCompleteLinkCluster(
     const Candidate& selected = candidates.front();
     result.members = selected.members;
     result.medoid_index = selected.medoid;
-    result.medoid_distance_sum = selected.medoid_sum;
     result.max_normalized_pair_distance = selected.max_pair;
     result.normalized_pair_distance_sum = selected.pair_sum;
     for (std::size_t index = 0; index < count; ++index) {

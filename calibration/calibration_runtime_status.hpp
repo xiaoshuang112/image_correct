@@ -41,8 +41,6 @@ struct CalibrationRuntimeStatus {
     // collection（未产生时为 -1）
     int captured_frames = -1;
     int skipped_frames = -1;
-    int current_candidate_index = -1;
-    int current_corner_count = -1;
 
     // solve（未产生时为 -1）
     int pnp_valid_frames = -1;
