@@ -877,13 +877,6 @@ int OrbbecCameraV2::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthIm
 
 
 
-cv::Mat decodeMJPEGToBGR(const uint8_t* data, int dataSize) {
-    // 将 MJPEG 数据编码为 vector，然后用 OpenCV 解码
-    std::vector<uchar> jpegData(data, data + dataSize);
-    cv::Mat img = cv::imdecode(jpegData, cv::IMREAD_COLOR);
-    return img;  // cv::imdecode 直接返回 BGR 格式
-}
-
 // ========== 内参接口 ==========
 std::vector<std::vector<float>> OrbbecCameraV2::getCameraIntrinsics(const int imgWidth, const int imgHight) {
     // 直接指定大小并初始化为0

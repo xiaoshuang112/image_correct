@@ -17,11 +17,6 @@
 class CalibrationSession;
 
 /**
- * @brief 断线重连机械臂
- */
-int reconnectRobotHandle(int old_handle, char* pchRobotIP);
-
-/**
  * @brief 逐点运动 + 采集
  */
 bool executeCollection(int robot_handle,
@@ -47,14 +42,6 @@ double computeBoardAngle(const std::vector<cv::Point2f>& corners,
                          const std::vector<int>& ids,
                          int squares_x, int squares_y,
                          int image_width, int image_height);
-
-/**
- * @brief 计算角点凸包在两个方向上的像素跨度
- * @return 最大方向跨度
- */
-float computePixelSpan(const std::vector<cv::Point2f>& corners,
-                       float* out_w = nullptr,
-                       float* out_h = nullptr);
 
 /**
  * @brief 从两组共同 ID 的角点中，找第一帧最远点对在两帧中的距离
@@ -86,11 +73,6 @@ bool estimateCameraHeight(std::shared_ptr<AICamera>& camera,
  * @brief 将法兰 rx=-180, ry=0 旋转到水平姿态
  */
 bool rotateFlangeToHorizon(int robot_handle, double* pFlangeEulePos);
-
-/**
- * @brief 将角度限制在 [-90, 90] 范围
- */
-float bound_camera_angle(float angle);
 
 // ============================================================
 // 位姿加载与转换（眼在手外 / 眼在手上共用）

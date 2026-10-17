@@ -198,7 +198,7 @@ calibration/charuco_detector.cpp calibration/auto_eye_in_hand_charuco_calibratio
     circlesampler/CircleSampler.cpp circlesampler/Config.cpp
     piecesampler/PieceSampler.cpp piecesampler/Config.cpp
     testcameradeepth/DepthTestConfig.cpp testcameradeepth/DepthRemedy.cpp testcameradeepth/DepthTester.cpp
-    utils/putText.cpp utils/Util.cpp utils/Texts.cpp utils/robot_util.cpp utils/calib_transform.cpp
+    utils/robot_util.cpp utils/calib_transform.cpp
 )
 
 SET(SRC_LIBS 

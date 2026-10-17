@@ -110,152 +110,6 @@ std::string formatMotionDiagnostics(const RobotMotionDiagnostics& motion)
 
 } // namespace
 
-int reconnectRobotHandle(int old_handle, char* pchRobotIP){
-    CRresult result = error;
-    cr_destroy_robot(old_handle);
-    int waitingTime = 120000, try_time=0;
-    while(result != sucess){
-       std::cout << "[reconnectRobotHandle] wait to re-connect robot handle: " << ", waiting " << waitingTime << " milliseconds for " << try_time <<" connect\n" << std::flush;
-       std::this_thread::sleep_for(std::chrono::milliseconds(waitingTime));
-       result = cr_create_robot(&old_handle, pchRobotIP, 2323, "123");
-       try_time ++;
-    }
-    if( result == sucess)
-        std::cout << "[reconnectRobotHandle] success!!\n" << std::flush;
-    return old_handle;
-}
-
-bool executeCollection_bk(int robot_handle,
-                       char* pchRobotIP,
-                       std::shared_ptr<AICamera>& camera,
-                       CharucoDetector& detector,
-                       const std::vector<PoseCandidate>& candidates,
-                       const std::string& save_dir,
-                       AI_det_callback callback) {
-    int total = (int)candidates.size();
-    int captured = 0;
-
-    if (save_dir.empty()) {
-        std::cerr << "[autoCalib] 保存目录为空" << std::endl;
-        return false;
-    }
-    // 准备保存目录
-    std::string pos_file, joint_file;
-    {
-        namespace fs = std::filesystem;
-        if (fs::exists(save_dir))
-            fs::remove_all(save_dir);
-        fs::create_directories(save_dir);
-    }
-    pos_file = save_dir + "/rob_pos.csv";
-    joint_file = save_dir + "/rob_joint.csv";
-
-    for (int i = 0; i < total; i++) {
-        std::cout << "\r[autoCalib] 采集进度: " << (i + 1) << "/" << total
-                  << " (有效: " << captured << ")"
-                  << std::flush;
-
-        int progress = 0;
-        {
-            int bar_width = 60;
-            int filled = (i + 1) * bar_width / total;
-            std::cout << "\n[";
-            for (int k = 0; k < bar_width; k++)
-                std::cout << (k < filled ? '#' : ' ');
-            progress = (i + 1) * 100 / total;
-            std::cout << "] " << progress << "%\r\033[A" << std::flush;
-        }
-        double init_joint[ROB_AXIS_NUM], init_joint2[ROB_AXIS_NUM], dst_joint[ROB_AXIS_NUM];
-        double init_eule[ROB_AXIS_NUM], init_eule2[ROB_AXIS_NUM], dst_eule[ROB_AXIS_NUM];
-        cr_get_jointActualPos((RobotHandle)robot_handle, init_joint);
-        convertJointToFlangeEule(robot_handle, init_joint, init_eule);
-        convertJointToFlangeEule(robot_handle, candidates[i].joint, dst_eule);
-        memcpy(dst_eule+3, init_eule+3, 3 * sizeof(double));
-        convertFlangeOulePos2Joint(robot_handle, dst_eule, dst_joint);
-        CRresult ret_move = moveToJointPosByLine(robot_handle, dst_joint);
-        if(sucess != ret_move){
-            cr_get_jointActualPos((RobotHandle)robot_handle, init_joint2);
-            convertJointToFlangeEule(robot_handle, init_joint2, init_eule2);
-            moveToJointPos(robot_handle, init_joint);
-            moveToJointPosByLine(robot_handle, dst_joint);
-            if(operate_timeout == ret_move){
-                // robot_handle 是按值传入的。在此处销毁并重连只会更新局部副本，
-                // 控制器仍持有已经销毁的旧句柄。安全做法是终止本轮标定，
-                // 由控制器在工作线程结束后统一执行重连。
-                std::cerr << "\n[autoCalib] 机器人运动超时，终止本轮标定，请重新连接机器人"
-                          << std::endl;
-                return false;
-            }
-            continue;
-        }
-
-        cv::Mat frame = camera->captureOneFrame(1500);
-        if (frame.empty()) {
-            std::cerr << "\n[autoCalib] 采集图像失败 (pose " << i << ")" << std::endl;
-            continue;
-        }
-
-        std::vector<cv::Point2f> corners;
-        std::vector<int> ids;
-        if (!detector.detectCorners(frame, corners, ids))
-            continue;
-        if(ids.size() < 12)
-           continue;    
-           
-        // double tcp_pose[ROB_AXIS_NUM];
-        // CRresult ret = cr_get_tcpActualPose((RobotHandle)robot_handle, tcp_pose);
-        // if (ret != sucess) continue;
-
-        // double flange_pose__[ROB_AXIS_NUM];
-        // if(!convertTcpAxisPos2FlangPos(robot_handle, tcp_pose, flange_pose__))
-        //     continue;
-
-        // 获取实际关节角
-        double actual_joint[ROB_AXIS_NUM], flange_pose[ROB_AXIS_NUM];
-        cr_get_jointActualPos((RobotHandle)robot_handle, actual_joint);
-        cr_kineForward(robot_handle, actual_joint, flange_pose);
-
-        // 保存到磁盘
-        {
-            std::string img_name = save_dir + "/" +
-                (captured < 10 ? "00" : captured < 100 ? "0" : "") +
-                std::to_string(captured) + ".jpg";
-            cv::imwrite(img_name, frame);
-            if (callback) {
-                int call_ret = callback((char*)img_name.c_str(), (int)img_name.length(), progress);
-                if (-1==call_ret)
-                {
-                    std::cerr << "\r[autoCalib] 用户取消了  采集进度"  << std::endl;
-                    return false;
-                }
-            }
-        }
-        // rob_pos.csv: 法兰轴角位姿 (mm, deg)
-        {
-            std::ofstream f(pos_file, std::ios::app);
-            f << std::fixed << std::setprecision(3);
-            for (int j = 0; j < 6; j++)
-                f << flange_pose[j] << (j < 5 ? "," : "\n");
-        }
-        // rob_joint.csv: 关节角 (deg)
-        {
-            std::ofstream f(joint_file, std::ios::app);
-            f << std::fixed << std::setprecision(3);
-            for (int j = 0; j < 6; j++)
-                f << actual_joint[j] << (j < 5 ? "," : "\n");
-        }
-
-        captured++;
-    }
-
-    std::cout << "\n[autoCalib] 采集完成。有效帧: " << captured
-              << "/" << total
-              << ", 数据保存到: " << save_dir << std::endl;
-    return captured > 0;
-}
-
-
-
 bool executeCollection(int robot_handle,
                        char* pchRobotIP,
                        std::shared_ptr<AICamera>& camera,
@@ -898,22 +752,6 @@ double computeBoardAngle(const std::vector<cv::Point2f>& corners,
     return angle;
 }
 
-// 计算角点凸包在两个方向上的像素跨度（用于基于像素变化估计距离）
-// 返回最大方向跨度; out_w/out_h 为可选输出（宽度、高度）
-float computePixelSpan(const std::vector<cv::Point2f>& corners,
-                       float* out_w,
-                       float* out_h) {
-    float min_x = std::numeric_limits<float>::max(), max_x = -std::numeric_limits<float>::max();
-    float min_y = std::numeric_limits<float>::max(), max_y = -std::numeric_limits<float>::max();
-    for (auto& pt : corners) {
-        min_x = std::min(min_x, pt.x); max_x = std::max(max_x, pt.x);
-        min_y = std::min(min_y, pt.y); max_y = std::max(max_y, pt.y);
-    }
-    if (out_w) *out_w = max_x - min_x;
-    if (out_h) *out_h = max_y - min_y;
-    return std::max(max_x - min_x, max_y - min_y);
-}
-
 // 从两组具有共同 ID 的 ChArUco 角点中，找第一帧距离最远的点对，
 // 返回该点对在两帧中的距离（用于双图像高度估计，避免个别角点缺失的影响）
 bool computeCommonSpan(const std::vector<cv::Point2f>& corners1,
@@ -1029,15 +867,6 @@ bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
                        {{"phase", "rotate_horizontal"},
                         {"handle", QString::number(robot_handle)}});
     return true;
-}
-
-// 将角度限制在 [-90, 90] 范围
-float bound_camera_angle(float angle){
-    if(angle > 90)
-       return angle - 180;
-    if(angle < -90)
-       return 180 + angle;
-    return angle;
 }
 
 // 估计相机到标定板的距离（深度相机优先，无深度时自动回退到双图像法）

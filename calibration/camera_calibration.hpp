@@ -20,17 +20,6 @@ bool loadImagesFromDisk(const std::string& save_dir,
                         cv::Size& image_size);
 
 /**
- * @brief 多轮筛选：分批标定 → 取误差最小的 wantedNum 帧
- *
- * @return true/false
- */
-bool filterDataForCameraCalibration(std::vector<std::vector<cv::Point3f>>& object_points,
-    std::vector<std::vector<cv::Point2f>>& image_points,
-    const cv::Size& image_size,
-    cv::Mat& camera_matrix,
-    cv::Mat& dist_coeffs, int wantedNum);
-
-/**
  * @brief 从已采集的 ChArUco 图像标定相机内参
  *
  * 检测全部图像，但非线性优化仅使用按画面覆盖度筛选的有限代表帧，

@@ -2,9 +2,6 @@
 #include <algorithm>
 #include <cmath>
 #include <numeric>
-#include <iostream>
-#include <thread>
-#include <chrono>
 
 void DepthHistory::addValidDepth(double depth_mm, double outlier_sigma) {
     valid_depths.push_back(depth_mm);
@@ -80,36 +77,4 @@ double extractCenterDepth(const cv::Mat& depth, double center_ratio) {
     size_t n = values.size() / 2;
     std::nth_element(values.begin(), values.begin() + n, values.end());
     return static_cast<double>(values[n]);
-}
-
-double remedyDepth(std::shared_ptr<AICamera>& camera,
-                   DepthHistory& history,
-                   const DepthTestPoint& point,
-                   const DepthTestPoint& other_point,
-                   const DepthTestConfig& config,
-                   int& out_reacquire_count) {
-    out_reacquire_count = 0;
-
-    for (int attempt = 0; attempt < config.max_reacquire; attempt++) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(config.settle_time_ms));
-
-        cv::Mat bgr, depth;
-        if (camera->captureOneFrameWithDepth(bgr, depth, config.capture_timeout_ms) != 0)
-            continue;
-
-        double new_depth = extractCenterDepth(depth, config.center_ratio);
-        if (new_depth <= 0) continue;
-
-        out_reacquire_count = attempt + 1;
-        bool stale = history.isStaleFrame(new_depth,
-                                          point.depth_min, point.depth_max,
-                                          other_point.depth_min, other_point.depth_max);
-        if (!stale) {
-            history.addValidDepth(new_depth, config.outlier_sigma);
-            return new_depth;
-        }
-    }
-
-    // 重采耗尽，使用默认深度
-    return history.getDefaultDepth();
 }

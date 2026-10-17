@@ -46,7 +46,6 @@
 
 #include "robotapi.h"
 #include "basestruct.h"
-#include "utils/putText.h"
 #include "circlesampler/CircleSampler.h"
 #include "piecesampler/PieceSampler.h"
 #include "piecesampler/Config.h"
@@ -64,29 +63,6 @@ std::shared_ptr<AICamera> g_camera = nullptr;
 RobotHandle robotHandle;
 
 namespace fs = std::filesystem;
-
-
-std::string string_format(const char* format, ...) {
-    if (!format)
-        return {};
-
-    va_list args;
-    va_start(args, format);
-    va_list countArgs;
-    va_copy(countArgs, args);
-    const int count = vsnprintf(nullptr, 0, format, countArgs);
-    va_end(countArgs);
-    if (count < 0) {
-        va_end(args);
-        return {};
-    }
-
-    std::vector<char> buffer(static_cast<size_t>(count) + 1U, '\0');
-    vsnprintf(buffer.data(), buffer.size(), format, args);
-    va_end(args);
-    return std::string(buffer.data(), static_cast<size_t>(count));
-}
-
 
 
 // 主菜单
@@ -394,20 +370,6 @@ static void screw_sampling() {
         //g_camera->setColorExposureTime(42);    
         int total = sampler.run();
         std::cout << "\n采样完成，共 " << total << " 张图像" << std::endl;
-    }
-}
-
-void try_camera_exposure(){
-     for (size_t i = 0; i < 100; i++)
-    {
-        bool bRet = g_camera->setColorExposureTime(5000+i*2);
-
-        if (!bRet)
-        {
-            std::cout<< "error "<<std::endl;
-        }
-        
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));   
     }
 }
 

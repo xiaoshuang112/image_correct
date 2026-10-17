@@ -20,7 +20,6 @@ private:
                            double r, double yaw_deg, double theta_deg, double out_pose[6]);
     int captureExposures(const std::string& prefix);
     int captureExposures(const std::string& prefix, const std::vector<int>& indices);
-    int captureGains(const std::string& prefix);
     CRresult moveToFlangeAxisPos(double axisAnglePos[6]);
     void genExposures();
     void printProgress(int current, int total) const;

@@ -176,36 +176,6 @@ int CircleSampler::captureExposures(const std::string& prefix, const std::vector
     return count;
 }
 
-// --- No gain capture in test mode (unchanged, kept for reference) ---
-int CircleSampler::captureGains(const std::string& prefix) {
-    int count = 0;
-    int minGain = 0, maxGain = 24;
-    if (!m_camera->getGainRange(minGain, maxGain) || maxGain <= minGain) {
-        std::cerr << "[Sampler] Failed to get gain range, using [0, 24] dB" << std::endl;
-        minGain = 0; maxGain = 24;
-    }
-    int n = m_config.num_exposures;
-    if (n < 2) n = 2;
-    std::vector<int> gain_values(n);
-    for (int i = 0; i < n; i++)
-        gain_values[i] = minGain + (maxGain - minGain) * i / (n - 1);
-
-    std::cout << "  Gain range: " << minGain << " ~ " << maxGain << " dB, using "
-              << n << " linearly spaced values: " << gain_values.front() << " ~ " << gain_values.back() << " dB" << std::endl;
-
-    for (int i = 0; i < n; i++) {
-        int gain = gain_values[i];
-        if (!m_camera->setColorGain(gain)) { std::cerr << "[Sampler] Set gain " << gain << " dB failed" << std::endl; continue; }
-        cv::Mat frame = m_camera->captureOneFrame(m_config.capture_timeout_ms);
-        if (frame.empty()) { std::cerr << "[Sampler] Empty frame at gain " << gain << " dB" << std::endl; continue; }
-        std::ostringstream filename;
-        filename << prefix << "_gain_" << i << ".jpg";
-        cv::imwrite(filename.str(), frame);
-        count++;
-    }
-    return count;
-}
-
 // ============================================================
 // Progress bar
 // ============================================================
