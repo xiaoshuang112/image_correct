@@ -1,6 +1,7 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
+import "."
 
 Button {
     id: control
@@ -9,24 +10,27 @@ Button {
     property bool quiet: false
     property bool danger: false
     property string iconName: ""
-    readonly property color textInk: !enabled ? "#8295aa"
-        : positive ? "#a0e1bf" : primary ? "#10253e" : danger ? "#d39aa2" : "#a3cfff"
-    implicitHeight: 36
-    implicitWidth: contentItem.implicitWidth + 28
+    readonly property color textInk: !enabled ? (primary ? Theme.primaryDisabledInk : Theme.disabledInk)
+        : primary ? Theme.accentInk : positive ? Theme.ok : danger ? Theme.danger
+        : quiet ? (hovered ? Theme.ink : Theme.ink2) : Theme.ink
+    implicitHeight: Theme.controlHeight
+    implicitWidth: contentItem.implicitWidth + leftPadding + rightPadding
     leftPadding: 14
     rightPadding: 14
+    topPadding: 0
+    bottomPadding: 0
     hoverEnabled: true
-    font.family: "Noto Sans CJK SC"
-    font.pixelSize: 13
+    font.family: Theme.sans
+    font.pixelSize: Theme.body
     font.weight: Font.Medium
     contentItem: RowLayout {
-        spacing: 7
+        spacing: 6
         CollectIcon {
             visible: control.iconName !== ""
             name: control.iconName
             ink: control.textInk
-            Layout.preferredWidth: 17
-            Layout.preferredHeight: 17
+            Layout.preferredWidth: 16
+            Layout.preferredHeight: 16
         }
         Text {
             text: control.text
@@ -38,13 +42,19 @@ Button {
         }
     }
     background: Rectangle {
-        radius: 6
-        color: !control.enabled ? (control.primary ? "#25384f" : control.quiet ? "transparent" : "#1c2531")
-            : control.positive ? (control.down ? "#224e3c" : control.hovered ? "#214735" : "#1a382e")
-            : control.primary ? (control.down ? "#5a9fdf" : control.hovered ? "#97cbff" : "#77baff")
-            : control.down ? "#303f51" : control.hovered ? "#29394d" : control.quiet ? "transparent" : (control.danger ? "#291f29" : "#1d2a3a")
-        border.width: 1
-        border.color: control.activeFocus ? "#a6d5ff" : control.quiet ? "transparent" : control.positive ? "#3f8165" : control.danger ? "#5b3d47" : control.primary && control.enabled ? "#77baff" : "#365675"
-        Behavior on color { ColorAnimation { duration: 100 } }
+        radius: Theme.radiusControl
+        color: !control.enabled ? (control.primary ? Theme.primaryDisabledBg : control.quiet ? "transparent" : Theme.disabledBg)
+            : control.primary ? (control.down ? Theme.accentDown : control.hovered ? Theme.accentHover : Theme.accent)
+            : control.positive ? Theme.okSoft
+            : control.danger ? (control.hovered ? Theme.dangerSoft : "transparent")
+            : control.quiet ? "transparent"
+            : control.down ? Theme.raisedDown : control.hovered ? Theme.raisedHover : Theme.raised
+        border.width: control.primary && control.enabled || control.quiet ? 0 : 1
+        border.color: control.activeFocus ? Theme.accent
+            : !control.enabled ? Theme.hairline
+            : control.positive ? Theme.okLine : control.danger ? Theme.dangerLine
+            : control.hovered ? Theme.lineHover : Theme.line
+        Behavior on color { ColorAnimation { duration: 120 } }
+        Behavior on border.color { ColorAnimation { duration: 120 } }
     }
 }

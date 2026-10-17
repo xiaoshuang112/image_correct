@@ -1,24 +1,25 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
+import "."
 
 TextField {
     id: control
-    property bool mono: false
-    implicitHeight: 36
+    property bool mono: true
+    implicitHeight: Theme.controlHeight
     implicitWidth: 140
-    leftPadding: 11
-    rightPadding: 11
-    font.family: mono ? "DejaVu Sans Mono" : "Noto Sans CJK SC"
-    font.pixelSize: 12
-    color: enabled ? "#dce8f7" : "#8393a8"
-    placeholderTextColor: "#7e91a8"
-    selectionColor: "#344b68"
-    selectedTextColor: "#ecf1f8"
+    leftPadding: 10
+    rightPadding: 10
+    font.family: mono ? Theme.mono : Theme.sans
+    font.pixelSize: Theme.body
+    color: enabled ? Theme.ink : Theme.ink2
+    placeholderTextColor: Theme.ink3
+    selectionColor: Theme.accentSelection
+    selectedTextColor: Theme.ink
     background: Rectangle {
-        radius: 6
-        color: control.enabled ? "#0f151e" : "#181e28"
+        radius: Theme.radiusControl
+        color: control.enabled ? Theme.sunken : Theme.disabledBg
         border.width: 1
-        border.color: control.activeFocus ? "#a6d5ff" : "#354357"
-        Behavior on border.color { ColorAnimation { duration: 100 } }
+        border.color: control.activeFocus ? Theme.accent : control.enabled ? Theme.line : Theme.hairline
+        Behavior on border.color { ColorAnimation { duration: 120 } }
     }
 }

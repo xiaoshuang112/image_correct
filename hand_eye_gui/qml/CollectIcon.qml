@@ -1,9 +1,10 @@
 import QtQuick 2.15
+import "."
 
 Canvas {
     id: icon
     property string name: "camera"
-    property color ink: "#9ba8bc"
+    property color ink: Theme.ink2
     implicitWidth: 20
     implicitHeight: 20
     onNameChanged: requestPaint()
@@ -16,7 +17,7 @@ Canvas {
         ctx.scale(width / 24, height / 24)
         ctx.strokeStyle = ink
         ctx.fillStyle = ink
-        ctx.lineWidth = 1.6
+        ctx.lineWidth = 1.5
         ctx.lineCap = "round"
         ctx.lineJoin = "round"
         function line(x1, y1, x2, y2) {
@@ -37,6 +38,23 @@ Canvas {
                 line(12 + Math.cos(a) * 3.6, 12 + Math.sin(a) * 3.6,
                      12 + Math.cos(a - 0.35) * 8.9, 12 + Math.sin(a - 0.35) * 8.9)
             }
+        } else if (name === "aperture") {
+            circle(12, 12, 9)
+            var t = Math.sqrt(81 - 16)
+            ctx.beginPath()
+            for (var j = 0; j < 6; ++j) {
+                var b = j * Math.PI / 3
+                var px = 12 + Math.cos(b) * 4, py = 12 + Math.sin(b) * 4
+                if (j === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py)
+            }
+            ctx.closePath(); ctx.stroke()
+            for (var k = 0; k < 6; ++k) {
+                var c = k * Math.PI / 3
+                var x0 = 12 + Math.cos(c) * 4, y0 = 12 + Math.sin(c) * 4
+                line(x0, y0, x0 - Math.sin(c) * t, y0 + Math.cos(c) * t)
+            }
+        } else if (name === "spinner") {
+            ctx.beginPath(); ctx.arc(12, 12, 8, 0, Math.PI * 1.5); ctx.stroke()
         } else if (name === "save") {
             ctx.beginPath(); ctx.moveTo(4, 3); ctx.lineTo(17, 3); ctx.lineTo(21, 7)
             ctx.lineTo(21, 21); ctx.lineTo(4, 21); ctx.closePath(); ctx.stroke()

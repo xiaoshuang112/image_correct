@@ -316,8 +316,25 @@ QtObject {
             input->setFocus(false);
             window->contentItem()->forceActiveFocus();
             window->resize(1280, 850);
-            QTest::qWait(50);
+            QTest::qWait(250);
             require(window->grabWindow().save(QString::fromLocal8Bit(argv[1])), "UI screenshot failed");
+            if (argc > 2) {
+                controller->setProperty("cameraOpened", true);
+                controller->setProperty("previewActive", true);
+                controller->setProperty("robotConnected", true);
+                controller->setProperty("savedImageCount", 12);
+                controller->setProperty("savedPoseCount", 3);
+                controller->setProperty("undistortionEnabled", true);
+                QTest::qWait(300);
+                QMetaObject::invokeMethod(controller.get(), "frameUpdated");
+                QTest::qWait(80);
+                require(window->grabWindow().save(QString::fromLocal8Bit(argv[2])), "live UI screenshot failed");
+                if (argc > 3) {
+                    window->resize(1024, 740);
+                    QTest::qWait(150);
+                    require(window->grabWindow().save(QString::fromLocal8Bit(argv[3])), "compact live UI screenshot failed");
+                }
+            }
         }
         std::cout << "Collection QML, shortcuts, focus, busy state and layout checks passed\n";
         return 0;

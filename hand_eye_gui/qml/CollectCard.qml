@@ -1,14 +1,14 @@
 import QtQuick 2.15
 import QtQuick.Controls 2.15
+import "."
 
 Pane {
-    property color surfaceColor: "#161c25"
-    property color outlineColor: "#2b3441"
-    padding: 12
+    padding: Theme.padding
     background: Rectangle {
-        radius: 9
-        color: surfaceColor
+        radius: Theme.radiusCard
+        color: Theme.surface
         border.width: 1
-        border.color: outlineColor
+        border.color: Theme.hairline
+        Rectangle { x: Theme.radiusCard; y: 1; width: parent.width - Theme.radiusCard * 2; height: 1; color: Theme.highlight }
     }
 }
