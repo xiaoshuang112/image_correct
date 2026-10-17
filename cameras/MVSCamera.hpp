@@ -16,7 +16,6 @@ public:
     bool open() override;
     void close() override;
     cv::Mat captureOneFrame(int timeoutMs = 1000) override;
-    int captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs = 2000) override;
     bool isOpened() const override { return m_isOpened; }
     CameraDeviceAuditInfo getDeviceAuditInfo() const override;
     std::string backendName() const override { return "mvs"; }

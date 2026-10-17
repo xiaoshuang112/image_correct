@@ -52,12 +52,7 @@ bool computeCommonSpan(const std::vector<cv::Point2f>& corners1,
                        float& dist1, float& dist2);
 
 /**
- * @brief 计算 ChArUco 角点凸包区域的平均深度
- */
-double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2f>& corners);
-
-/**
- * @brief 估计相机到标定板的距离（深度相机优先，无深度时回退到双图像法）
+ * @brief 使用双图像法估计 MVS 相机到标定板的距离
  */
 bool estimateCameraHeight(std::shared_ptr<AICamera>& camera,
                           CharucoDetector& detector,

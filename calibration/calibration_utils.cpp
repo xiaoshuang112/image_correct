@@ -773,30 +773,6 @@ bool computeCommonSpan(const std::vector<cv::Point2f>& corners1,
 }
 
 // 计算 ChArUco 角点凸包区域的平均深度（0=无效深度）
-double computeAvgDepth(const cv::Mat& depth, const std::vector<cv::Point2f>& corners) {
-    if (depth.empty() || depth.type() != CV_16UC1 || corners.size() < 3)
-        return 0.0;
-
-    std::vector<cv::Point2f> hull_f;
-    cv::convexHull(corners, hull_f);
-    std::vector<cv::Point2i> hull;
-    for (auto& p : hull_f) hull.emplace_back(cv::Point2i(p));
-    cv::Mat mask = cv::Mat::zeros(depth.size(), CV_8UC1);
-    cv::fillPoly(mask, std::vector<std::vector<cv::Point>>{hull}, cv::Scalar(255));
-
-    double sum = 0.0;
-    int cnt = 0;
-    for (int r = 0; r < depth.rows; r++) {
-        for (int c = 0; c < depth.cols; c++) {
-            if (mask.at<uchar>(r, c)) {
-                ushort d = depth.at<ushort>(r, c);
-                if (d > 0 && d <= 3000) { sum += d; cnt++; }
-            }
-        }
-    }
-    return (cnt > 0) ? (sum / cnt) : 0.0;
-}
-
 // 将法兰 rx=-180, ry=0 旋转到水平姿态
 bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
     double flangeEulePos[ROB_AXIS_NUM] = {};
@@ -855,7 +831,7 @@ bool rotateFlangeToHorizon(int robot_handle, double *pFlangeEulePos){
     return true;
 }
 
-// 估计相机到标定板的距离（深度相机优先，无深度时自动回退到双图像法）
+// 使用双图像法估计 MVS 相机到标定板的距离
 // 同时输出采集到的 frame 和角点（后续 Z 值迭代需要）
 bool estimateCameraHeight(
     std::shared_ptr<AICamera>& camera,
@@ -875,22 +851,18 @@ bool estimateCameraHeight(
         return false;
     }
 
-    // 采集一帧（含深度，如果有深度相机）
-    cv::Mat depth;
+    // 保持原 MVS 路径的三次取帧及 2000 ms 超时。
     for (int i = 0; i < 3; i++) {
-        const int captureRet = camera->captureOneFrameWithDepth(out_frame, depth);
+        out_frame = camera->captureOneFrame(2000);
         APP_LOG_EVENT_DEBUG("calibration.height",
                             "height_estimate",
                             "capture_attempt",
                             {{"attempt", QString::number(i + 1)},
-                             {"ret", QString::number(captureRet)},
+                             {"ret", QString::number(out_frame.empty() ? -1 : 0)},
                              {"color_w", QString::number(out_frame.cols)},
                              {"color_h", QString::number(out_frame.rows)},
-                             {"depth_w", QString::number(depth.cols)},
-                             {"depth_h", QString::number(depth.rows)}});
-        if (captureRet != 0 && out_frame.empty())
-            continue;
-        if (!out_frame.empty() && !depth.empty()) break;
+                             {"depth_w", QString::number(0)},
+                             {"depth_h", QString::number(0)}});
     }
     if (out_frame.empty()) {
         APP_LOG_EVENT_ERROR("calibration.height",
@@ -917,119 +889,89 @@ bool estimateCameraHeight(
     heightCamera = 0.0;
     bool heightOk = false;
 
-    // 方案 A: 有深度相机 → 直接用深度数据
-    if (!depth.empty() && depth.cols > 0 && depth.rows > 0) {
-        double h = computeAvgDepth(depth, out_corners);
-        if (h > 0.0) {
-            heightCamera = h;
-            heightOk = true;
-            std::cout << "[autoCalib] 深度相机高度: " << heightCamera << " mm" << std::endl;
-            APP_LOG_EVENT_INFO("calibration.height",
-                               "height_estimate",
-                               "success",
-                               {{"method", "depth"},
-                                {"height_mm", QString::number(heightCamera, 'f', 3)},
-                                {"corners", QString::number(out_ids.size())},
-                                {"depth_w", QString::number(depth.cols)},
-                                {"depth_h", QString::number(depth.rows)}});
-        } else {
-            APP_LOG_EVENT_WARNING("calibration.height",
-                                  "height_estimate",
-                                  "skip",
-                                  {{"reason", "depth_invalid"},
-                                   {"corners", QString::number(out_ids.size())},
-                                   {"depth_w", QString::number(depth.cols)},
-                                   {"depth_h", QString::number(depth.rows)},
-                                   {"valid_range_mm", "1..3000"}});
-        }
+    std::cout << "[estimateCameraHeight] 无深度数据，双图像法估计高度" << std::endl;
+
+    double initJoint[6] = {};
+    CRresult jointRet = cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
+    if (jointRet != sucess) {
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "joint_read"},
+                             {"error", QString::number(jointRet)}});
+        return false;
+    }
+    const double Z_STEP = 150.0;
+
+    double flangeUp[6];
+    std::copy(oriFlangeEulePos, oriFlangeEulePos + 6, flangeUp);
+    flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
+    if (!moveToFlangeEulePos(robot_handle, flangeUp)) {
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "move_up"},
+                             {"target_z", QString::number(flangeUp[2], 'f', 3)}});
+        return false;
     }
 
-    // 方案 B: 无深度 → 双图像法
-    if (!heightOk) {
-        std::cout << "[estimateCameraHeight] 无深度数据，双图像法估计高度" << std::endl;
-
-        double initJoint[6] = {};
-        CRresult jointRet = cr_get_jointActualPos((RobotHandle)robot_handle, initJoint);
-        if (jointRet != sucess) {
-            APP_LOG_EVENT_ERROR("calibration.height",
-                                "height_estimate",
-                                "fail",
-                                {{"reason", "joint_read"},
-                                 {"error", QString::number(jointRet)}});
-            return false;
-        }
-        const double Z_STEP = 150.0;
-
-        double flangeUp[6];
-        std::copy(oriFlangeEulePos, oriFlangeEulePos + 6, flangeUp);
-        flangeUp[2] = oriFlangeEulePos[2] + Z_STEP;
-        if (!moveToFlangeEulePos(robot_handle, flangeUp)) {
-            APP_LOG_EVENT_ERROR("calibration.height",
-                                "height_estimate",
-                                "fail",
-                                {{"reason", "move_up"},
-                                 {"target_z", QString::number(flangeUp[2], 'f', 3)}});
-            return false;
-        }
-
-        cv::Mat frame2 = camera->captureOneFrame(1500);
-        if (frame2.empty()) {
-            const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
-            if (restoreRet != sucess)
-                std::cerr << "[estimateCameraHeight] 第二帧采集失败且恢复位置失败 ret="
-                          << restoreRet << std::endl;
-            APP_LOG_EVENT_ERROR("calibration.height",
-                                "height_estimate",
-                                "fail",
-                                {{"reason", "second_capture"},
-                                 {"restore_error", QString::number(restoreRet)}});
-            return false;
-        }
-
-        std::vector<cv::Point2f> corners2;
-        std::vector<int> ids2;
-        if (!detector.detectCorners(frame2, corners2, ids2) || ids2.size() < 4) {
-            const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
-            if (restoreRet != sucess)
-                std::cerr << "[estimateCameraHeight] 第二帧检测失败且恢复位置失败 ret="
-                          << restoreRet << std::endl;
-            APP_LOG_EVENT_WARNING("calibration.height",
-                                  "height_estimate",
-                                  "skip",
-                                  {{"reason", "second_detection"},
-                                   {"corners", QString::number(ids2.size())},
-                                   {"restore_error", QString::number(restoreRet)}});
-            return false;
-        }
+    cv::Mat frame2 = camera->captureOneFrame(1500);
+    if (frame2.empty()) {
         const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
-        if (restoreRet != sucess) {
-            APP_LOG_EVENT_ERROR("calibration.height",
-                                "height_estimate",
-                                "fail",
-                                {{"reason", "restore_position"},
-                                 {"error", QString::number(restoreRet)}});
-            return false;
-        }
+        if (restoreRet != sucess)
+            std::cerr << "[estimateCameraHeight] 第二帧采集失败且恢复位置失败 ret="
+                      << restoreRet << std::endl;
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "second_capture"},
+                             {"restore_error", QString::number(restoreRet)}});
+        return false;
+    }
 
-        float dim1, dim2;
-        if (!computeCommonSpan(out_corners, out_ids, corners2, ids2, dim1, dim2)) {
-            std::cout << "[estimateCameraHeight] 两帧共同角点不足" << std::endl;
-            return false;
-        }
+    std::vector<cv::Point2f> corners2;
+    std::vector<int> ids2;
+    if (!detector.detectCorners(frame2, corners2, ids2) || ids2.size() < 4) {
+        const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
+        if (restoreRet != sucess)
+            std::cerr << "[estimateCameraHeight] 第二帧检测失败且恢复位置失败 ret="
+                      << restoreRet << std::endl;
+        APP_LOG_EVENT_WARNING("calibration.height",
+                              "height_estimate",
+                              "skip",
+                              {{"reason", "second_detection"},
+                               {"corners", QString::number(ids2.size())},
+                               {"restore_error", QString::number(restoreRet)}});
+        return false;
+    }
+    const CRresult restoreRet = moveToJointPos(robot_handle, initJoint);
+    if (restoreRet != sucess) {
+        APP_LOG_EVENT_ERROR("calibration.height",
+                            "height_estimate",
+                            "fail",
+                            {{"reason", "restore_position"},
+                             {"error", QString::number(restoreRet)}});
+        return false;
+    }
 
-        if (dim1 > dim2 && (dim1 - dim2) > 0.5f) {
-            heightCamera = Z_STEP * dim2 / (dim1 - dim2);
-            std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
-                      << " mm (像素 " << dim1 << "→" << dim2 << " px)" << std::endl;
-            APP_LOG_EVENT_INFO("calibration.height",
-                               "height_estimate",
-                               "success",
-                               {{"method", "two_images"},
-                                {"height_mm", QString::number(heightCamera, 'f', 3)},
-                                {"span_before", QString::number(dim1, 'f', 3)},
-                                {"span_after", QString::number(dim2, 'f', 3)}});
-            heightOk = true;
-        }
+    float dim1, dim2;
+    if (!computeCommonSpan(out_corners, out_ids, corners2, ids2, dim1, dim2)) {
+        std::cout << "[estimateCameraHeight] 两帧共同角点不足" << std::endl;
+        return false;
+    }
+
+    if (dim1 > dim2 && (dim1 - dim2) > 0.5f) {
+        heightCamera = Z_STEP * dim2 / (dim1 - dim2);
+        std::cout << "[autoCalib] 双图像高度估计: " << heightCamera
+                  << " mm (像素 " << dim1 << "→" << dim2 << " px)" << std::endl;
+        APP_LOG_EVENT_INFO("calibration.height",
+                           "height_estimate",
+                           "success",
+                           {{"method", "two_images"},
+                            {"height_mm", QString::number(heightCamera, 'f', 3)},
+                            {"span_before", QString::number(dim1, 'f', 3)},
+                            {"span_after", QString::number(dim2, 'f', 3)}});
+        heightOk = true;
     }
 
     if (!heightOk) {

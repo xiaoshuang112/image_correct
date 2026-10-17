@@ -131,24 +131,9 @@ struct CalibrationSessionOptions {
     std::string intrinsic_source;
     std::string intrinsic_source_file;
     std::string robot_endpoint;
-    std::string robot_model;
-    std::string robot_controller;
-    std::string pose_config_source_file;
-    std::vector<double> pose_offset_x;
-    std::vector<double> pose_offset_y;
-    std::vector<double> pose_offset_z;
-    std::vector<double> pose_offset_rx;
-    std::vector<double> pose_offset_ry;
-    std::vector<double> pose_offset_rz;
-    int pose_min_corners = 0;
-    int pose_min_valid_frames = 0;
-    int pose_maximum_candidates = 0;
-    double pose_maximum_joint_step_degrees = 0.0;
     CharucoBoardConfig board;
     cv::Mat camera_matrix;
     cv::Mat dist_coeffs;
-    std::string source_session_id;
-    std::string source_manifest_sha256;
 };
 
 class CalibrationSession final {
@@ -180,8 +165,6 @@ public:
                      const std::string& result,
                      const std::string& detail = "");
 
-    bool importLegacyDataset(const std::string& source_directory,
-                             std::string& error);
     bool writeRawRobotPose(int frame_id,
                            int candidate_index,
                            const double actual_joint[6],

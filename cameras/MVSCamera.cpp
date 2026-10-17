@@ -594,12 +594,6 @@ frame_ok:
     }
 }
 
-int MVSCamera::captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs) {
-    bgrImage = captureOneFrame(timeoutMs);
-    depthImage = cv::Mat();
-    return bgrImage.empty() ? -1 : 0;
-}
-
 void MVSCamera::discardFramesLocked(int count, int timeoutMs) {
     if (!m_isGrabbing)
         return;

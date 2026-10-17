@@ -20,43 +20,6 @@
 #include "utils/calib_transform.hpp"
 
 // ============================================================
-// 内部函数
-// ============================================================
-namespace {
-
-static std::string auditBaseDirectoryForSource(const std::string& source) {
-    namespace fs = std::filesystem;
-    const fs::path sourcePath(source);
-    if (fs::exists(sourcePath / "session.yaml") &&
-        sourcePath.parent_path().filename() == "sessions") {
-        return sourcePath.parent_path().parent_path().string();
-    }
-    return source;
-}
-
-static void populateSourceSessionLineage(const std::string& source,
-                                         CalibrationSessionOptions& options) {
-    namespace fs = std::filesystem;
-    const fs::path sourcePath(source);
-    const fs::path manifest = sourcePath / "manifest.sha256";
-    const fs::path session = sourcePath / "session.yaml";
-    if (!fs::exists(manifest) || !fs::exists(session))
-        return;
-    options.source_manifest_sha256 = CalibrationSession::sha256File(manifest.string());
-    try {
-        cv::FileStorage storage(session.string(), cv::FileStorage::READ);
-        if (storage.isOpened())
-            storage["session_id"] >> options.source_session_id;
-    } catch (const cv::Exception&) {
-        options.source_session_id.clear();
-    }
-    if (options.source_session_id.empty())
-        options.source_session_id = sourcePath.filename().string();
-}
-
-} // anonymous namespace
-
-// ============================================================
 // 手眼标定精化：Gauss-Newton 最小化基座标系下板位姿平移方差
 // ============================================================
 namespace {
@@ -1156,8 +1119,7 @@ bool calibrateHandEyeFromDisk(
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
     const std::string& output_yaml,
-    CalibrationSession* session,
-    const std::string& intrinsic_source_file,
+    CalibrationSession& session,
     CalibrationRuntimeStatus* runtime_status,
     const CalibrationRuntimeCallback& runtime_callback) {
 
@@ -1168,44 +1130,12 @@ bool calibrateHandEyeFromDisk(
     result.session_dir.clear();
     result.T_flange_camera.release();
 
-    std::unique_ptr<CalibrationSession> owned_session;
-    std::string data_directory = save_dir;
-    if (!session) {
-        CalibrationSessionOptions options;
-        options.base_directory = auditBaseDirectoryForSource(save_dir);
-        options.mode = "offline_eye_in_hand";
-        options.source_data_directory = save_dir;
-        options.intrinsic_source = "provided_offline";
-        options.intrinsic_source_file = intrinsic_source_file;
-        options.board = board_config;
-        options.camera_matrix = camera_matrix.clone();
-        options.dist_coeffs = dist_coeffs.clone();
-        populateSourceSessionLineage(save_dir, options);
-        std::string session_error;
-        owned_session = CalibrationSession::create(options, session_error);
-        if (!owned_session) {
-            result.message = "无法创建标定审计会话: " + session_error;
-            return false;
-        }
-        session = owned_session.get();
-        result.session_dir = session->directory();
-        if (!session->importLegacyDataset(save_dir, session_error)) {
-            result.message = "无法导入离线数据集: " + session_error;
-            session->finalizeFailure("dataset_import", "dataset_import_failed",
-                                     result.message);
-            return false;
-        }
-        data_directory = session->framesDirectory();
-    } else {
-        result.session_dir = session->directory();
-    }
+    result.session_dir = session.directory();
 
     auto failSession = [&](const std::string& stage,
                            const std::string& reason) -> bool {
-        if (session) {
-            session->setStage(stage);
-            session->finalizeFailure(stage, reason, result.message);
-        }
+        session.setStage(stage);
+        session.finalizeFailure(stage, reason, result.message);
         if (runtime_status) {
             const CalibrationRuntimeStage terminal =
                 (reason == "cancelled")
@@ -1218,12 +1148,12 @@ bool calibrateHandEyeFromDisk(
         }
         return false;
     };
-    session->setStage("hand_eye_input");
-    session->setIntrinsics(camera_matrix, dist_coeffs,
-                           owned_session ? "provided_offline" : "effective_runtime");
+    session.setStage("hand_eye_input");
+    session.setIntrinsics(camera_matrix, dist_coeffs,
+                           "effective_runtime");
     if (runtime_status) {
-        runtime_status->calibration_session_id = session->id();
-        runtime_status->calibration_session_dir = session->directory();
+        runtime_status->calibration_session_id = session.id();
+        runtime_status->calibration_session_dir = session.directory();
         if (runtime_status->publication_state.empty())
             runtime_status->publication_state = "not_started";
     }
@@ -1248,10 +1178,10 @@ bool calibrateHandEyeFromDisk(
 
     // 读取法兰位姿
     std::vector<cv::Mat> flange_poses;
-    std::string robot_pose_file = data_directory + "/rob_pos.csv";
-    if (session && std::filesystem::exists(
-            session->robotPosesDirectory() + "/rob_pos.csv")) {
-        robot_pose_file = session->robotPosesDirectory() + "/rob_pos.csv";
+    std::string robot_pose_file = save_dir + "/rob_pos.csv";
+    if (std::filesystem::exists(
+            session.robotPosesDirectory() + "/rob_pos.csv")) {
+        robot_pose_file = session.robotPosesDirectory() + "/rob_pos.csv";
     }
     if (!loadRobotPosesFromCSV(robot_pose_file, flange_poses)) {
         result.message = "无法加载 " + robot_pose_file;
@@ -1262,11 +1192,11 @@ bool calibrateHandEyeFromDisk(
     // 扫描图像文件
     std::vector<std::string> img_files;
     cv::Size image_size;
-    if (!loadImagesFromDisk(data_directory, img_files, image_size)) {
-        result.message = "无法加载标定图像: " + data_directory;
+    if (!loadImagesFromDisk(save_dir, img_files, image_size)) {
+        result.message = "无法加载标定图像: " + save_dir;
         return failSession("hand_eye_input", "image_load_failed");
     }
-    session->setImageSize(image_size.width, image_size.height);
+    session.setImageSize(image_size.width, image_size.height);
 
     if (img_files.size() != flange_poses.size()) {
         result.message = "图像数量 (" + std::to_string(img_files.size()) +
@@ -1316,7 +1246,7 @@ bool calibrateHandEyeFromDisk(
         std::ostringstream raw_name;
         raw_name << "frame_" << std::setw(4) << std::setfill('0') << i << ".json";
         const std::string raw_pose_path =
-            session->robotPosesDirectory() + "/" + raw_name.str();
+            session.robotPosesDirectory() + "/" + raw_name.str();
         if (std::filesystem::exists(raw_pose_path)) {
             cv::FileStorage raw_pose(raw_pose_path, cv::FileStorage::READ);
             std::string image_timestamp;
@@ -1412,7 +1342,7 @@ bool calibrateHandEyeFromDisk(
         frames.push_back({i, flange_poses[i], audit.T_camera_board, err});
     }
 
-    session->setFrames(frame_audits);
+    session.setFrames(frame_audits);
 
     const size_t detected_frames = frames.size();
     const double mean_reprojection_error = detected_frames > 0
@@ -1448,13 +1378,13 @@ bool calibrateHandEyeFromDisk(
         robot_poses.push_back(frame.robot_pose);
         camera_poses.push_back(frame.camera_pose);
     }
-    session->setStage("solve_and_validate");
+    session.setStage("solve_and_validate");
     HandEyeSolveAudit solve_audit;
     const bool solved = estimateHandEyeTrans(
         camera_matrix, dist_coeffs, robot_poses, camera_poses, result,
         &solve_audit, runtime_status, runtime_callback);
     std::string audit_error;
-    if (!session->setHandEyePhase2Audit(solve_audit.phase2, audit_error)) {
+    if (!session.setHandEyePhase2Audit(solve_audit.phase2, audit_error)) {
         result.success = false;
         result.message = "Phase 2 审计结果持久化失败: " + audit_error;
         return failSession("solver_diagnostics",
@@ -1476,7 +1406,7 @@ bool calibrateHandEyeFromDisk(
                 }
             }
         }
-        session->setFrames(frame_audits);
+        session.setFrames(frame_audits);
         APP_LOG_EVENT_ERROR("calibration.hand_eye",
                             "hand_eye_pipeline",
                             "fail",
@@ -1501,7 +1431,7 @@ bool calibrateHandEyeFromDisk(
             audit.reject_reasons.push_back("translation_consistency_outlier");
         }
     }
-    session->setFrames(frame_audits);
+    session.setFrames(frame_audits);
 
     std::string finalize_error;
     if (runtime_status) {
@@ -1513,7 +1443,7 @@ bool calibrateHandEyeFromDisk(
                                       ? "skip_production_publish"
                                       : "publishing_start");
     }
-    if (!session->finalizeSuccess(result.T_flange_camera, result.camera_matrix,
+    if (!session.finalizeSuccess(result.T_flange_camera, result.camera_matrix,
                                   result.dist_coeffs, result.reproj_error * 1000.0,
                                   result.valid_frames, result.message, output_yaml,
                                   finalize_error)) {

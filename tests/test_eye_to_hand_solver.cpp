@@ -1,6 +1,7 @@
 #include "calibration/eye_to_hand_calibration.hpp"
 #include "calibration/calibration_utils.hpp"
 #include "calibration/calibration_session.hpp"
+#include "calibration/semi_auto_eye_in_hand_calibration.hpp"
 
 #include <cmath>
 #include <functional>
@@ -181,6 +182,35 @@ int main() {
                     std::string("missing empty audit sequence: ") + key);
         require(std::filesystem::exists(session->directory() + "/manifest.sha256"),
                 "finalized audit manifest missing");
+    });
+
+    run("existing session records invalid intrinsics as a sealed failure", [&] {
+        TempDirectory temporary;
+        CalibrationSessionOptions options;
+        options.base_directory = temporary.path.string();
+        options.mode = "hand_eye_input_test";
+        std::string error;
+        auto session = CalibrationSession::create(options, error);
+        require(bool(session), "cannot create audit session: " + error);
+        cv::Mat cameraMatrix, distortion;
+        CalibrationResult result;
+        result.success = true;
+        auto runtime = makeEmptyCalibrationRuntimeStatus();
+        require(!calibrateHandEyeFromDisk(temporary.path.string(), cameraMatrix,
+                    distortion, CharucoBoardConfig{}, result, "", *session, &runtime),
+                "invalid intrinsics were accepted");
+        require(!result.success && runtime.stage == CalibrationRuntimeStage::Failed,
+                "failure did not reset result/runtime state");
+        cv::FileStorage report(session->directory() + "/calibration_report.yaml", cv::FileStorage::READ);
+        require(report["result"]["failure_reason"].string() == "invalid_intrinsics",
+                "input failure reason missing from audit");
+        cv::FileStorage state(session->directory() + "/session.yaml", cv::FileStorage::READ);
+        require(state["lifecycle_status"].string() == "sealed" &&
+                    state["result_status"].string() == "fail",
+                "failed session was not sealed");
+        for (const char* key : {"source_session_id", "source_manifest_sha256"})
+            require(state["lineage"][key].isString() && state["lineage"][key].string().empty(),
+                    "live session lineage format changed");
     });
 
     run("exact diverse poses recover production inverse convention", [&] {

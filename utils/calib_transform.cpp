@@ -10,14 +10,8 @@ cv::Mat axisAnglePoseToTransform(const double pose[6]) {
     double ry = pose[4] * CV_PI / 180.0;
     double rz = pose[5] * CV_PI / 180.0;
     cv::Mat rvec = (cv::Mat_<double>(3, 1) << rx, ry, rz);
-    cv::Mat R;
-    cv::Rodrigues(rvec, R);
-    cv::Mat T = cv::Mat::eye(4, 4, CV_64F);
-    R.copyTo(T(cv::Rect(0, 0, 3, 3)));
-    T.at<double>(0, 3) = x;
-    T.at<double>(1, 3) = y;
-    T.at<double>(2, 3) = z;
-    return T;
+    cv::Mat tvec = (cv::Mat_<double>(3, 1) << x, y, z);
+    return rvecTvecToTransform(rvec, tvec);
 }
 
 cv::Mat rvecTvecToTransform(const cv::Mat& rvec, const cv::Mat& tvec) {

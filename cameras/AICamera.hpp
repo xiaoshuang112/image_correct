@@ -64,15 +64,6 @@ public:
     virtual cv::Mat captureOneFrame(int timeoutMs = 1000) = 0;
     
     /**
-     * @brief 捕获彩色图+深度图
-     * @param bgrImage 输出BGR彩色图像
-     * @param depthFrame 输出深度帧（具体类型由子类定义）
-     * @param timeoutMs 超时时间（毫秒）
-     * @return 0成功，-1失败
-     */
-    virtual int captureOneFrameWithDepth(cv::Mat& bgrImage, cv::Mat& depthImage, int timeoutMs = 2000) = 0;
-    
-    /**
      * @brief 检查相机是否已打开
      */
     virtual bool isOpened() const = 0;

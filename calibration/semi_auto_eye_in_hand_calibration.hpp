@@ -3,20 +3,16 @@
 
 #include <opencv2/opencv.hpp>
 #include <string>
-#include <vector>
-#include <memory>
 
 #include "charuco_detector.hpp"
 
 #include "auto_eye_in_hand_charuco_calibration.hpp"  // CalibrationResult
 #include "calibration_runtime_status.hpp"
 
-#include "det.h"
-
 class CalibrationSession;
 
 /**
- * @brief 从磁盘保存的数据重新运行手眼标定（无需连接机械臂）
+ * @brief 从当前采集会话的已保存数据求解手眼标定
  *
  * 读取 save_dir 下的图像和 rob_pos.csv，检测 ChArUco 角点后执行手眼标定。
  * 需要预先提供相机内参。
@@ -34,9 +30,8 @@ bool calibrateHandEyeFromDisk(
     const cv::Mat& dist_coeffs,
     const CharucoBoardConfig& board_config,
     CalibrationResult& result,
-    const std::string& output_yaml = "",
-    CalibrationSession* session = nullptr,
-    const std::string& intrinsic_source_file = "",
+    const std::string& output_yaml,
+    CalibrationSession& session,
     CalibrationRuntimeStatus* runtime_status = nullptr,
     const CalibrationRuntimeCallback& runtime_callback = {});
 

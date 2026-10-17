@@ -2,9 +2,7 @@
 
 CameraImageProvider::CameraImageProvider()
     : QQuickImageProvider(QQuickImageProvider::Image)
-    , m_image(640, 480, QImage::Format_RGB888)
 {
-    m_image.fill(Qt::black);
     setPlaceholder(640, 480);
 }
 

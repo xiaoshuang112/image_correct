@@ -2032,8 +2032,7 @@ bool autoEyeInHandCharucoCalibration(
             ? "provided_runtime" : "calibrated_from_collection"));
 
     if (!calibrateHandEyeFromDisk(session->framesDirectory(), K, D, board_config,
-                                  result, output_yaml, session.get(),
-                                  intrinsic_source_file,
+                                  result, output_yaml, *session,
                                   &runtime_status, runtime_callback))
         return false;
 

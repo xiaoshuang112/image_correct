@@ -733,17 +733,6 @@ std::string intrinsicBindingFingerprint(const CalibrationSessionOptions& options
     return sha256Text(canonical.str());
 }
 
-bool copyDatasetFile(const fs::path& source,
-                     const fs::path& destination,
-                     std::string& error) {
-    std::error_code ec;
-    fs::copy_file(source, destination, fs::copy_options::overwrite_existing, ec);
-    if (!ec)
-        return true;
-    error = "cannot import " + source.string() + ": " + ec.message();
-    return false;
-}
-
 }  // namespace
 
 CalibrationSession::CalibrationSession(CalibrationSessionOptions options)
@@ -882,57 +871,6 @@ bool CalibrationSession::appendDurableEvent(const std::string& event,
     return durableAppend(fs::path(directory_) / "calibration.log", log.str(), error);
 }
 
-bool CalibrationSession::importLegacyDataset(const std::string& source_directory,
-                                             std::string& error) {
-    if (source_directory.empty())
-        return true;
-    std::error_code equivalent_error;
-    if (fs::equivalent(fs::path(source_directory), fs::path(frames_directory_),
-                       equivalent_error) && !equivalent_error)
-        return true;
-    const fs::path source_root(source_directory);
-    const fs::path image_source = fs::is_directory(source_root / "frames")
-        ? source_root / "frames" : source_root;
-    const fs::path pose_source = fs::is_directory(source_root / "raw_robot_poses")
-        ? source_root / "raw_robot_poses" : source_root;
-    std::error_code ec;
-    for (const auto& entry : fs::directory_iterator(image_source, ec)) {
-        if (ec) {
-            error = "cannot scan source dataset: " + ec.message();
-            return false;
-        }
-        if (!entry.is_regular_file())
-            continue;
-        std::string extension = entry.path().extension().string();
-        std::transform(extension.begin(), extension.end(), extension.begin(), ::tolower);
-        if (extension == ".jpg" || extension == ".jpeg" || extension == ".png") {
-            if (!copyDatasetFile(entry.path(), fs::path(frames_directory_) / entry.path().filename(), error))
-                return false;
-        }
-    }
-    ec.clear();
-    for (const auto& entry : fs::directory_iterator(pose_source, ec)) {
-        if (ec) {
-            error = "cannot scan robot pose dataset: " + ec.message();
-            return false;
-        }
-        if (!entry.is_regular_file())
-            continue;
-        const std::string extension = entry.path().extension().string();
-        if (extension != ".csv" && extension != ".json" && extension != ".yaml")
-            continue;
-        if (!copyDatasetFile(entry.path(),
-                             fs::path(robot_poses_directory_) / entry.path().filename(), error))
-            return false;
-    }
-    if (!fs::exists(fs::path(robot_poses_directory_) / "rob_pos.csv")) {
-        error = "source dataset has no rob_pos.csv";
-        return false;
-    }
-    appendEvent("dataset_import", "success", source_directory);
-    return true;
-}
-
 bool CalibrationSession::writeRawRobotPose(int frame_id,
                                            int candidate_index,
                                            const double actual_joint[6],
@@ -1000,8 +938,6 @@ bool CalibrationSession::writeRawRobotPose(int frame_id,
 bool CalibrationSession::writeEffectiveConfig(std::string& error) {
     const std::string intrinsicFileHash = options_.intrinsic_source_file.empty()
         ? "" : sha256File(options_.intrinsic_source_file);
-    const std::string poseConfigHash = options_.pose_config_source_file.empty()
-        ? "" : sha256File(options_.pose_config_source_file);
     return atomicYamlWrite(fs::path(directory_) / "effective_config.yaml",
                            [&](cv::FileStorage& out) {
         out << "schema_version" << 1;
@@ -1045,8 +981,8 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
         out << "}";
         out << "robot" << "{";
         out << "endpoint" << orUnknown(options_.robot_endpoint);
-        out << "model" << orUnknown(options_.robot_model);
-        out << "controller" << orUnknown(options_.robot_controller);
+        out << "model" << "unknown";
+        out << "controller" << "unknown";
         out << "raw_joint_unit" << "degree";
         out << "raw_rotation_representation" << "axis_angle";
         out << "normalized_translation_unit" << "meter";
@@ -1054,23 +990,6 @@ bool CalibrationSession::writeEffectiveConfig(std::string& error) {
         out << "coordinate_system" << "right_handed";
         out << "handeye_matrix_definition" << "T_flange_camera";
         out << "}";
-        if (!options_.pose_offset_x.empty()) {
-            out << "candidate_planning" << "{";
-            out << "source_file" << options_.pose_config_source_file;
-            out << "source_file_sha256" << poseConfigHash;
-            out << "offset_x" << options_.pose_offset_x;
-            out << "offset_y" << options_.pose_offset_y;
-            out << "offset_z" << options_.pose_offset_z;
-            out << "offset_rx" << options_.pose_offset_rx;
-            out << "offset_ry" << options_.pose_offset_ry;
-            out << "offset_rz" << options_.pose_offset_rz;
-            out << "min_corners" << options_.pose_min_corners;
-            out << "min_valid_frames" << options_.pose_min_valid_frames;
-            out << "maximum_candidates" << options_.pose_maximum_candidates;
-            out << "maximum_joint_step_degrees"
-                << options_.pose_maximum_joint_step_degrees;
-            out << "}";
-        }
         out << "board" << "{";
         out << "dictionary_id" << options_.board.dictionary_id;
         out << "squares_x" << options_.board.squares_x;
@@ -1123,8 +1042,8 @@ bool CalibrationSession::writeSessionYaml(const std::string& lifecycle_status,
         out << "effective_config_file" << "effective_config.yaml";
         out << "effective_config_sha256" << configHash;
         out << "lineage" << "{";
-        out << "source_session_id" << options_.source_session_id;
-        out << "source_manifest_sha256" << options_.source_manifest_sha256;
+        out << "source_session_id" << "";
+        out << "source_manifest_sha256" << "";
         out << "}";
     }, error);
 }
@@ -1157,8 +1076,8 @@ bool CalibrationSession::writeReport(const std::string& status,
         out << "session_file" << "session.yaml";
         out << "effective_config_file" << "effective_config.yaml";
         out << "manifest_file" << "manifest.sha256";
-        out << "source_session_id" << options_.source_session_id;
-        out << "source_manifest_sha256" << options_.source_manifest_sha256;
+        out << "source_session_id" << "";
+        out << "source_manifest_sha256" << "";
         out << "}";
         out << "result" << "{";
         out << "status" << status;
