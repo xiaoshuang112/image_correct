@@ -5,7 +5,7 @@ cmake -S "$collect_root" -B "$collect_root/build_mvs" \
     -DCAMERA_BACKEND=MVS -DBUILD_QT_GUI=ON -DBUILD_TESTS=ON -DCMAKE_BUILD_TYPE=Release "$@"
 cmake --build "$collect_root/build_mvs" --target hand-eye-app test_collection caitu_tests -j "${COLLECT_BUILD_JOBS:-4}"
 ctest --test-dir "$collect_root/build_mvs" -R 'collection_geometry_and_fusion|caitu_tests' --output-on-failure
-if cmake --build "$collect_root/build_mvs" --target help | rg 'test_collection_ui' >/dev/null; then
+if cmake --build "$collect_root/build_mvs" --target help | grep -F 'test_collection_ui' >/dev/null; then
     cmake --build "$collect_root/build_mvs" --target test_collection_ui -j "${COLLECT_BUILD_JOBS:-4}"
     ctest --test-dir "$collect_root/build_mvs" -R '^collection_ui$' --output-on-failure
 fi

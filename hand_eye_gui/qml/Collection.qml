@@ -50,6 +50,7 @@ ApplicationWindow {
     Component.onCompleted: {
         var values = controller.exposureList.split(/[,，;\s]+/).filter(function(value) { return value !== "" })
         for (var i = 0; i < 5; ++i) exposureSlots.append({value: i < values.length ? values[i] : ""})
+        recordStatus("程序启动 · Git 版本 " + appGitCommit)
         recordStatus(controller.statusMessage)
     }
     Timer { interval: 60000; running: true; repeat: true; onTriggered: root.today = Qt.formatDate(new Date(), "yyyy-MM-dd") }
@@ -81,7 +82,7 @@ ApplicationWindow {
             Rectangle { Layout.preferredWidth: 3; Layout.preferredHeight: 3; radius: 1.5; color: Theme.ink3 }
             Text { text: "多曝光融合采集"; color: Theme.ink2; font.pixelSize: Theme.body }
             Item { Layout.fillWidth: true }
-            Text { text: "COLLECT " + appVersion; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
+            Text { text: "COLLECT · " + appGitCommit; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
         }
 
         RowLayout {

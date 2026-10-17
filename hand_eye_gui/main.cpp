@@ -115,6 +115,7 @@ int main(int argc, char* argv[])
 
         engine.rootContext()->setContextProperty("calibrationController", controller.get());
         engine.rootContext()->setContextProperty("appVersion", QStringLiteral(APP_VERSION));
+        engine.rootContext()->setContextProperty("appGitCommit", QStringLiteral(APP_GIT_COMMIT).left(7));
         engine.addImageProvider("camera", imageProvider);
         const QString qmlSource = collectionMode ? QStringLiteral("qrc:///qml/Collection.qml")
                                                  : QStringLiteral("qrc:///qml/HandEyeCalibration.qml");
