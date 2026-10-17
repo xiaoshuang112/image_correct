@@ -201,6 +201,76 @@ int test_config_resolver() {
                "duplicate_exposure_rejected");
     TEST_CHECK(readFile() == duplicateBefore, "duplicate_file_unchanged");
 
+    auto collection = [&](const std::string& body) {
+        cv::FileStorage config("%YAML:1.0\n---\n" + body, cv::FileStorage::READ | cv::FileStorage::MEMORY);
+        return config_resolver::resolveCollectionConfig(config);
+    };
+    const std::vector<int> defaultExposures{5000, 8500, 14500, 25000};
+    auto collect = collection("cam_ip: \"192.168.66.253\"\n");
+    TEST_CHECK(collect.robot_ip == "192.168.66.14" && collect.fusion_exposures_us == defaultExposures,
+               "collection_missing_fields_use_defaults");
+    collect = collection("robot_ip: \"192.168.66.25\"\nfusion_exposures_us: [4000, 8000, 12000, 16000, 20000]\n");
+    TEST_CHECK(collect.robot_ip == "192.168.66.25" &&
+               collect.fusion_exposures_us == std::vector<int>({4000, 8000, 12000, 16000, 20000}),
+               "collection_explicit_fields_loaded");
+    collect = collection("fusion_exposures_us: [6000, 24000]\n");
+    TEST_CHECK(collect.fusion_exposures_us == std::vector<int>({6000, 24000}) && collect.warnings.empty(),
+               "collection_two_exposures_valid");
+    for (const std::string& invalid : {"[]", "[5000]", "[1, 2, 3, 4, 5, 6]", "[5000, 5000]",
+            "[0, 5000]", "[-1, 5000]", "[5000, 1000001]", "[5000, 8500.5]", "[5000, \"8500\"]", "\"5000,8500\""}) {
+        collect = collection("fusion_exposures_us: " + invalid + "\n");
+        TEST_CHECK(collect.fusion_exposures_us == defaultExposures && !collect.warnings.empty(),
+                   "collection_invalid_sequence_falls_back_whole");
+    }
+    collect = collection("robot_ip: \"\"\nfusion_exposures_us: [7000, 21000]\n");
+    TEST_CHECK(collect.robot_ip == "192.168.66.14" &&
+               collect.fusion_exposures_us == std::vector<int>({7000, 21000}),
+               "collection_field_fallback_is_independent");
+
+    // UI writes use the same YAML file, preserve unrelated fields, and can
+    // update either conventional block lists or compact inline lists.
+    writeFile("%YAML:1.0\n---\ncam_ip: \"192.168.66.253\" # camera\n"
+              "fusion_exposures_us: [5000, 8500, 14500, 25000] # bracket\n"
+              "cam_width: 4024\ncam_height: 3036\nrobot_ip: \"192.168.66.14\"\n");
+    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "192.168.66.200", err),
+               "camera_ip_persisted");
+    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "robot_ip", "192.168.66.20", err),
+               "robot_ip_persisted");
+    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(kCfgPath, "cam_width", 2448, err) &&
+               config_resolver::updateFlatIntegerConfigFile(kCfgPath, "cam_height", 2048, err),
+               "resolution_persisted");
+    TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", {6000, 18000}, err),
+               "fusion_sequence_persisted");
+    TEST_CHECK(readFile().find("# camera") != std::string::npos && readFile().find("# bracket") != std::string::npos,
+               "collection_updates_preserve_comments");
+    {
+        cv::FileStorage config(kCfgPath, cv::FileStorage::READ);
+        const auto loadedCamera = config_resolver::resolveCameraConfig(config, makeDefaults());
+        const auto loadedCollection = config_resolver::resolveCollectionConfig(config);
+        TEST_CHECK(loadedCamera.cam_ip == "192.168.66.200" && loadedCamera.cam_width == 2448 &&
+                   loadedCamera.cam_height == 2048 && loadedCollection.robot_ip == "192.168.66.20" &&
+                   loadedCollection.fusion_exposures_us == std::vector<int>({6000, 18000}),
+                   "all_collection_fields_survive_restart_read");
+    }
+    for (const std::string& sequence : {std::string("\n  - 5000\n  - 8500"), std::string("[5000,\n 8500\n]")}) {
+        writeFile("%YAML:1.0\n---\nfusion_exposures_us: " + sequence + "\n# keep\nrobot_ip: \"192.168.66.14\"\n");
+        TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", {7000, 22000}, err),
+                   "multiline_sequence_updated");
+        cv::FileStorage config(kCfgPath, cv::FileStorage::READ);
+        TEST_CHECK(config_resolver::resolveCollectionConfig(config).fusion_exposures_us == std::vector<int>({7000, 22000}) &&
+                   config["robot_ip"].string() == "192.168.66.14" && readFile().find("# keep") != std::string::npos,
+                   "multiline_update_preserves_following_fields");
+    }
+    writeFile("%YAML:1.0\n---\ncam_ip: \"old#host\" # comment\n");
+    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "new#host", err) &&
+               readFile().find("\"new#host\" # comment") != std::string::npos, "hash_in_quoted_string_preserved");
+    const auto beforeInvalidString = readFile();
+    TEST_CHECK(!config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "bad\ninjected: 1", err) &&
+               readFile() == beforeInvalidString, "multiline_string_write_rejected");
+    std::remove(kCfgPath);
+    TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", defaultExposures, err),
+               "missing_config_created_with_exposures");
+
     // ---- 非法/缺失文件 ----
     TEST_CHECK(!config_resolver::resolveCameraConfigFile(
                    "nonexistent_config.yaml", makeDefaults(), out, err),

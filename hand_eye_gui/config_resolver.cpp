@@ -5,7 +5,10 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
+#include <set>
 #include <sstream>
+#include <variant>
 
 #if defined(__linux__)
 #include <fcntl.h>
@@ -144,6 +147,18 @@ bool isTopLevelKeyLine(const std::string& line,
     return true;
 }
 
+size_t commentPosition(const std::string& line) {
+    char quote = 0;
+    for (size_t i = 0; i < line.size(); ++i) {
+        const char c = line[i];
+        if (quote == '"' && c == '\\') { ++i; continue; }
+        if (quote) { if (c == quote) quote = 0; }
+        else if (c == '\'' || c == '"') quote = c;
+        else if (c == '#') return i;
+    }
+    return std::string::npos;
+}
+
 // 布尔开关按“节点是否存在”判定：平铺键显式写 0 也视为已设置，
 // 不会被嵌套节覆盖。
 void resolveBool(const cv::FileStorage& fs,
@@ -216,10 +231,54 @@ bool resolveCameraConfigFile(const std::string& path,
     return true;
 }
 
-bool updateFlatIntegerConfigFile(const std::string& path,
-                                 const std::string& key,
-                                 int value,
-                                 std::string& error) {
+CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
+                                         const CollectionConfig& defaults) {
+    CollectionConfig out = defaults;
+    out.warnings.clear();
+    const auto robot = fs["robot_ip"];
+    if (!robot.empty()) {
+        if (robot.isString() && !robot.string().empty()) out.robot_ip = robot.string();
+        else out.warnings.push_back("robot_ip 无效，使用默认值");
+    }
+    const auto exposures = fs["fusion_exposures_us"];
+    if (!exposures.empty()) {
+        std::vector<int> values;
+        std::set<int> distinct;
+        bool valid = exposures.isSeq() && exposures.size() >= 2 && exposures.size() <= 5;
+        if (valid) for (const auto& node : exposures) {
+            const int value = node.isInt() ? static_cast<int>(node) : 0;
+            if (value < 1 || value > 1000000 || !distinct.insert(value).second) { valid = false; break; }
+            values.push_back(value);
+        }
+        if (valid) out.fusion_exposures_us = values;
+        else out.warnings.push_back("fusion_exposures_us 应为 2～5 个不同的正整数（1～1000000 μs），使用默认序列");
+    }
+    return out;
+}
+
+namespace {
+using ConfigValue = std::variant<int, std::string, std::vector<int>>;
+
+std::string yamlValue(const ConfigValue& value) {
+    if (const auto* number = std::get_if<int>(&value)) return std::to_string(*number);
+    std::ostringstream text;
+    if (const auto* string = std::get_if<std::string>(&value)) text << std::quoted(*string);
+    else {
+        text << '[';
+        bool first = true;
+        for (int number : std::get<std::vector<int>>(value)) {
+            if (!first) text << ", ";
+            text << number; first = false;
+        }
+        text << ']';
+    }
+    return text.str();
+}
+
+bool updateFlatConfigValueFile(const std::string& path,
+                               const std::string& key,
+                               const ConfigValue& value,
+                               std::string& error) {
     namespace fs = std::filesystem;
     error.clear();
     if (path.empty() || key.empty() || key.find_first_not_of(
@@ -286,13 +345,26 @@ bool updateFlatIntegerConfigFile(const std::string& path,
         return false;
     }
 
-    const std::string replacement = key + ": " + std::to_string(value);
+    const std::string replacement = key + ": " + yamlValue(value);
     if (matchCount == 1) {
         const std::string originalLine = lines[matchIndex];
-        const size_t comment = originalLine.find('#');
+        const size_t comment = commentPosition(originalLine);
         lines[matchIndex] = replacement;
         if (comment != std::string::npos)
             lines[matchIndex] += " " + originalLine.substr(comment);
+        // Remove a block sequence or wrapped flow sequence belonging to this
+        // key. Preserve comments/blank lines and all following top-level keys.
+        if (std::holds_alternative<std::vector<int>>(value)) {
+            size_t end = matchIndex + 1;
+            while (end < lines.size()) {
+                const auto& next = lines[end];
+                const size_t first = next.find_first_not_of(" \t");
+                if (first == std::string::npos || next[first] == '#') { ++end; continue; }
+                const bool sequenceItem = next[first] == '-' && first + 1 < next.size() && next[first + 1] == ' ';
+                if (first == 0 && !sequenceItem && next[first] != ']') break;
+                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(end));
+            }
+        }
     } else {
         size_t insertIndex = 0;
         for (size_t index = 0; index < lines.size(); ++index) {
@@ -334,16 +406,25 @@ bool updateFlatIntegerConfigFile(const std::string& path,
 
     try {
         cv::FileStorage validation(temporary.string(), cv::FileStorage::READ);
-        int persistedValue = 0;
         if (!validation.isOpened() || validation[key].empty()) {
             error = "updated config failed YAML validation";
             validation.release();
             fs::remove(temporary, ec);
             return false;
         }
-        validation[key] >> persistedValue;
+        const auto node = validation[key];
+        bool matches = false;
+        if (const auto* number = std::get_if<int>(&value))
+            matches = node.isInt() && static_cast<int>(node) == *number;
+        else if (const auto* string = std::get_if<std::string>(&value))
+            matches = node.isString() && node.string() == *string;
+        else if (node.isSeq()) {
+            std::vector<int> persisted;
+            node >> persisted;
+            matches = persisted == std::get<std::vector<int>>(value);
+        }
         validation.release();
-        if (persistedValue != value) {
+        if (!matches) {
             error = "updated config value failed readback";
             fs::remove(temporary, ec);
             return false;
@@ -365,6 +446,26 @@ bool updateFlatIntegerConfigFile(const std::string& path,
         return false;
     }
     return syncDirectory(parent, error);
+}
+} // namespace
+
+bool updateFlatIntegerConfigFile(const std::string& path, const std::string& key,
+                                 int value, std::string& error) {
+    return updateFlatConfigValueFile(path, key, value, error);
+}
+
+bool updateFlatStringConfigFile(const std::string& path, const std::string& key,
+                                const std::string& value, std::string& error) {
+    if (value.find_first_of("\r\n") != std::string::npos || value.find('\0') != std::string::npos) {
+        error = "config string contains a line break or null character";
+        return false;
+    }
+    return updateFlatConfigValueFile(path, key, value, error);
+}
+
+bool updateFlatIntegerSequenceConfigFile(const std::string& path, const std::string& key,
+                                         const std::vector<int>& values, std::string& error) {
+    return updateFlatConfigValueFile(path, key, values, error);
 }
 
 }  // namespace config_resolver

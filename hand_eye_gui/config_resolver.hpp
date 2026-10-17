@@ -37,6 +37,17 @@ struct CameraConfig {
 CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
                                  const CameraConfig& defaults);
 
+struct CollectionConfig {
+    std::string robot_ip = "192.168.66.14";
+    std::vector<int> fusion_exposures_us{5000, 8500, 14500, 25000};
+    std::vector<std::string> warnings;
+};
+
+// Missing fields retain defaults. An invalid exposure sequence falls back as
+// a whole, never silently truncating or dropping individual bracket values.
+CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
+                                         const CollectionConfig& defaults = {});
+
 // 便捷入口：打开文件并解析。文件不存在或无法解析时返回 false 并填 error，
 // 此时 out 不被修改。
 bool resolveCameraConfigFile(const std::string& path,
@@ -50,6 +61,14 @@ bool updateFlatIntegerConfigFile(const std::string& path,
                                  const std::string& key,
                                  int value,
                                  std::string& error);
+bool updateFlatStringConfigFile(const std::string& path,
+                                const std::string& key,
+                                const std::string& value,
+                                std::string& error);
+bool updateFlatIntegerSequenceConfigFile(const std::string& path,
+                                         const std::string& key,
+                                         const std::vector<int>& values,
+                                         std::string& error);
 
 }  // namespace config_resolver
 

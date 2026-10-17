@@ -6,6 +6,8 @@ cam_sn: ""
 cam_width: 4024
 cam_height: 3036
 camera_exposure_us: 12000
+# Fusion bracket in microseconds: 2 to 5 distinct values; the fifth UI slot is optional.
+fusion_exposures_us: [5000, 8500, 14500, 25000]
 camera_gain: 3
 robot_ip: "192.168.66.14"
 robot_port: 2323

@@ -255,6 +255,8 @@ signals:
 private:
     void initializeCollection();
     void loadCollectionUndistortion();
+    void persistCollectionString(const std::string& key, const QString& value);
+    void persistCollectionInteger(const std::string& key, int value);
     void beginCollectionOperation();
     void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----

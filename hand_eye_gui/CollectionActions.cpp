@@ -3,6 +3,7 @@
 #include "CollectionPoseRecord.hpp"
 #include "CollectionImageRecord.hpp"
 #include "utils/collection_undistortion.hpp"
+#include "config_resolver.hpp"
 #include "utils/collection_utils.hpp"
 #include "utils/calib_transform.hpp"
 #include "utils/robot_util.hpp"
@@ -13,7 +14,6 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
-#include <QSettings>
 #include <QUuid>
 #include <QUrl>
 #include <opencv2/imgcodecs.hpp>
@@ -49,9 +49,7 @@ FlangeRead readFlangePose(RobotHandle handle) {
 }
 
 void CalibrationController::initializeCollection() {
-    QSettings settings;
     m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
-    m_exposureList = settings.value("collection/exposures", m_exposureList).toString();
     if (m_collectionMode) {
         m_cameraSn.clear();
         m_robotPort = 2323;
@@ -119,9 +117,53 @@ void CalibrationController::openCollectionFolder() {
 
 void CalibrationController::setExposureList(const QString& value) {
     if (m_collectionBusy || m_running) return;
+    if (m_exposureList == value.trimmed()) return;
     m_exposureList = value.trimmed();
-    QSettings().setValue("collection/exposures", m_exposureList);
     emit collectionChanged();
+    if (!m_collectionMode || m_appPath.empty()) return;
+    std::vector<int> exposures;
+    std::set<int> distinct;
+    const auto tokens = m_exposureList.split(QRegularExpression("[,，;\\s]+"), Qt::SkipEmptyParts);
+    for (const auto& token : tokens) {
+        bool ok = false;
+        const int exposure = token.toInt(&ok);
+        if (!ok || exposure < 1 || exposure > 1000000 || !distinct.insert(exposure).second) {
+            setStatus("融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
+            return;
+        }
+        exposures.push_back(exposure);
+    }
+    if (exposures.size() < 2 || exposures.size() > 5) {
+        setStatus("融合曝光应包含 2～5 个数值，未写入配置");
+        return;
+    }
+    std::string error;
+    if (!config_resolver::updateFlatIntegerSequenceConfigFile(
+            m_appPath + "config.yaml", "fusion_exposures_us", exposures, error)) {
+        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
+            {{"field", "fusion_exposures_us"}, {"error", QString::fromStdString(error)}});
+        setStatus("曝光序列已更新，但配置保存失败：" + QString::fromStdString(error));
+    }
+}
+
+void CalibrationController::persistCollectionString(const std::string& key, const QString& value) {
+    if (!m_collectionMode || m_appPath.empty()) return;
+    std::string error;
+    if (!config_resolver::updateFlatStringConfigFile(m_appPath + "config.yaml", key, value.toStdString(), error)) {
+        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
+            {{"field", QString::fromStdString(key)}, {"error", QString::fromStdString(error)}});
+        setStatus("本次参数已更新，但配置保存失败：" + QString::fromStdString(error));
+    }
+}
+
+void CalibrationController::persistCollectionInteger(const std::string& key, int value) {
+    if (!m_collectionMode || m_appPath.empty()) return;
+    std::string error;
+    if (!config_resolver::updateFlatIntegerConfigFile(m_appPath + "config.yaml", key, value, error)) {
+        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
+            {{"field", QString::fromStdString(key)}, {"error", QString::fromStdString(error)}});
+        setStatus("本次参数已更新，但配置保存失败：" + QString::fromStdString(error));
+    }
 }
 void CalibrationController::beginCollectionOperation() {
     if (m_collectionThread.joinable()) m_collectionThread.join();

@@ -217,6 +217,7 @@ void CalibrationController::loadConfigYaml()
                                {"using_defaults", "true"}});
         return;
     }
+    try {
     cv::FileStorage fs(cfg_file, cv::FileStorage::READ);
     if (!fs.isOpened()) {
         APP_LOG_EVENT_ERROR("config",
@@ -242,15 +243,14 @@ void CalibrationController::loadConfigYaml()
 
     const config_resolver::CameraConfig resolved =
         config_resolver::resolveCameraConfig(fs, defaults);
-    std::string robotIp, robotPassword;
-    if (!fs["robot_ip"].empty()) {
-        fs["robot_ip"] >> robotIp;
-        m_robotIp = QString::fromStdString(robotIp);
-    }
-    if (!fs["robot_port"].empty()) fs["robot_port"] >> m_robotPort;
+    config_resolver::CollectionConfig collectionDefaults;
+    collectionDefaults.robot_ip = m_robotIp.toStdString();
+    const auto collectionConfig = config_resolver::resolveCollectionConfig(fs, collectionDefaults);
+    std::string robotPassword = m_robotPasswd.toStdString();
+    int robotPort = m_robotPort;
+    if (!fs["robot_port"].empty()) fs["robot_port"] >> robotPort;
     if (!fs["robot_pwd"].empty()) {
         fs["robot_pwd"] >> robotPassword;
-        m_robotPasswd = QString::fromStdString(robotPassword);
     }
     int configuredSettlingMs = m_mechanicalSettlingMs;
     const cv::FileNode settlingNode = fs["mechanical_settling_ms"];
@@ -258,6 +258,14 @@ void CalibrationController::loadConfigYaml()
         settlingNode >> configuredSettlingMs;
     fs.release();
 
+    m_robotIp = QString::fromStdString(collectionConfig.robot_ip);
+    m_robotPort = robotPort;
+    m_robotPasswd = QString::fromStdString(robotPassword);
+    QStringList exposureValues;
+    for (int exposure : collectionConfig.fusion_exposures_us) exposureValues << QString::number(exposure);
+    m_exposureList = exposureValues.join(",");
+    for (const auto& warning : collectionConfig.warnings)
+        APP_LOG_EVENT_WARNING("config", "config_load", "invalid_value", {{"message", QString::fromStdString(warning)}});
     m_cameraIp = QString::fromStdString(resolved.cam_ip);
     m_cameraPort = resolved.cam_port;
     m_previewWidth = resolved.cam_width;
@@ -302,10 +310,17 @@ void CalibrationController::loadConfigYaml()
                         {"resolution_w", QString::number(m_previewWidth)},
                         {"resolution_h", QString::number(m_previewHeight)},
                         {"camera_exposure_us", QString::number(m_cameraExposureUs)},
+                        {"robot_ip", m_robotIp},
+                        {"fusion_exposures_us", m_exposureList},
                         {"camera_gain", QString::number(m_cameraGain)},
                         {"mechanical_settling_ms", QString::number(m_mechanicalSettlingMs)},
                         {"allow_legacy_intrinsics", m_allowLegacyIntrinsics ? "true" : "false"},
                         {"resolved", sources.join(", ")}});
+    } catch (const std::exception& error) {
+        APP_LOG_EVENT_ERROR("config", "config_load", "fail",
+            {{"path", QString::fromStdString(cfg_file)}, {"error", QString::fromUtf8(error.what())},
+             {"using_defaults", "true"}});
+    }
 }
 
 // ===================================================================
@@ -329,6 +344,7 @@ void CalibrationController::setRobotIp(const QString& v) {
                             {"from", m_robotIp},
                             {"to", v}});
         m_robotIp = v; emit robotIpChanged();
+        persistCollectionString("robot_ip", v);
     }
 }
 void CalibrationController::setRobotPort(int v) {
@@ -423,6 +439,7 @@ void CalibrationController::setCameraIp(const QString& v) {
                             {"from", m_cameraIp},
                             {"to", v}});
         m_cameraIp = v; emit cameraIpChanged();
+        persistCollectionString("cam_ip", v);
     }
 }
 void CalibrationController::setCameraPort(int v) {
@@ -481,6 +498,7 @@ void CalibrationController::setPreviewWidth(int v) {
                             {"from", QString::number(m_previewWidth)},
                             {"to", QString::number(v)}});
         m_previewWidth = v; emit previewWidthChanged();
+        persistCollectionInteger("cam_width", v);
     }
 }
 void CalibrationController::setPreviewHeight(int v) {
@@ -500,6 +518,7 @@ void CalibrationController::setPreviewHeight(int v) {
                             {"from", QString::number(m_previewHeight)},
                             {"to", QString::number(v)}});
         m_previewHeight = v; emit previewHeightChanged();
+        persistCollectionInteger("cam_height", v);
     }
 }
 

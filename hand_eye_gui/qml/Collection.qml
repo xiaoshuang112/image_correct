@@ -94,9 +94,16 @@ ApplicationWindow {
         }
 
         RowLayout {
+            objectName: "controlDeck"
+            readonly property real contentHeight: Math.max(deviceControls.implicitHeight, captureControls.implicitHeight) + 28
             Layout.fillWidth: true
+            Layout.fillHeight: false
+            Layout.minimumHeight: contentHeight
+            Layout.preferredHeight: contentHeight
+            Layout.maximumHeight: contentHeight
             spacing: 12
             CollectCard {
+                objectName: "deviceCard"
                 Layout.preferredWidth: (root.width - 48) * 0.44
                 Layout.fillHeight: true
                 implicitHeight: deviceControls.implicitHeight + 28
@@ -135,6 +142,7 @@ ApplicationWindow {
                 }
             }
             CollectCard {
+                objectName: "captureCard"
                 Layout.fillWidth: true; Layout.fillHeight: true
                 implicitHeight: captureControls.implicitHeight + 28
                 ColumnLayout {

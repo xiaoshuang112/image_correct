@@ -229,6 +229,21 @@ QtObject {
                 "camera and robot connect buttons are not aligned");
         require(qAbs(bounds(capture).bottom() - bounds(item("exposureInput5")).bottom()) < 2.0,
                 "capture buttons and exposure fields are not on the same row");
+        const qreal compactHeight = item("controlDeck")->height();
+        window->resize(1840, 1080);
+        QTest::qWait(50);
+        require(qAbs(item("controlDeck")->height() - compactHeight) < 1.0,
+                "top cards stretch vertically on a large window");
+        require(bounds(item("deviceCard")).bottom() - bounds(item("connectRobotButton")).bottom() <= 16,
+                "unnecessary whitespace below device controls");
+        click(savePose);
+        require(item("controlDeck")->height() > compactHeight &&
+                bounds(item("captureCard")).contains(bounds(pointName)),
+                "point editor did not expand compact top cards");
+        QTest::keyClick(window, Qt::Key_Escape);
+        QTest::qWait(30);
+        require(qAbs(item("controlDeck")->height() - compactHeight) < 1.0,
+                "closing point editor left empty vertical space");
         if (argc > 1) {
             controller->setProperty("cameraOpened", false);
             controller->setProperty("previewActive", false);
