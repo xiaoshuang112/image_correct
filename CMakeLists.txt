@@ -98,35 +98,43 @@ else()
     # 根据架构设置不同的编译选项
     if(ARCH_TYPE STREQUAL "x86_64")
         set(ORBBEC_SDK_V2_DIR "/usr/local")
-        # Include directory for your project
-        set(CGX_SDK_DIR  ${SRC_DIR}/libs/cr_sdk)
-        include_directories(${CGX_SDK_DIR}/include)      
-
-        set(CGX_SDK_LIBS
-            ${CGX_SDK_DIR}/libs/x64/libcr_sdk.so
-            ${CGX_SDK_DIR}/libs/x64/libLogStorageDll.so
-            ${CGX_SDK_DIR}/libs/x64/libRobotConfigDll.so
-            ${CGX_SDK_DIR}/libs/x64/libz.so
-            ${CGX_SDK_DIR}/libs/x64/libprotobuf-c.so
-            ${CGX_SDK_DIR}/libs/x64/libprotobuf-rpc.so
-        )
-
     elseif(ARCH_TYPE STREQUAL "ARM64")
         set(ORBBEC_SDK_V2_DIR "/usr/local")
-
-        set(CGX_SDK_DIR  ${SRC_DIR}/libs/cr_sdk)
-        include_directories(${CGX_SDK_DIR}/include)    
-        set(CGX_SDK_LIBS
-            ${CGX_SDK_DIR}/libs/libcr_sdk.so
-            ${CGX_SDK_DIR}/libs/libLogStorageDll.so
-            ${CGX_SDK_DIR}/libs/libRobotConfigDll.so
-            ${CGX_SDK_DIR}/libs/libz.so
-            ${CGX_SDK_DIR}/libs/libprotobuf-c.so
-            ${CGX_SDK_DIR}/libs/libprotobuf-rpc.so
-        )        
-
     endif()
 
+endif()
+
+
+# Both the CLI and GUI use the same SDK selection on Linux x86_64/ARM64.
+set(CGX_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/cr_sdk" CACHE PATH "CGXi robot SDK root")
+if(ARCH_TYPE STREQUAL "x86_64")
+    if(EXISTS "${CGX_SDK_DIR}/libs/linux/x64/libcr_sdk.so")
+        set(CGX_DEFAULT_LIB_DIR "${CGX_SDK_DIR}/libs/linux/x64")
+    else()
+        set(CGX_DEFAULT_LIB_DIR "${CGX_SDK_DIR}/libs/x64")
+    endif()
+elseif(ARCH_TYPE STREQUAL "ARM64")
+    if(EXISTS "${CGX_SDK_DIR}/libs/arm/aarch64/libcr_sdk.so")
+        set(CGX_DEFAULT_LIB_DIR "${CGX_SDK_DIR}/libs/arm/aarch64")
+    else()
+        set(CGX_DEFAULT_LIB_DIR "${CGX_SDK_DIR}/libs")
+    endif()
+endif()
+if(UNIX)
+    set(CGX_SDK_LIB_DIR "${CGX_DEFAULT_LIB_DIR}" CACHE PATH "CGXi libraries for target architecture")
+    if(NOT EXISTS "${CGX_SDK_DIR}/include/robotapi.h")
+        message(FATAL_ERROR "Robot SDK missing: set -DCGX_SDK_DIR=<SDK root containing include/robotapi.h>")
+    endif()
+    set(CGX_SDK_LIBS)
+    foreach(lib cr_sdk LogStorageDll RobotConfigDll z protobuf-c protobuf-rpc)
+        set(sdk_library "${CGX_SDK_LIB_DIR}/lib${lib}.so")
+        if(NOT EXISTS "${sdk_library}")
+            message(FATAL_ERROR "Missing ${ARCH_TYPE} robot library: ${sdk_library}; set CGX_SDK_LIB_DIR")
+        endif()
+        list(APPEND CGX_SDK_LIBS "${sdk_library}")
+    endforeach()
+    include_directories("${CGX_SDK_DIR}/include")
+    message(STATUS "Robot SDK: ${CGX_SDK_DIR} (lib: ${CGX_SDK_LIB_DIR})")
 endif()
 
 

@@ -1,5 +1,26 @@
 # calibri_nano
 
+## WSL / Linux ARM64 共用源码
+
+两端使用同一仓库和启动命令，分别在各自机器编译；不要复制或共享 `build_mvs` 构建目录。
+需要 C++17、CMake、OpenCV（含 contrib）、Qt5 Quick / QuickControls2 及对应 QML 模块、
+海康 MVS 和 CGXi 机器人 SDK。SDK 的动态库必须与目标 CPU 架构一致。
+
+```bash
+./build_collect.sh -DCGX_SDK_DIR="/path/to/robot-sdk" -DMVS_SDK_DIR=/opt/MVS
+./run_collect.sh
+```
+
+机器人 SDK 根目录包含 `include/robotapi.h`。自动识别新版 SDK 的
+`libs/linux/x64`、`libs/arm/aarch64` 和旧版的 `libs/x64`、`libs` 布局。
+特殊布局可额外传入 `-DCGX_SDK_LIB_DIR="/path/to/libraries"`。
+路径保存在本机 CMake 缓存，后续直接运行 `./build_collect.sh`。
+GUI 与 CLI 共用父项目解析的 SDK 路径，SDK 文件无需提交到 Git。
+
+`run_collect.sh` 在 WSLg 下自动补充缺失的 `DISPLAY` 并默认使用 Qt 软件渲染；
+ARM64 沿用本机图形环境。采集配置位于 `build_mvs/config.yaml`。
+界面启动不要求连接设备；真实采图和机器人操作需要相应网络或 USB 设备可达。
+
 ## collect 图像采集分支
 
 本分支基于 `origin/codex/mvs-support`（`98173d3`）。默认 GUI 是图像采集界面；

@@ -31,27 +31,7 @@ add_definitions(${ARCH_FLAG})
 # ============================================================
 #  CGX SDK 路径
 # ============================================================
-set(CGX_SDK_DIR ${CMAKE_SOURCE_DIR}/libs/cr_sdk)
-
-if(ARCH_TYPE STREQUAL "x86_64")
-    set(CGX_SDK_LIBS
-        ${CGX_SDK_DIR}/libs/x64/libcr_sdk.so
-        ${CGX_SDK_DIR}/libs/x64/libLogStorageDll.so
-        ${CGX_SDK_DIR}/libs/x64/libRobotConfigDll.so
-        ${CGX_SDK_DIR}/libs/x64/libz.so
-        ${CGX_SDK_DIR}/libs/x64/libprotobuf-c.so
-        ${CGX_SDK_DIR}/libs/x64/libprotobuf-rpc.so
-    )
-elseif(ARCH_TYPE STREQUAL "ARM64")
-    set(CGX_SDK_LIBS
-        ${CGX_SDK_DIR}/libs/libcr_sdk.so
-        ${CGX_SDK_DIR}/libs/libLogStorageDll.so
-        ${CGX_SDK_DIR}/libs/libRobotConfigDll.so
-        ${CGX_SDK_DIR}/libs/libz.so
-        ${CGX_SDK_DIR}/libs/libprotobuf-c.so
-        ${CGX_SDK_DIR}/libs/libprotobuf-rpc.so
-    )
-endif()
+# SDK paths and libraries are resolved once by the parent project.
 
 # ============================================================
 #  相机后端检测（ORB 和 MVS 互斥）
@@ -188,7 +168,7 @@ target_include_directories(${PROJECT_NAME} PRIVATE
 
 # MVS / ORB SDK include
 if(useMVS_QT)
-    target_include_directories(${PROJECT_NAME} PRIVATE /opt/MVS/include)
+    target_include_directories(${PROJECT_NAME} PRIVATE ${MVS_SDK_DIR}/include)
 endif()
 if(useORB_QT)
     target_include_directories(${PROJECT_NAME} PRIVATE ${ORBBEC_SDK_V2_DIR}/include)
