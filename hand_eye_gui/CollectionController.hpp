@@ -143,6 +143,7 @@ private:
     // ---- 初始化 ----
     void setupPaths();
     void loadConfigYaml();
+    CameraConfig currentCameraConfig() const;
 
     // ---- 预览循环 ----
     void onPreviewTick();

@@ -126,6 +126,17 @@ void CollectionController::setupPaths()
                         {"log", DiagnosticLogger::instance().logFilePath()}});
 }
 
+CameraConfig CollectionController::currentCameraConfig() const
+{
+    CameraConfig cfg;
+    cfg.cam_ip = m_cameraIp.toStdString();
+    cfg.cam_width = m_previewWidth;
+    cfg.cam_height = m_previewHeight;
+    cfg.exposure_us = m_cameraExposureUs;
+    cfg.gain = m_cameraGain;
+    return cfg;
+}
+
 void CollectionController::loadConfigYaml()
 {
     std::string cfg_file = m_appPath + "config.yaml";
@@ -152,15 +163,8 @@ void CollectionController::loadConfigYaml()
 
     // 配置兼容顺序（逐键回退）：平铺键 > camera_profile 嵌套节 > 编译期默认。
     // 解析逻辑在纯 C++ 助手 config_resolver 中，可无硬件单测。
-    CameraConfig defaults;
-    defaults.cam_ip = m_cameraIp.toStdString();
-    defaults.cam_width = m_previewWidth;
-    defaults.cam_height = m_previewHeight;
-    defaults.exposure_us = m_cameraExposureUs;
-    defaults.gain = m_cameraGain;
-
     const auto resolved =
-        config_resolver::resolveCameraConfig(fs, defaults);
+        config_resolver::resolveCameraConfig(fs, currentCameraConfig());
     config_resolver::CollectionConfig collectionDefaults;
     collectionDefaults.robot_ip = m_robotIp.toStdString();
     const auto collectionConfig = config_resolver::resolveCollectionConfig(fs, collectionDefaults);
@@ -567,13 +571,8 @@ void CollectionController::openCamera()
     }
 
     // 根据当前 UI 配置创建相机
-    CameraConfig cfg;
-    cfg.cam_ip   = m_cameraIp.toStdString();
     // Collection always selects by IP; the optional SDK serial selector stays empty.
-    cfg.cam_width  = m_previewWidth;
-    cfg.cam_height = m_previewHeight;
-    cfg.exposure_us = m_cameraExposureUs;
-    cfg.gain = m_cameraGain;
+    const auto cfg = currentCameraConfig();
 
     APP_LOG_EVENT_INFO("camera",
                        "camera_open",
