@@ -169,7 +169,6 @@ private:
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
     QString  m_cameraIp     = "192.168.66.253";
-    QString  m_cameraSn;                        // 可选；配置后优先于 IP
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
     int      m_previewWidth  = DEFAULT_CAM_WIDTH;
     int      m_previewHeight = DEFAULT_CAM_HEIGHT;

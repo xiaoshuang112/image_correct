@@ -73,8 +73,9 @@ int main() {
         std::vector<uchar> png;
         require(cv::imencode(".png", fused, png), "PNG encode failed");
         require(cv::norm(cv::imdecode(png, cv::IMREAD_COLOR), fused) == 0, "saved image lost pixels");
-        // Monochrome cameras also deliver BGR8 from the MVS adapter.
-        std::vector<cv::Mat> monochrome;
+        // Synthetic equal-channel BGR inputs exercise fusion/PNG only.
+        // cvtColor here is OpenCV test setup, not MVS Mono8 conversion coverage.
+        std::vector<cv::Mat> equalChannelBgr;
         cv::Mat gray(scene.size(), CV_8UC1);
         for (int row = 0; row < gray.rows; ++row)
             for (int col = 0; col < gray.cols; ++col)
@@ -83,24 +84,24 @@ int main() {
             cv::Mat frame, bgr;
             gray.convertTo(frame, CV_8UC1, gain);
             cv::cvtColor(frame, bgr, cv::COLOR_GRAY2BGR);
-            monochrome.push_back(bgr);
+            equalChannelBgr.push_back(bgr);
         }
-        const cv::Mat monoFused = collection::fuseMertens(monochrome);
-        require(monoFused.type() == CV_8UC3 && monoFused.size() == gray.size(),
-                "monochrome BGR fusion contract changed");
+        const cv::Mat equalChannelFused = collection::fuseMertens(equalChannelBgr);
+        require(equalChannelFused.type() == CV_8UC3 && equalChannelFused.size() == gray.size(),
+                "synthetic equal-channel BGR fusion contract changed");
         std::vector<cv::Mat> channels;
-        cv::split(monoFused, channels);
+        cv::split(equalChannelFused, channels);
         require(cv::norm(channels[0], channels[1]) == 0 &&
-                cv::norm(channels[1], channels[2]) == 0, "monochrome fusion introduced color");
+                cv::norm(channels[1], channels[2]) == 0, "synthetic equal-channel BGR fusion introduced color");
         png.clear();
-        require(cv::imencode(".png", monoFused, png), "monochrome PNG encode failed");
-        require(cv::norm(cv::imdecode(png, cv::IMREAD_COLOR), monoFused) == 0,
-                "saved monochrome image lost pixels");
+        require(cv::imencode(".png", equalChannelFused, png), "synthetic equal-channel BGR PNG encode failed");
+        require(cv::norm(cv::imdecode(png, cv::IMREAD_COLOR), equalChannelFused) == 0,
+                "saved synthetic equal-channel BGR image lost pixels");
         rejects([&] { collection::fuseMertens({exposures.front()}); });
         rejects([&] { collection::fuseMertens({exposures.front(), cv::Mat()}); });
         rejects([&] { collection::fuseMertens({exposures.front(), cv::Mat(66, 97, CV_8UC3)}); });
         rejects([&] { collection::fuseMertens({exposures.front(), cv::Mat(65, 97, CV_8UC1)}); });
-        std::cout << "Collection geometry, fusion and PNG checks passed\n";
+        std::cout << "Collection geometry, synthetic BGR fusion and PNG checks passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

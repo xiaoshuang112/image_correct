@@ -9,7 +9,7 @@
 // config.yaml 相机配置三级解析（纯 C++ + OpenCV，无 Qt，可无硬件单测）。
 //
 // 逐键回退顺序：
-//   1. 平铺键 cam_ip/cam_width/cam_height/cam_sn、曝光/增益等
+//   1. 平铺键 cam_ip/cam_width/cam_height、曝光/增益等
 //   2. camera_profile 显式选择的嵌套节（如 camera_mvs_130/camera_mvs_500）
 //   3. 调用方提供的默认值（通常为编译期默认）
 //
@@ -22,7 +22,6 @@ struct CameraConfig {
     int cam_height = 0;
     int exposure_us = 12000;
     int gain = 3;
-    std::string cam_sn;
 
     std::string profile;        // camera_profile 原始值（空 = 未指定）
     bool profile_found = false; // 指定的嵌套节是否存在且为 map

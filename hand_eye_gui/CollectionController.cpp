@@ -158,7 +158,6 @@ void CollectionController::loadConfigYaml()
     defaults.cam_height = m_previewHeight;
     defaults.exposure_us = m_cameraExposureUs;
     defaults.gain = m_cameraGain;
-    defaults.cam_sn = m_cameraSn.toStdString();
 
     const config_resolver::CameraConfig resolved =
         config_resolver::resolveCameraConfig(fs, defaults);
@@ -178,7 +177,6 @@ void CollectionController::loadConfigYaml()
     m_previewHeight = resolved.cam_height;
     m_cameraExposureUs = resolved.exposure_us;
     m_cameraGain = resolved.gain;
-    m_cameraSn = QString::fromStdString(resolved.cam_sn);
     m_cameraProfile = QString::fromStdString(resolved.profile);
     if (!resolved.profile.empty() && !resolved.profile_found) {
         APP_LOG_EVENT_WARNING("config",
@@ -197,7 +195,6 @@ void CollectionController::loadConfigYaml()
                        "success",
                        {{"path", QString::fromStdString(cfg_file)},
                         {"camera", m_cameraIp},
-                        {"camera_sn", m_cameraSn},
                         {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
                         {"resolution_h", QString::number(m_previewHeight)},
@@ -572,7 +569,7 @@ void CollectionController::openCamera()
     // 根据当前 UI 配置创建相机
     CONFIG cfg;
     cfg.cam_ip   = m_cameraIp.toStdString();
-    cfg.cam_sn   = std::string{};
+    // Collection always selects by IP; the optional SDK serial selector stays empty.
     cfg.cam_width  = m_previewWidth;
     cfg.cam_height = m_previewHeight;
     cfg.exposure_us = m_cameraExposureUs;
@@ -582,7 +579,6 @@ void CollectionController::openCamera()
                        "camera_open",
                        "instance_create",
                        {{"endpoint", QString::fromStdString(cfg.cam_ip)},
-                        {"cam_sn", QString::fromStdString(cfg.cam_sn)},
                         {"resolution", QString("%1x%2").arg(cfg.cam_width).arg(cfg.cam_height)},
                         {"exposure_us", QString::number(cfg.exposure_us)},
                         {"gain", QString::number(cfg.gain)}});
@@ -602,7 +598,6 @@ void CollectionController::openCamera()
                              {"sdk_code", QString("0x%1").arg(camErr.sdk_code, 0, 16)},
                              {"detail", QString::fromStdString(camErr.message)},
                              {"configured_ip", m_cameraIp},
-                             {"configured_sn", m_cameraSn},
                              {"elapsed_ms", QString::number(timer.elapsed())}});
         setStatus("打开相机失败");
         emit cameraOpenedChanged();

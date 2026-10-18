@@ -50,7 +50,6 @@ FlangeRead readFlangePose(RobotHandle handle) {
 
 void CollectionController::initializeCollection() {
     m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
-    m_cameraSn.clear();
     m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
     loadCollectionUndistortion();
 }

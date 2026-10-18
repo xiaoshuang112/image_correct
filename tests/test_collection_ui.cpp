@@ -7,10 +7,37 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QtTest/QTest>
+#include <QtTest/QSignalSpy>
+#include <qqml.h>
 #include <iostream>
 #include <functional>
 #include <memory>
 #include <stdexcept>
+
+// Match the real controller's shared NOTIFY signal: unrelated/busy changes
+// notify savedImageCount even when its getter returns the same value.
+class SharedCollectionState : public QObject {
+    Q_OBJECT
+    Q_PROPERTY(int savedImageCount READ savedImageCount WRITE setSavedImageCount NOTIFY collectionChanged)
+    Q_PROPERTY(bool collectionBusy READ collectionBusy WRITE setCollectionBusy NOTIFY collectionChanged)
+public:
+    using QObject::QObject;
+    int savedImageCount() const { return m_count; }
+    bool collectionBusy() const { return m_busy; }
+    void setSavedImageCount(int value) { if (value != m_count) { m_count = value; emit collectionChanged(); } }
+    void setCollectionBusy(bool value) { if (value != m_busy) { m_busy = value; emit collectionChanged(); } }
+    Q_INVOKABLE void beginCapture() { m_busy = true; emit collectionChanged(); }
+    Q_INVOKABLE void finishCapture(bool saved) {
+        m_busy = false;
+        if (saved) ++m_count;
+        emit collectionChanged();
+    }
+signals:
+    void collectionChanged();
+private:
+    int m_count = 0;
+    bool m_busy = false;
+};
 
 namespace {
 void require(bool condition, const char* message) {
@@ -33,14 +60,15 @@ int main(int argc, char** argv) {
         qputenv("QT_QPA_PLATFORM", "offscreen");
     qputenv("QT_QUICK_BACKEND", "software");
     QGuiApplication app(argc, argv);
+    qmlRegisterType<SharedCollectionState>("CollectTest", 1, 0, "SharedCollectionState");
     try {
         std::unique_ptr<QObject> controller;
         QQmlApplicationEngine engine;
         QQmlComponent mock(&engine);
         mock.setData(R"QML(
 import QtQuick 2.15
-QtObject {
-    property bool collectionBusy: false
+import CollectTest 1.0
+SharedCollectionState {
     property bool cameraOpened: false
     property bool previewActive: false
     property bool robotConnected: false
@@ -49,7 +77,6 @@ QtObject {
     property string undistortionStatus: "未找到手眼文件，去畸变不可用"
     property string cameraBackend: "mvs"
     property string cameraIp: "192.168.66.253"
-    property string cameraSn: ""
     property int previewWidth: 4024
     property int previewHeight: 3036
     property string cameraModel: "MVS"
@@ -59,7 +86,6 @@ QtObject {
     property string outputDirectory: "/tmp/collect-ui-check"
     property string exposureList: "5000,8500,14500,25000"
     property string lastCapturePath: ""
-    property int savedImageCount: 0
     property int savedPoseCount: 0
     property string pointName: ""
     property bool poseFailure: false
@@ -74,7 +100,12 @@ QtObject {
     function closeCamera() { previewActive = false; cameraOpened = false; undistortionEnabled = false }
     function startPreview() { previewActive = true; frameUpdated() }
     function stopPreview() { previewActive = false }
-    function capturePhoto() { savedImageCount++ }
+    property bool captureFailure: false
+    property bool captureCancelled: false
+    function capturePhoto() {
+        beginCapture() // beginCollectionOperation notifies before increment
+        finishCapture(!captureFailure && !captureCancelled) // one shared completion NOTIFY
+    }
     function openCollectionFolder() {}
     function saveFlangePose(name) {
         if (collectionBusy || !robotConnected) return
@@ -116,6 +147,63 @@ QtObject {
             if (!result) throw std::runtime_error(std::string("missing UI action: ") + name);
             return result;
         };
+        auto* imageArea = item("captureImageArea");
+        auto* flashOverlay = item("shutterFlashOverlay");
+        auto* flashAnimation = window->findChild<QObject*>("shutterFlashAnimation");
+        require(flashAnimation != nullptr, "missing shutter animation");
+        QSignalSpy flashes(flashAnimation, SIGNAL(started()));
+        require(flashes.isValid(), "cannot observe shutter animation starts");
+        auto notify = [&](QObject* state) {
+            require(QMetaObject::invokeMethod(state, "collectionChanged"), "shared NOTIFY failed");
+        };
+        auto take = [&](QObject* state) {
+            require(QMetaObject::invokeMethod(state, "capturePhoto"), "mock capture failed");
+        };
+        require(imageArea->property("seenCount").toInt() == 0 && flashes.count() == 0,
+                "initial count should establish history without flashing");
+        notify(controller.get());
+        require(flashes.count() == 0, "unchanged shared NOTIFY flashed before first capture");
+        take(controller.get());
+        require(flashes.count() == 1 && flashAnimation->property("running").toBool(),
+                "first successful capture did not start shutter animation");
+        take(controller.get());
+        require(flashes.count() == 2, "consecutive capture did not restart shutter animation");
+        notify(controller.get());
+        require(flashes.count() == 2, "unchanged count restarted shutter animation");
+        controller->setProperty("captureFailure", true);
+        take(controller.get());
+        require(flashes.count() == 2 && controller->property("savedImageCount").toInt() == 2,
+                "failed capture changed count or flashed");
+        controller->setProperty("captureFailure", false);
+        controller->setProperty("captureCancelled", true);
+        take(controller.get());
+        require(flashes.count() == 2 && controller->property("savedImageCount").toInt() == 2,
+                "cancelled capture changed count or flashed");
+        controller->setProperty("captureCancelled", false);
+        controller->setProperty("savedImageCount", 0);
+        require(imageArea->property("seenCount").toInt() == 0 && flashes.count() == 2 &&
+                !flashAnimation->property("running").toBool() && qFuzzyIsNull(flashOverlay->opacity()),
+                "count reset did not clear flash/history");
+        notify(controller.get());
+        take(controller.get());
+        require(flashes.count() == 3, "first capture after reset did not flash exactly once");
+        std::unique_ptr<QObject> replacement(mock.create());
+        require(replacement != nullptr, "replacement controller failed");
+        replacement->setProperty("savedImageCount", 9);
+        window->setProperty("controller", QVariant::fromValue(replacement.get()));
+        require(imageArea->property("seenCount").toInt() == 9 && flashes.count() == 3 &&
+                !flashAnimation->property("running").toBool() && qFuzzyIsNull(flashOverlay->opacity()),
+                "controller switch flashed historical captures");
+        notify(replacement.get());
+        take(replacement.get());
+        require(flashes.count() == 4, "capture on replacement controller failed to flash");
+        take(controller.get());
+        require(flashes.count() == 4, "old controller changed active flash history");
+        window->setProperty("controller", QVariant::fromValue(controller.get()));
+        require(imageArea->property("seenCount").toInt() == 2 && flashes.count() == 4,
+                "restoring controller did not reset history baseline");
+        controller->setProperty("savedImageCount", 0);
+        flashes.clear();
         auto count = [&]() { return controller->property("savedImageCount").toInt(); };
         auto* open = item("openCameraButton");
         auto* capture = item("captureButton");
@@ -336,10 +424,12 @@ QtObject {
                 }
             }
         }
-        std::cout << "Collection QML, shortcuts, focus, busy state and layout checks passed\n";
+        std::cout << "Collection QML, shared-NOTIFY shutter history, shortcuts, focus, busy state and layout checks passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
         return 1;
     }
 }
+
+#include "test_collection_ui.moc"

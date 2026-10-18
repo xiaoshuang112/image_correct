@@ -251,14 +251,43 @@ ApplicationWindow {
                     }
                     Rectangle {
                         id: imageArea
-                        property int seenCount: root.controller.savedImageCount
+                        objectName: "captureImageArea"
+                        // History is assigned explicitly, never bound to the live count.
+                        property int seenCount: 0
+                        property var countController: null
+                        property bool countHistoryReady: false
+                        function resetCountHistory() {
+                            shutterFlash.stop()
+                            flash.opacity = 0
+                            countController = root.controller
+                            seenCount = root.controller ? root.controller.savedImageCount : 0
+                            countHistoryReady = true
+                        }
+                        function observeSavedImageCount() {
+                            if (!countHistoryReady || countController !== root.controller) {
+                                resetCountHistory()
+                                return
+                            }
+                            var count = root.controller.savedImageCount
+                            if (count < seenCount) {
+                                // A reset starts a fresh baseline, with no flash.
+                                resetCountHistory()
+                                return
+                            }
+                            if (count > seenCount) shutterFlash.restart()
+                            seenCount = count
+                        }
+                        Component.onCompleted: resetCountHistory()
+                        Connections {
+                            target: root
+                            function onControllerChanged() { imageArea.resetCountHistory() }
+                        }
                         Layout.fillWidth: true; Layout.fillHeight: true
                         color: Theme.viewfinder; radius: 6; clip: true
                         Connections {
                             target: root.controller
                             function onSavedImageCountChanged() {
-                                if (root.controller.savedImageCount > imageArea.seenCount) shutterFlash.restart()
-                                imageArea.seenCount = root.controller.savedImageCount
+                                imageArea.observeSavedImageCount()
                             }
                         }
                         Image { id: cameraImage; anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false; visible: root.controller.cameraOpened; source: "image://camera/current" }
@@ -343,8 +372,9 @@ ApplicationWindow {
                         }
                         Rectangle {
                             id: flash
+                            objectName: "shutterFlashOverlay"
                             anchors.fill: parent; radius: 6; color: "white"; opacity: 0
-                            NumberAnimation { id: shutterFlash; target: flash; property: "opacity"; from: 0.22; to: 0; duration: 260; easing.type: Easing.OutCubic }
+                            NumberAnimation { id: shutterFlash; objectName: "shutterFlashAnimation"; target: flash; property: "opacity"; from: 0.22; to: 0; duration: 260; easing.type: Easing.OutCubic }
                         }
                     }
                 }

@@ -189,7 +189,6 @@ CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
                out.exposure_us, out.sources);
     resolveNonNegativeInt(fs, profileNode, out.profile, "camera_gain",
                           out.gain, out.sources);
-    resolveString(fs, profileNode, out.profile, "cam_sn", out.cam_sn, out.sources);
     return out;
 }
 

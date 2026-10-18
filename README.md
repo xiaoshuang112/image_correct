@@ -150,5 +150,14 @@ ctest --test-dir build_tests --output-on-failure
 ```
 
 `build_collect.sh` 构建 GUI 和全部可用测试，再运行完整 CTest。
-黑白 MVS 帧通过原有 Mono8 → BGR 转换进入与彩色帧相同的曝光融合链路。
+黑白 MVS 帧仍通过原有 SDK 像素转换进入 BGR8 融合链路；本轮未修改该转换。
+`collection_geometry_synthetic_bgr_fusion_png` 仅用 OpenCV 将合成灰度图转为三通道相等的 BGR，
+验证融合和 PNG 回读，不覆盖 MVS Mono8 → BGR 转换、SDK 取帧或真实曝光。
 源码回归不代表真实相机、曝光时序或机器人采集已验证，仍需分别进行黑白/彩色设备验收。
+
+采集配置仅按 IP 选相机；旧 `cam_sn`、`robot_port`、`robot_pwd` 键不参与连接，示例不再列出。
+实际设备序列号仍用于诊断及已有去畸变参数的身份校验。
+快门闪光使用独立历史计数：初始化或切换控制器时建立当前计数基线，计数增加才闪光；
+计数减少时清除动画并重建基线，失败、取消及计数不变的共享通知不会再次闪光。
+UI 回归模拟真实 `collectionChanged` 共享 NOTIFY，包括开始采集时计数尚未变化的通知。
+这是消除绑定与通知顺序依赖的改进，不作为已复现“首张必不闪”的证明。

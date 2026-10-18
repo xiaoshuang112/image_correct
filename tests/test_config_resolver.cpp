@@ -22,7 +22,6 @@ CameraConfig makeDefaults() {
     d.cam_height = 800;
     d.exposure_us = 30000;
     d.gain = 3;
-    d.cam_sn = "";
     return d;
 }
 
@@ -60,6 +59,7 @@ int test_config_resolver() {
         "%YAML:1.0\n---\n"
         "cam_ip: \"192.168.1.11\"\n"
         "cam_port: 8090\n"
+        "cam_sn: \"ignored-flat\"\n"
         "cam_width: 2448\n"
         "cam_height: 2048\n"
         "camera_exposure_us: 28000\n"
@@ -74,13 +74,12 @@ int test_config_resolver() {
                "legacy_flat_values");
     TEST_CHECK(out.exposure_us == 28000 && out.gain == 0,
                "legacy_flat_exposure_gain");
-    TEST_CHECK(out.cam_sn.empty(),
-               "legacy_flat_new_keys_default");
     TEST_CHECK(out.profile.empty() && !out.profile_found,
                "legacy_flat_no_profile");
     TEST_CHECK(hasSource(out, "cam_ip=192.168.1.11(flat)"),
                "legacy_flat_source_audit");
     TEST_CHECK(!hasSource(out, "cam_port="), "obsolete_port_ignored");
+    TEST_CHECK(!hasSource(out, "cam_sn="), "obsolete_flat_serial_ignored");
 
     // ---- 平铺键优先于嵌套节 ----
     writeFile(
@@ -94,7 +93,7 @@ int test_config_resolver() {
         "  cam_height: 2048\n"
         "  camera_exposure_us: 32000\n"
         "  camera_gain: 4\n"
-        "  cam_sn: \"DA1234567\"\n");
+        "  cam_sn: \"ignored-profile\"\n");
     TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
                                                         makeDefaults(), out,
                                                         err),
@@ -102,13 +101,12 @@ int test_config_resolver() {
     TEST_CHECK(out.cam_ip == "192.168.3.10", "flat_beats_profile_ip");
     TEST_CHECK(out.cam_width == 2448 && out.cam_height == 2048,
                "profile_fills_missing_resolution");
-    TEST_CHECK(out.cam_sn == "DA1234567", "profile_fills_missing_sn");
     TEST_CHECK(out.exposure_us == 32000 && out.gain == 4,
                "profile_fills_exposure_gain");
     TEST_CHECK(out.profile == "cam_mvs_a" && out.profile_found,
                "profile_found_flag");
     TEST_CHECK(hasSource(out, "cam_ip=192.168.3.10(flat)") &&
-                   hasSource(out, "cam_sn=DA1234567(profile:cam_mvs_a)"),
+                   !hasSource(out, "cam_sn="),
                "mixed_source_audit");
 
     // ---- 指定的嵌套节不存在：回退平铺/默认并标记 ----

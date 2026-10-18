@@ -135,7 +135,7 @@ bool MVSCamera::open() {
         APP_LOG_EVENT_ERROR("camera.mvs",
                             "select",
                             "fail",
-                            {{"configured_sn", QString::fromStdString(m_config.cam_sn)},
+                            {{"selection_mode", m_config.cam_sn.empty() ? "ip" : "serial"},
                              {"configured_ip", QString::fromStdString(m_config.cam_ip)},
                              {"enumerated", QString::number(devices.size())},
                              {"detail", QString::fromStdString(selection.message)}});
