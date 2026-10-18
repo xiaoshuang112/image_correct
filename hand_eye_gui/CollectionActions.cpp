@@ -8,16 +8,12 @@
 #include "utils/collection_utils.hpp"
 #include "utils/calib_transform.hpp"
 #include "utils/robot_util.hpp"
-#include <QCoreApplication>
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
-#include <QSaveFile>
 #include <QUuid>
 #include <QUrl>
-#include <opencv2/imgcodecs.hpp>
-#include <opencv2/imgproc.hpp>
 #include <algorithm>
 #include <array>
 #include <cmath>
