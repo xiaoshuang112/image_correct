@@ -170,6 +170,10 @@ if(BUILD_TESTS)
     add_test(NAME collection_geometry_synthetic_bgr_fusion_png COMMAND test_collection)
     find_package(Qt5 QUIET COMPONENTS Core Quick Test)
     if(Qt5Core_FOUND)
+        add_executable(test_exposure_list tests/test_exposure_list.cpp)
+        target_include_directories(test_exposure_list PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(test_exposure_list Qt5::Core)
+        add_test(NAME exposure_list COMMAND test_exposure_list)
         add_executable(test_collection_undistortion
             tests/test_collection_undistortion.cpp
             utils/collection_undistortion.cpp

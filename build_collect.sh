@@ -4,7 +4,7 @@ collect_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 build_jobs="${COLLECT_BUILD_JOBS:-}"
 if [[ -z "$build_jobs" ]]; then
     case "$(uname -m)" in
-        x86_64|amd64|i686|i386) build_jobs=16 ;;
+        x86_64|amd64|i686|i386) build_jobs=32 ;;
         aarch64|arm64|arm*) build_jobs=4 ;;
         *) build_jobs=4 ;;
     esac

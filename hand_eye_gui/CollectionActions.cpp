@@ -2,6 +2,7 @@
 #include "DiagnosticLogger.hpp"
 #include "CollectionPoseRecord.hpp"
 #include "CollectionImageRecord.hpp"
+#include "ExposureList.hpp"
 #include "utils/collection_undistortion.hpp"
 #include "config_resolver.hpp"
 #include "utils/collection_utils.hpp"
@@ -12,7 +13,6 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
-#include <QRegularExpression>
 #include <QSaveFile>
 #include <QUuid>
 #include <QUrl>
@@ -22,7 +22,6 @@
 #include <array>
 #include <cmath>
 #include <future>
-#include <set>
 #include <stdexcept>
 
 namespace {
@@ -117,18 +116,12 @@ void CollectionController::setExposureList(const QString& value) {
     emit collectionChanged();
     if (m_appPath.empty()) return;
     std::vector<int> exposures;
-    std::set<int> distinct;
-    const auto tokens = m_exposureList.split(QRegularExpression("[,，;\\s]+"), Qt::SkipEmptyParts);
-    for (const auto& token : tokens) {
-        bool ok = false;
-        const int exposure = token.toInt(&ok);
-        if (!ok || exposure < 1 || exposure > 1000000 || !distinct.insert(exposure).second) {
-            setStatus("融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
-            return;
-        }
-        exposures.push_back(exposure);
+    const auto errorKind = collection::parseExposureList(m_exposureList, exposures);
+    if (errorKind == collection::ExposureListError::InvalidValue) {
+        setStatus("融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
+        return;
     }
-    if (exposures.size() < 2 || exposures.size() > 5) {
+    if (errorKind == collection::ExposureListError::InvalidCount) {
         setStatus("融合曝光应包含 2～5 个数值，未写入配置");
         return;
     }
@@ -199,18 +192,12 @@ void CollectionController::capturePhoto() {
         return;
     }
     std::vector<int> exposures;
-    std::set<int> distinct;
-    const auto tokens = m_exposureList.split(QRegularExpression("[,，;\\s]+"), Qt::SkipEmptyParts);
-    for (const auto& token : tokens) {
-        bool ok = false;
-        const int exposure = token.toInt(&ok);
-        if (!ok || exposure < 1 || exposure > 1000000 || !distinct.insert(exposure).second) {
-            setStatus("曝光列表应包含 2～5 个不同的正整数，单位 μs，最大 1000000");
-            return;
-        }
-        exposures.push_back(exposure);
+    const auto errorKind = collection::parseExposureList(m_exposureList, exposures);
+    if (errorKind == collection::ExposureListError::InvalidValue) {
+        setStatus("曝光列表应包含 2～5 个不同的正整数，单位 μs，最大 1000000");
+        return;
     }
-    if (exposures.size() < 2 || exposures.size() > 5) {
+    if (errorKind == collection::ExposureListError::InvalidCount) {
         setStatus("每次拍照至少需要 2 个、最多 5 个曝光值");
         return;
     }
