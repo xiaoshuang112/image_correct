@@ -5,7 +5,7 @@
 #include <string>
 #include <memory>
 #include <vector>
-#include "my_base.h"
+#include "CameraConfig.hpp"
 
 struct CameraDeviceAuditInfo {
     std::string serial;
@@ -36,7 +36,7 @@ struct CameraErrorDetail {
  */
 class AICamera {
 public:
-    explicit AICamera(const CONFIG& config) : m_config(config) {}
+    explicit AICamera(const CameraConfig& config) : m_config(config) {}
     virtual ~AICamera() = default;
 
     // 禁止拷贝
@@ -68,18 +68,10 @@ public:
      */
     virtual bool isOpened() const = 0;
     
-    /**
-     * @brief 获取相机配置
-     */
-    const CONFIG& getConfig() const { return m_config; }
-
     // 设备实际身份。派生类在 SDK 能提供时覆盖；默认仅返回配置中的序列号。
     virtual CameraDeviceAuditInfo getDeviceAuditInfo() const {
         return {m_config.cam_sn, "", ""};
     }
-
-    // 相机后端名，用于内参安全门禁与审计。
-    virtual std::string backendName() const { return "unknown"; }
 
     // 最近一次失败的阶段与 SDK 错误码；无错误时返回默认空值。
     virtual CameraErrorDetail lastError() const { return CameraErrorDetail{}; }
@@ -130,7 +122,7 @@ public:
     virtual std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& exposureValuesUs) = 0;
 
 protected:
-    CONFIG m_config;
+    CameraConfig m_config;
 };
 
 #endif // AI_CAMERA_HPP

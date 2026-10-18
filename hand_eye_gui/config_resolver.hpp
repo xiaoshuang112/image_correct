@@ -1,6 +1,7 @@
 #ifndef CONFIG_RESOLVER_HPP
 #define CONFIG_RESOLVER_HPP
 
+#include "cameras/CameraConfig.hpp"
 #include <opencv2/core/persistence.hpp>
 
 #include <string>
@@ -16,12 +17,8 @@
 // 禁止根据枚举顺序猜型号——嵌套节必须由 camera_profile 显式指定。
 namespace config_resolver {
 
-struct CameraConfig {
-    std::string cam_ip;
-    int cam_width = 0;
-    int cam_height = 0;
-    int exposure_us = 12000;
-    int gain = 3;
+struct ResolvedCameraConfig : CameraConfig {
+    explicit ResolvedCameraConfig(const CameraConfig& defaults = {}) : CameraConfig(defaults) {}
 
     std::string profile;        // camera_profile 原始值（空 = 未指定）
     bool profile_found = false; // 指定的嵌套节是否存在且为 map
@@ -31,8 +28,8 @@ struct CameraConfig {
 
 // 从已打开的 FileStorage 解析。defaults 同时提供回退值；解析结果覆盖写入
 // out（未被任何配置源设置的键保持 defaults 中的值）。
-CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
-                                 const CameraConfig& defaults);
+ResolvedCameraConfig resolveCameraConfig(const cv::FileStorage& fs,
+                                        const CameraConfig& defaults);
 
 struct CollectionConfig {
     std::string robot_ip = "192.168.66.14";
@@ -44,13 +41,6 @@ struct CollectionConfig {
 // a whole, never silently truncating or dropping individual bracket values.
 CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
                                          const CollectionConfig& defaults = {});
-
-// 便捷入口：打开文件并解析。文件不存在或无法解析时返回 false 并填 error，
-// 此时 out 不被修改。
-bool resolveCameraConfigFile(const std::string& path,
-                             const CameraConfig& defaults,
-                             CameraConfig& out,
-                             std::string& error);
 
 // 保留原文件注释与排版，只更新顶层整数键。目标文件通过同目录临时文件
 // 校验后原子替换；键不存在时插入到 YAML 文档头之后。

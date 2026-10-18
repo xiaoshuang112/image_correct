@@ -152,14 +152,14 @@ void CollectionController::loadConfigYaml()
 
     // 配置兼容顺序（逐键回退）：平铺键 > camera_profile 嵌套节 > 编译期默认。
     // 解析逻辑在纯 C++ 助手 config_resolver 中，可无硬件单测。
-    config_resolver::CameraConfig defaults;
+    CameraConfig defaults;
     defaults.cam_ip = m_cameraIp.toStdString();
     defaults.cam_width = m_previewWidth;
     defaults.cam_height = m_previewHeight;
     defaults.exposure_us = m_cameraExposureUs;
     defaults.gain = m_cameraGain;
 
-    const config_resolver::CameraConfig resolved =
+    const auto resolved =
         config_resolver::resolveCameraConfig(fs, defaults);
     config_resolver::CollectionConfig collectionDefaults;
     collectionDefaults.robot_ip = m_robotIp.toStdString();
@@ -567,7 +567,7 @@ void CollectionController::openCamera()
     }
 
     // 根据当前 UI 配置创建相机
-    CONFIG cfg;
+    CameraConfig cfg;
     cfg.cam_ip   = m_cameraIp.toStdString();
     // Collection always selects by IP; the optional SDK serial selector stays empty.
     cfg.cam_width  = m_previewWidth;

@@ -9,7 +9,6 @@
 #include <atomic>
 #include <memory>
 
-#include "my_base.h"
 #include "cameras/AICamera.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
@@ -168,12 +167,12 @@ private:
     QString  m_robotIp      = "192.168.66.14";
     int      m_robotPort    = 2323;
     QString  m_robotPasswd  = "123";
-    QString  m_cameraIp     = "192.168.66.253";
+    QString  m_cameraIp     = QString::fromStdString(CameraConfig{}.cam_ip);
     QString  m_cameraProfile;                   // config.yaml 嵌套配置节名
-    int      m_previewWidth  = DEFAULT_CAM_WIDTH;
-    int      m_previewHeight = DEFAULT_CAM_HEIGHT;
-    int      m_cameraExposureUs = 12000;
-    int      m_cameraGain = 3;
+    int      m_previewWidth  = CameraConfig{}.cam_width;
+    int      m_previewHeight = CameraConfig{}.cam_height;
+    int      m_cameraExposureUs = CameraConfig{}.exposure_us;
+    int      m_cameraGain = CameraConfig{}.gain;
 
     // 打开相机后回读的实际设备信息（只读审计）
     QString  m_camDeviceModel;

@@ -9,11 +9,24 @@
 #include <sstream>
 #include <string>
 
-using config_resolver::CameraConfig;
+using config_resolver::ResolvedCameraConfig;
 
 namespace {
 
 const char* kCfgPath = "caitu_test_config.yaml";
+
+bool resolveCameraConfigFile(const std::string& path,
+                            const CameraConfig& defaults,
+                            ResolvedCameraConfig& out,
+                            std::string& error) {
+    cv::FileStorage fs(path, cv::FileStorage::READ);
+    if (!fs.isOpened()) {
+        error = "无法打开配置文件: " + path;
+        return false;
+    }
+    out = config_resolver::resolveCameraConfig(fs, defaults);
+    return true;
+}
 
 CameraConfig makeDefaults() {
     CameraConfig d;
@@ -37,7 +50,7 @@ void writeFile(const std::string& content) {
     f << content;
 }
 
-bool hasSource(const CameraConfig& c, const std::string& needle) {
+bool hasSource(const ResolvedCameraConfig& c, const std::string& needle) {
     for (const std::string& s : c.sources)
         if (s.find(needle) != std::string::npos)
             return true;
@@ -51,7 +64,7 @@ namespace suite {
 int test_config_resolver() {
     std::cout << "---- config_resolver ----\n";
     std::string err;
-    CameraConfig out;
+    ResolvedCameraConfig out;
 
     // 旧配置中的 cam_port 已废弃，忽略该字段且保留其他配置的读取。
     // ---- 旧版纯平铺配置（无 camera_profile）：兼容读取 ----
@@ -65,9 +78,8 @@ int test_config_resolver() {
         "camera_exposure_us: 28000\n"
         "camera_gain: 0\n"
         "fps: 15\n");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err),
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err),
                "legacy_flat_loads");
     TEST_CHECK(out.cam_ip == "192.168.1.11" &&
                    out.cam_width == 2448 && out.cam_height == 2048,
@@ -94,9 +106,8 @@ int test_config_resolver() {
         "  camera_exposure_us: 32000\n"
         "  camera_gain: 4\n"
         "  cam_sn: \"ignored-profile\"\n");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err),
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err),
                "profile_loads");
     TEST_CHECK(out.cam_ip == "192.168.3.10", "flat_beats_profile_ip");
     TEST_CHECK(out.cam_width == 2448 && out.cam_height == 2048,
@@ -114,9 +125,8 @@ int test_config_resolver() {
         "%YAML:1.0\n---\n"
         "camera_profile: \"cam_missing\"\n"
         "cam_ip: \"192.168.3.10\"\n");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err),
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err),
                "missing_profile_loads");
     TEST_CHECK(out.profile == "cam_missing" && !out.profile_found,
                "missing_profile_flagged");
@@ -131,9 +141,8 @@ int test_config_resolver() {
         "  cam_ip: \"192.168.3.77\"\n"
         "  cam_width: 2448\n"
         "  cam_height: 2048\n");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err),
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err),
                "profile_only_loads");
     TEST_CHECK(out.cam_ip == "192.168.3.77" && out.cam_width == 2448 &&
                    out.cam_height == 2048,
@@ -152,9 +161,8 @@ int test_config_resolver() {
                    std::string::npos &&
                    readFile().find("cam_ip: \"192.168.3.10\"") != std::string::npos,
                "update_preserves_comment_and_other_keys");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err) &&
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err) &&
                    out.exposure_us == 45000,
                "updated_exposure_readback");
 
@@ -167,9 +175,8 @@ int test_config_resolver() {
     TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(
                    kCfgPath, "camera_exposure_us", 51000, err),
                "insert_missing_exposure");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err) &&
+    TEST_CHECK(resolveCameraConfigFile(kCfgPath,
+                                       makeDefaults(), out, err) &&
                    out.exposure_us == 51000 &&
                    hasSource(out, "camera_exposure_us=51000(flat)"),
                "inserted_flat_exposure_wins");
@@ -256,7 +263,7 @@ int test_config_resolver() {
                "missing_config_created_with_exposures");
 
     // ---- 非法/缺失文件 ----
-    TEST_CHECK(!config_resolver::resolveCameraConfigFile(
+    TEST_CHECK(!resolveCameraConfigFile(
                    "nonexistent_config.yaml", makeDefaults(), out, err),
                "missing_file_fails");
 

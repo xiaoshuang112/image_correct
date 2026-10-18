@@ -10,7 +10,7 @@
 
 class MVSCamera : public AICamera {
 public:
-    explicit MVSCamera(const CONFIG& config);
+    explicit MVSCamera(const CameraConfig& config);
     ~MVSCamera() override;
 
     bool open() override;
@@ -18,7 +18,6 @@ public:
     cv::Mat captureOneFrame(int timeoutMs = 1000) override;
     bool isOpened() const override { return m_isOpened; }
     CameraDeviceAuditInfo getDeviceAuditInfo() const override;
-    std::string backendName() const override { return "mvs"; }
     CameraErrorDetail lastError() const override;
 
     bool setColorExposureTime(int exposureUs) override;

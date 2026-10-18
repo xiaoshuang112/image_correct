@@ -163,12 +163,9 @@ size_t commentPosition(const std::string& line) {
 // 不会被嵌套节覆盖。
 }  // namespace
 
-CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
-                                 const CameraConfig& defaults) {
-    CameraConfig out = defaults;
-    out.sources.clear();
-    out.profile.clear();
-    out.profile_found = false;
+ResolvedCameraConfig resolveCameraConfig(const cv::FileStorage& fs,
+                                        const CameraConfig& defaults) {
+    ResolvedCameraConfig out(defaults);
 
     fs["camera_profile"] >> out.profile;
 
@@ -190,20 +187,6 @@ CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
     resolveNonNegativeInt(fs, profileNode, out.profile, "camera_gain",
                           out.gain, out.sources);
     return out;
-}
-
-bool resolveCameraConfigFile(const std::string& path,
-                             const CameraConfig& defaults,
-                             CameraConfig& out,
-                             std::string& error) {
-    cv::FileStorage fs(path, cv::FileStorage::READ);
-    if (!fs.isOpened()) {
-        error = "无法打开配置文件: " + path;
-        return false;
-    }
-    out = resolveCameraConfig(fs, defaults);
-    fs.release();
-    return true;
 }
 
 CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,

@@ -19,7 +19,7 @@ constexpr uint64_t kFailureLogInterval = 100;
 
 }  // namespace
 
-MVSCamera::MVSCamera(const CONFIG& config) : AICamera(config) {}
+MVSCamera::MVSCamera(const CameraConfig& config) : AICamera(config) {}
 
 MVSCamera::~MVSCamera() {
     close();

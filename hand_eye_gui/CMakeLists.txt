@@ -59,7 +59,7 @@ add_executable(${PROJECT_NAME}
 #  Include 目录
 # ============================================================
 target_include_directories(${PROJECT_NAME} PRIVATE
-    ${CMAKE_SOURCE_DIR}                         # my_base.h
+    ${CMAKE_SOURCE_DIR}                         # shared project headers
     ${CGX_SDK_DIR}/include                      # robotapi.h, basestruct.h
     ${OpenCV_INCLUDE_DIRS}
     ${Qt5Core_INCLUDE_DIRS}
@@ -93,7 +93,7 @@ target_link_libraries(${PROJECT_NAME}
 # ============================================================
 set_target_properties(${PROJECT_NAME} PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}
-    OUTPUT_NAME "collect-${CAM_SUFFIX}"
+    OUTPUT_NAME "collect-mvs"
 )
 
 # MVS 产物优先从二进制旁的 lib/mvs 加载运行库（发布包内捆绑），
@@ -106,8 +106,6 @@ set_target_properties(${PROJECT_NAME} PROPERTIES
 add_dependencies(${PROJECT_NAME} collection_build_info)
 target_include_directories(${PROJECT_NAME} PRIVATE ${COLLECTION_BUILD_INFO_DIR})
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-    DEFAULT_CAM_WIDTH=${CAITU_GUI_DEFAULT_CAM_WIDTH}
-    DEFAULT_CAM_HEIGHT=${CAITU_GUI_DEFAULT_CAM_HEIGHT}
     QT_MESSAGELOGCONTEXT
     QT_GUI
 )
