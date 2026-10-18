@@ -18,10 +18,6 @@ struct CONFIG {
     int exposure_us = 30000;
     int gain = 3;
 
-    // 内参兼容开关：默认关闭。仅当 camera_params.yaml 为旧版
-    // 仅含 K/D（未绑定相机身份）时，显式置 true 才允许继续标定。
-    bool allow_legacy_intrinsics = false;
-
     CONFIG() = default;
 };
 

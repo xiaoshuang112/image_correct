@@ -102,3 +102,6 @@ code_only_20260812/utils/Util.h
 # Local runtime logs and Visual Studio user settings
 /Log/
 *.vcxproj.user
+
+# SDK-free collection regression build
+/build_tests/

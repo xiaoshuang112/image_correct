@@ -9,7 +9,7 @@
 
 #include <memory>
 
-#include "CalibrationController.hpp"
+#include "CollectionController.hpp"
 #include "CameraImageProvider.hpp"
 #include "DiagnosticLogger.hpp"
 #include "AppBuildInfo.hpp"
@@ -76,23 +76,20 @@ int main(int argc, char* argv[])
     int exitCode = -1;
     {
         // ---- QML 引擎、控制器和图像提供器 ----
-        // engine 必须先构造：局部变量按逆序析构，使 controller 先停止并
-        // join 标定线程，之后 engine 才销毁其拥有的 imageProvider。
+        // engine is constructed first so controller stops and joins collection
+        // workers before engine destroys its image provider.
         APP_LOG_EVENT_INFO("lifecycle", "component", "initializing",
                            {{"scope", "controller_and_image_provider"}});
         QQmlApplicationEngine engine;
         auto imageProvider = new CameraImageProvider();
-        auto controller = std::make_unique<CalibrationController>();
-        const bool collectionMode = !app.arguments().contains("--calibration");
-        controller->setCollectionMode(collectionMode);
+        auto controller = std::make_unique<CollectionController>();
         controller->init(imageProvider);
 
-        engine.rootContext()->setContextProperty("calibrationController", controller.get());
+        engine.rootContext()->setContextProperty("collectionController", controller.get());
         engine.rootContext()->setContextProperty("appVersion", QStringLiteral(APP_VERSION));
         engine.rootContext()->setContextProperty("appGitCommit", QStringLiteral(APP_GIT_COMMIT).left(7));
         engine.addImageProvider("camera", imageProvider);
-        const QString qmlSource = collectionMode ? QStringLiteral("qrc:///qml/Collection.qml")
-                                                 : QStringLiteral("qrc:///qml/HandEyeCalibration.qml");
+        const QString qmlSource = QStringLiteral("qrc:///qml/Collection.qml");
         APP_LOG_EVENT_INFO("qml", "qml", "loading", {{"source", qmlSource}});
         engine.load(QUrl(qmlSource));
 
@@ -110,7 +107,7 @@ int main(int argc, char* argv[])
         }
 
         APP_LOG_EVENT_INFO("lifecycle", "controller", "shutdown_begin",
-                           {{"running", QString::number(controller->running())}});
+                           {{"collection_busy", QString::number(controller->collectionBusy())}});
         controller.reset();
         APP_LOG_EVENT_INFO("lifecycle", "controller", "shutdown_complete",
                            {{"image_provider_alive", "true"}});

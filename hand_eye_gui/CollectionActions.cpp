@@ -1,4 +1,4 @@
-#include "CalibrationController.hpp"
+#include "CollectionController.hpp"
 #include "DiagnosticLogger.hpp"
 #include "CollectionPoseRecord.hpp"
 #include "CollectionImageRecord.hpp"
@@ -48,18 +48,14 @@ FlangeRead readFlangePose(RobotHandle handle) {
 }
 }
 
-void CalibrationController::initializeCollection() {
+void CollectionController::initializeCollection() {
     m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
-    if (m_collectionMode) {
-        m_cameraSn.clear();
-        m_robotPort = 2323;
-        m_robotPasswd = "123";
-    }
+    m_cameraSn.clear();
     m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
-    if (m_collectionMode) loadCollectionUndistortion();
+    loadCollectionUndistortion();
 }
 
-void CalibrationController::loadCollectionUndistortion() {
+void CollectionController::loadCollectionUndistortion() {
     m_undistortionCalibration.reset();
     m_undistortionMaps.reset();
     try {
@@ -82,8 +78,8 @@ void CalibrationController::loadCollectionUndistortion() {
     emit collectionChanged();
 }
 
-void CalibrationController::toggleUndistortion() {
-    if (!m_collectionMode || m_collectionBusy || m_running) return;
+void CollectionController::toggleUndistortion() {
+    if (m_collectionBusy) return;
     if (m_undistortionMaps) {
         m_undistortionMaps.reset();
         emit collectionChanged();
@@ -103,7 +99,7 @@ void CalibrationController::toggleUndistortion() {
     }
 }
 
-void CalibrationController::openCollectionFolder() {
+void CollectionController::openCollectionFolder() {
     if (!QDir().mkpath(m_outputDirectory)) {
         setStatus("无法创建默认图片文件夹");
         return;
@@ -115,12 +111,12 @@ void CalibrationController::openCollectionFolder() {
     setStatus("已打开图片文件夹");
 }
 
-void CalibrationController::setExposureList(const QString& value) {
-    if (m_collectionBusy || m_running) return;
+void CollectionController::setExposureList(const QString& value) {
+    if (m_collectionBusy) return;
     if (m_exposureList == value.trimmed()) return;
     m_exposureList = value.trimmed();
     emit collectionChanged();
-    if (!m_collectionMode || m_appPath.empty()) return;
+    if (m_appPath.empty()) return;
     std::vector<int> exposures;
     std::set<int> distinct;
     const auto tokens = m_exposureList.split(QRegularExpression("[,，;\\s]+"), Qt::SkipEmptyParts);
@@ -146,8 +142,8 @@ void CalibrationController::setExposureList(const QString& value) {
     }
 }
 
-void CalibrationController::persistCollectionString(const std::string& key, const QString& value) {
-    if (!m_collectionMode || m_appPath.empty()) return;
+void CollectionController::persistCollectionString(const std::string& key, const QString& value) {
+    if (m_appPath.empty()) return;
     std::string error;
     if (!config_resolver::updateFlatStringConfigFile(m_appPath + "config.yaml", key, value.toStdString(), error)) {
         APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
@@ -156,8 +152,8 @@ void CalibrationController::persistCollectionString(const std::string& key, cons
     }
 }
 
-void CalibrationController::persistCollectionInteger(const std::string& key, int value) {
-    if (!m_collectionMode || m_appPath.empty()) return;
+void CollectionController::persistCollectionInteger(const std::string& key, int value) {
+    if (m_appPath.empty()) return;
     std::string error;
     if (!config_resolver::updateFlatIntegerConfigFile(m_appPath + "config.yaml", key, value, error)) {
         APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
@@ -165,7 +161,7 @@ void CalibrationController::persistCollectionInteger(const std::string& key, int
         setStatus("本次参数已更新，但配置保存失败：" + QString::fromStdString(error));
     }
 }
-void CalibrationController::beginCollectionOperation() {
+void CollectionController::beginCollectionOperation() {
     if (m_collectionThread.joinable()) m_collectionThread.join();
     m_collectionWasPreviewing = m_previewActive;
     m_previewTimer->stop();
@@ -174,7 +170,7 @@ void CalibrationController::beginCollectionOperation() {
     emit collectionChanged();
 }
 
-void CalibrationController::finishCollectionOperation(const QString& message, const QString& savedPath) {
+void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
     m_collectionBusy = false;
     if (!savedPath.isEmpty()) {
         m_lastCapturePath = savedPath;
@@ -190,15 +186,15 @@ void CalibrationController::finishCollectionOperation(const QString& message, co
     APP_LOG_EVENT_INFO("collection", "operation", "finished", {{"message", message}, {"image", savedPath}});
 }
 
-void CalibrationController::cancelCollectionOperation() {
+void CollectionController::cancelCollectionOperation() {
     if (m_collectionBusy) {
         m_cancelRequested = true;
         setStatus("正在停止当前操作…");
     }
 }
 
-void CalibrationController::capturePhoto() {
-    if (m_running || m_collectionBusy) return;
+void CollectionController::capturePhoto() {
+    if (m_collectionBusy) return;
     if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
         setStatus("请打开相机并等待预览画面后拍照");
         return;
@@ -315,8 +311,8 @@ void CalibrationController::capturePhoto() {
     }
 }
 
-void CalibrationController::saveFlangePose(const QString& name) {
-    if (m_running || m_collectionBusy) return;
+void CollectionController::saveFlangePose(const QString& name) {
+    if (m_collectionBusy) return;
     if (!m_robotConnected) { setStatus("请先连接机器人再保存法兰位姿"); return; }
     const QString pointName = name.trimmed();
     const bool invalidCharacter = std::any_of(pointName.begin(), pointName.end(), [](QChar c) {
@@ -353,8 +349,8 @@ void CalibrationController::saveFlangePose(const QString& name) {
     } catch (const std::exception& error) { finishCollectionOperation(QString::fromUtf8(error.what())); }
 }
 
-void CalibrationController::levelCamera() {
-    if (m_running || m_collectionBusy) return;
+void CollectionController::levelCamera() {
+    if (m_collectionBusy) return;
     if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0 || !m_robotConnected) {
         setStatus("调平需要预览画面和机器人连接");
         return;
@@ -401,7 +397,7 @@ void CalibrationController::levelCamera() {
     }
     const RobotHandle handle = m_robotHandle;
     beginCollectionOperation();
-    setRobotMotionCancelCheck(&CalibrationController::robotMotionCancellationRequested);
+    setRobotMotionCancelCheck(&CollectionController::robotMotionCancellationRequested);
     setStatus(calibrated ? "正在调平：镜头平面水平，相机向下…"
                          : "正在调平：法兰垂直向下，相机与法兰平行…");
     try {

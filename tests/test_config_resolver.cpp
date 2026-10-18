@@ -23,7 +23,6 @@ CameraConfig makeDefaults() {
     d.exposure_us = 30000;
     d.gain = 3;
     d.cam_sn = "";
-    d.allow_legacy_intrinsics = false;
     return d;
 }
 
@@ -75,7 +74,7 @@ int test_config_resolver() {
                "legacy_flat_values");
     TEST_CHECK(out.exposure_us == 28000 && out.gain == 0,
                "legacy_flat_exposure_gain");
-    TEST_CHECK(out.cam_sn.empty() && !out.allow_legacy_intrinsics,
+    TEST_CHECK(out.cam_sn.empty(),
                "legacy_flat_new_keys_default");
     TEST_CHECK(out.profile.empty() && !out.profile_found,
                "legacy_flat_no_profile");
@@ -133,8 +132,7 @@ int test_config_resolver() {
         "cam_mvs_a:\n"
         "  cam_ip: \"192.168.3.77\"\n"
         "  cam_width: 2448\n"
-        "  cam_height: 2048\n"
-        "  allow_legacy_intrinsics: 1\n");
+        "  cam_height: 2048\n");
     TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
                                                         makeDefaults(), out,
                                                         err),
@@ -142,21 +140,7 @@ int test_config_resolver() {
     TEST_CHECK(out.cam_ip == "192.168.3.77" && out.cam_width == 2448 &&
                    out.cam_height == 2048,
                "profile_only_values");
-    TEST_CHECK(out.allow_legacy_intrinsics, "profile_bool_set");
     TEST_CHECK(out.exposure_us == 30000, "profile_only_exposure_default");
-
-    // ---- 布尔开关：平铺显式 0 不被嵌套节 1 覆盖 ----
-    writeFile(
-        "%YAML:1.0\n---\n"
-        "camera_profile: \"cam_mvs_a\"\n"
-        "allow_legacy_intrinsics: 0\n"
-        "cam_mvs_a:\n"
-        "  allow_legacy_intrinsics: 1\n");
-    TEST_CHECK(config_resolver::resolveCameraConfigFile(kCfgPath,
-                                                        makeDefaults(), out,
-                                                        err),
-               "bool_flat_zero_loads");
-    TEST_CHECK(!out.allow_legacy_intrinsics, "bool_flat_zero_wins");
 
     // ---- 顶层曝光写回：保留注释和其他配置 ----
     writeFile(

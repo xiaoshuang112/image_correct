@@ -82,10 +82,10 @@ fi
     && echo "4. config.yaml: 就位" \
     || echo "4. config.yaml: 缺失（将使用编译期默认值）"
 [ -d "$PKG_DIR/param" ] || mkdir -p "$PKG_DIR/param"
-if [ -f "$PKG_DIR/param/camera_params.yaml" ]; then
-    echo "   param/camera_params.yaml: 就位（将校验相机身份和分辨率后复用）"
+if [ -f "$PKG_DIR/param/hand_eye_result.yaml" ]; then
+    echo "   param/hand_eye_result.yaml: 就位（采集去畸变参数；有身份和尺寸字段时校验）"
 else
-    echo "   param/camera_params.yaml: 缺失（允许首次标定，采集完成后自动生成）"
+    echo "   param/hand_eye_result.yaml: 缺失（仍可原图采集；去畸变不可用，不会自动标定）"
 fi
 
 echo ""

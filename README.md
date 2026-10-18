@@ -1,9 +1,9 @@
-# calibri_nano
+# collect
 
 ## WSL / Linux ARM64 共用源码
 
 两端使用同一仓库和启动命令，分别在各自机器编译；不要复制或共享 `build_mvs` 构建目录。
-需要 C++17、CMake、OpenCV（含 contrib）、Qt5 Quick / QuickControls2 及对应 QML 模块、
+需要 C++17、CMake、OpenCV（core/imgproc/imgcodecs/calib3d/photo）、Qt5 Quick / QuickControls2 及对应 QML 模块、
 海康 MVS 和 CGXi 机器人 SDK。SDK 的动态库必须与目标 CPU 架构一致。
 工程仅提供 GUI，已移除命令行采样、离线工具和 OAK 后端。相机后端仅支持 MVS；无需再选择后端。旧配置中的 `cam_port` 会被忽略。
 
@@ -24,8 +24,7 @@ ARM64 沿用本机图形环境。采集配置位于 `build_mvs/config.yaml`。
 
 ## collect 图像采集分支
 
-本分支基于 `origin/codex/mvs-support`（`98173d3`）。默认 GUI 是图像采集界面；
-使用 `collect-mvs --calibration` 可进入原标定界面。
+本分支只提供图像采集与法兰位姿保存，不执行标定。已有标定结果可用于去畸变和调平。
 
 安装海康 MVS、OpenCV、Qt5 和机器人 SDK 后，在仓库根目录运行：
 
@@ -140,35 +139,16 @@ fusion_exposures_us: [5000, 8500, 14500, 25000]
 关闭时的单图保存和两张图的位姿一致性；界面检查覆盖去畸变开关及最小窗口布局。
 拍照取消会等待当前曝光序列返回，再丢弃本次结果。
 
-## 全自动眼在手外标定
+## 无硬件测试
 
-- 内部求解矩阵 `X` 使用
-  `inv(T_base_flange_i) * X * T_camera_board_i` 在法兰坐标系下保持不变
-  的约束。生产 YAML 中历史键名 `T_base_camera` 保存 `inv(X)`，以保持与
-  2026-06-27 已现场验证结果及既有消费端一致；平移单位为米。
-- 默认仍生成 `3^6 = 729` 个候选，保留可达且路径连通的采集目标；
-  按关节路径排序、检查相邻关节跳变，必要的过渡点不采图。
-  全自动流程不使用半自动的 90 个选点上限。
-- 采集到位后等待 1200 ms，丢弃两帧，每个位置最多尝试三次采图。
-  每帧至少 12 个角点；求解至少 12 帧，MAD 过滤后还须保留至少 60%。
-- 求解复用五算法共识与代表解精化。最终平移 RMS/P95 门限为 5/8 mm，
-  旋转 RMS/P95 门限为 1/2 度；至少三个算法成功，算法间最大差异不超过
-  10 mm 和 1 度。这些是程序验收门限，不代表实际定位精度保证。
-- GUI 必须加载有效的 `param/eye_to_hand_config.yaml`。
-  生产结果保存失败会报告失败，不会显示标定成功。
-- 每次采集保存到 `eye_to_hand/run_<时间戳>_<编号>/`，GUI 显示本次目录，
-  历史采集不再被清空。中断采集保留 `.collection_incomplete` 标记，拒绝自动复算；
-  完整数据严格检查 CSV 行与编号图像的一一对应关系。
+GUI 需要相机与机器人 SDK；测试本身不连接设备。仅运行软件回归时可不安装 SDK：
 
-无硬件回归测试：构建 `test_eye_to_hand_solver` 后运行
-`ctest --test-dir build_mvs --output-on-failure`。测试使用合成位姿，不连接设备。
-眼在手外矩阵方向必须用 2026-06-27 现场基准做回归验证；禁止仅凭键名改动
-求逆约定。
+```bash
+cmake -S . -B build_tests -DBUILD_QT_GUI=OFF -DBUILD_TESTS=ON
+cmake --build build_tests -j4
+ctest --test-dir build_tests --output-on-failure
+```
 
-## 标定审计部署边界
-
-- 掉电持久性保证当前仅适用于 Linux/Jetson。Windows 构建尚未实现等价的
-  `FlushFileBuffers`、目录项持久化和覆盖已有目标文件的原子发布语义，不能按
-  Phase 1.1 的掉电安全标准验收。
-- 标定结果发布采用单写者模型。同一生产 YAML 路径同一时间只允许一个 GUI 进程写入；当前版本不提供跨进程文件锁。
-- 已封存 Session 是不可变审计数据。
+`build_collect.sh` 构建 GUI 和全部可用测试，再运行完整 CTest。
+黑白 MVS 帧通过原有 Mono8 → BGR 转换进入与彩色帧相同的曝光融合链路。
+源码回归不代表真实相机、曝光时序或机器人采集已验证，仍需分别进行黑白/彩色设备验收。

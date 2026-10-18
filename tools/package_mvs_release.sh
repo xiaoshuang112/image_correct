@@ -42,7 +42,7 @@ done
 
 BIN="$BUILD_DIR/collect-mvs"
 if [ ! -x "$BIN" ]; then
-    echo "[错误] 未找到 $BIN，请先运行 ./build_hand_eye.sh mvs"
+    echo "[错误] 未找到 $BIN，请先运行 ./build_collect.sh"
     exit 1
 fi
 

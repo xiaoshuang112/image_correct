@@ -14,8 +14,8 @@ ApplicationWindow {
     color: Theme.bg
     font.family: Theme.sans
     font.pixelSize: Theme.body
-    property var controller: calibrationController
-    readonly property bool busy: controller.collectionBusy || controller.running
+    property var controller: collectionController
+    readonly property bool busy: controller.collectionBusy
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
     readonly property bool editing: activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined
     readonly property bool compact: width < 1190

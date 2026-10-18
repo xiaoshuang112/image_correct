@@ -2,6 +2,7 @@
 #include "utils/calib_transform.hpp"
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <cmath>
 #include <stdexcept>
@@ -72,6 +73,29 @@ int main() {
         std::vector<uchar> png;
         require(cv::imencode(".png", fused, png), "PNG encode failed");
         require(cv::norm(cv::imdecode(png, cv::IMREAD_COLOR), fused) == 0, "saved image lost pixels");
+        // Monochrome cameras also deliver BGR8 from the MVS adapter.
+        std::vector<cv::Mat> monochrome;
+        cv::Mat gray(scene.size(), CV_8UC1);
+        for (int row = 0; row < gray.rows; ++row)
+            for (int col = 0; col < gray.cols; ++col)
+                gray.at<uchar>(row, col) = (row + col) % 160;
+        for (double gain : {0.4, 1.0, 2.0}) {
+            cv::Mat frame, bgr;
+            gray.convertTo(frame, CV_8UC1, gain);
+            cv::cvtColor(frame, bgr, cv::COLOR_GRAY2BGR);
+            monochrome.push_back(bgr);
+        }
+        const cv::Mat monoFused = collection::fuseMertens(monochrome);
+        require(monoFused.type() == CV_8UC3 && monoFused.size() == gray.size(),
+                "monochrome BGR fusion contract changed");
+        std::vector<cv::Mat> channels;
+        cv::split(monoFused, channels);
+        require(cv::norm(channels[0], channels[1]) == 0 &&
+                cv::norm(channels[1], channels[2]) == 0, "monochrome fusion introduced color");
+        png.clear();
+        require(cv::imencode(".png", monoFused, png), "monochrome PNG encode failed");
+        require(cv::norm(cv::imdecode(png, cv::IMREAD_COLOR), monoFused) == 0,
+                "saved monochrome image lost pixels");
         rejects([&] { collection::fuseMertens({exposures.front()}); });
         rejects([&] { collection::fuseMertens({exposures.front(), cv::Mat()}); });
         rejects([&] { collection::fuseMertens({exposures.front(), cv::Mat(66, 97, CV_8UC3)}); });

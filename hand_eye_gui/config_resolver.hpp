@@ -23,7 +23,6 @@ struct CameraConfig {
     int exposure_us = 12000;
     int gain = 3;
     std::string cam_sn;
-    bool allow_legacy_intrinsics = false;
 
     std::string profile;        // camera_profile 原始值（空 = 未指定）
     bool profile_found = false; // 指定的嵌套节是否存在且为 map

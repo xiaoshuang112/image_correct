@@ -161,27 +161,6 @@ size_t commentPosition(const std::string& line) {
 
 // 布尔开关按“节点是否存在”判定：平铺键显式写 0 也视为已设置，
 // 不会被嵌套节覆盖。
-void resolveBool(const cv::FileStorage& fs,
-                 const cv::FileNode& profileNode,
-                 const char* key,
-                 bool& target,
-                 std::vector<std::string>& sources) {
-    int value = 0;
-    std::string source;
-    if (!fs[key].empty()) {
-        fs[key] >> value;
-        source = "flat";
-    } else if (!profileNode.empty() && !profileNode[key].empty()) {
-        profileNode[key] >> value;
-        source = "profile";
-    } else {
-        return;
-    }
-    target = (value != 0);
-    sources.push_back(std::string(key) + "=" + (target ? "1" : "0") +
-                      "(" + source + ")");
-}
-
 }  // namespace
 
 CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
@@ -211,8 +190,6 @@ CameraConfig resolveCameraConfig(const cv::FileStorage& fs,
     resolveNonNegativeInt(fs, profileNode, out.profile, "camera_gain",
                           out.gain, out.sources);
     resolveString(fs, profileNode, out.profile, "cam_sn", out.cam_sn, out.sources);
-    resolveBool(fs, profileNode, "allow_legacy_intrinsics",
-                out.allow_legacy_intrinsics, out.sources);
     return out;
 }
 

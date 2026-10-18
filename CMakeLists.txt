@@ -32,7 +32,8 @@ if(MSVC)
     add_compile_definitions(_CRT_SECURE_NO_WARNINGS)
 endif()
 
-find_package(OpenCV REQUIRED)
+option(BUILD_QT_GUI "Build Qt QML collection GUI" ON)
+find_package(OpenCV REQUIRED COMPONENTS core imgproc imgcodecs calib3d photo)
 
 # 获取系统架构信息
 message("System Processor: ${CMAKE_SYSTEM_PROCESSOR}")
@@ -52,9 +53,10 @@ message("Architecture Type: ${ARCH_TYPE}")
 
  
 # 公共源码路径
-include_directories(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/calibration)
+include_directories(${CMAKE_CURRENT_SOURCE_DIR})
 
-# Resolve the robot SDK for the GUI and solver tests on Linux x86_64/ARM64.
+if(BUILD_QT_GUI)
+# Resolve the robot SDK for the collection GUI on Linux x86_64/ARM64.
 set(CGX_SDK_DIR "${CMAKE_CURRENT_SOURCE_DIR}/libs/cr_sdk" CACHE PATH "CGXi robot SDK root")
 if(ARCH_TYPE STREQUAL "x86_64")
     if(EXISTS "${CGX_SDK_DIR}/libs/linux/x64/libcr_sdk.so")
@@ -114,24 +116,13 @@ set(CAITU_CAMERA_INCLUDE_DIR "${MVS_SDK_DIR}/include")
 set(CAITU_CAMERA_LIB_DIR "${MVS_LIB_DIR}")
 message(STATUS "MVS SDK: ${MVS_SDK_DIR} (lib: ${MVS_LIB_DIR})")
 
-# 将安全关键的半自动位姿配置放到每个构建目录，避免发布产物缺失后静默回退。
+endif()
+
+# Prepare collection output configuration; never overwrite existing settings.
 file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/param")
 if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/config.yaml")
     configure_file(config/collect.example.yaml "${CMAKE_CURRENT_BINARY_DIR}/config.yaml" COPYONLY)
 endif()
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_in_hand_config.yaml"
-    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_in_hand_config.yaml"
-    COPYONLY)
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_to_hand_config.yaml"
-    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_config.yaml"
-    COPYONLY)
-configure_file(
-    "${CMAKE_CURRENT_SOURCE_DIR}/param/eye_to_hand_reference.yaml"
-    "${CMAKE_CURRENT_BINARY_DIR}/param/eye_to_hand_reference.yaml"
-    COPYONLY)
-
 set(CAITU_CAMERA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/cameras/MVSCamera.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_device_selector.cpp
@@ -139,59 +130,32 @@ set(CAITU_CAMERA_SOURCES
 )
 set(CAITU_CAMERA_LIBRARIES MvCameraControl)
 
-# GUI 和求解测试共用构建身份，每次 build 刷新。
-set(CALIBRATION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
-set(CALIBRATION_BUILD_INFO_HEADER "${CALIBRATION_BUILD_INFO_DIR}/AppBuildInfo.hpp")
-add_custom_target(calibration_build_info ALL
+# Collection build identity, refreshed on each build.
+set(COLLECTION_BUILD_INFO_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated")
+set(COLLECTION_BUILD_INFO_HEADER "${COLLECTION_BUILD_INFO_DIR}/AppBuildInfo.hpp")
+add_custom_target(collection_build_info ALL
     COMMAND ${CMAKE_COMMAND}
         -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
-        -DOUTPUT_FILE=${CALIBRATION_BUILD_INFO_HEADER}
+        -DOUTPUT_FILE=${COLLECTION_BUILD_INFO_HEADER}
         -DAPP_BUILD_TYPE=${CMAKE_BUILD_TYPE}
         -DAPP_CAMERA_BACKEND=${CAMERA_BACKEND}
         -DAPP_VERSION=${CAITU_VERSION}
         -P ${CMAKE_CURRENT_SOURCE_DIR}/hand_eye_gui/GenerateBuildInfo.cmake
-    BYPRODUCTS ${CALIBRATION_BUILD_INFO_HEADER}
-    COMMENT "Refreshing calibration audit build metadata"
+    BYPRODUCTS ${COLLECTION_BUILD_INFO_HEADER}
+    COMMENT "Refreshing collection build metadata"
     VERBATIM
 )
 
-# GUI 与求解测试共用同一份标定源码列表。
-set(CALIBRATION_SOLVER_SOURCES
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/charuco_detector.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/camera_calibration.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_utils.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/candidate_planner.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/calibration_session.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/eye_to_hand_calibration.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/semi_auto_eye_in_hand_calibration.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/solver_consensus.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/calibration/mechanical_settling_config.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/calib_transform.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/utils/robot_util.cpp
-)
-
-# ============================================================
-#  无硬件单元测试（纯 C++ 助手：选机策略/错误码/内参门禁/配置解析）
-# ============================================================
 option(BUILD_TESTS "Build no-hardware unit tests" ON)
 if(BUILD_TESTS)
     add_executable(caitu_tests
         tests/run_tests.cpp
         tests/test_mvs_device_selector.cpp
         tests/test_mvs_error.cpp
-        tests/test_intrinsic_identity.cpp
         tests/test_config_resolver.cpp
-        tests/test_candidate_planner.cpp
-        tests/test_pose_generation_config.cpp
-        tests/test_solver_consensus.cpp
-        tests/test_mechanical_settling_config.cpp
         cameras/mvs_device_selector.cpp
         cameras/mvs_error.cpp
-        calibration/intrinsic_identity.cpp
         hand_eye_gui/config_resolver.cpp
-        calibration/candidate_planner.cpp
-        calibration/solver_consensus.cpp
-        calibration/mechanical_settling_config.cpp
     )
     target_include_directories(caitu_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}
@@ -233,26 +197,12 @@ if(BUILD_TESTS)
         add_test(NAME collection_ui COMMAND test_collection_ui)
     endif()
 
-    # Synthetic pose and disk-preflight regression; no hardware connections.
-    add_executable(test_eye_to_hand_solver
-        tests/test_eye_to_hand_solver.cpp
-        ${CALIBRATION_SOLVER_SOURCES}
-    )
-    target_include_directories(test_eye_to_hand_solver PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/calibration
-        ${CGX_SDK_DIR}/include
-        ${CALIBRATION_BUILD_INFO_DIR}
-    )
-    target_link_libraries(test_eye_to_hand_solver ${OpenCV_LIBS} ${CGX_SDK_LIBS})
-    add_dependencies(test_eye_to_hand_solver calibration_build_info)
-    add_test(NAME eye_to_hand_solver COMMAND test_eye_to_hand_solver)
+
 endif()
 
 # ============================================================
-#  Qt5 QML 手眼标定 GUI（可选）
+#  Qt5 QML collection GUI (optional)
 # ============================================================
-option(BUILD_QT_GUI "Build Qt QML GUI for hand-eye calibration" ON)
 if(BUILD_QT_GUI)
     find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2)
     if(Qt5_FOUND)

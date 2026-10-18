@@ -40,7 +40,6 @@ int main(int argc, char** argv) {
         mock.setData(R"QML(
 import QtQuick 2.15
 QtObject {
-    property bool running: false
     property bool collectionBusy: false
     property bool cameraOpened: false
     property bool previewActive: false
@@ -94,7 +93,7 @@ QtObject {
 )QML", QUrl());
         controller.reset(mock.create());
         require(controller != nullptr, "mock controller failed");
-        engine.rootContext()->setContextProperty("calibrationController", controller.get());
+        engine.rootContext()->setContextProperty("collectionController", controller.get());
         engine.rootContext()->setContextProperty("appVersion", "UI test");
         engine.rootContext()->setContextProperty("appGitCommit", "123abcd");
         engine.addImageProvider("camera", new Preview);
