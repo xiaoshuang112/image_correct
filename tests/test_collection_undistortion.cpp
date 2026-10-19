@@ -3,9 +3,13 @@
 #include "hand_eye_gui/CollectionPoseRecord.hpp"
 #include <QCoreApplication>
 #include <QFile>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QTemporaryDir>
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -52,8 +56,32 @@ int main(int argc, char** argv) {
         cv::RNG random(5342); random.fill(raw, cv::RNG::UNIFORM, 0, 256);
         const cv::Mat original = raw.clone();
         const auto corrected = maps.apply(raw);
-        cv::Mat reference; cv::undistort(raw, reference, k, d, k);
-        require(cv::norm(corrected, reference, cv::NORM_INF) <= 1, "correction differs from OpenCV reference");
+        cv::Mat computation;
+        k.convertTo(computation, CV_32F);
+        computation.convertTo(computation, CV_64F);
+        cv::Rect roi;
+        const cv::Mat newK = cv::getOptimalNewCameraMatrix(
+            computation, d, raw.size(), 1.0, raw.size(), &roi, false);
+        cv::Mat map1, map2, reference;
+        cv::initUndistortRectifyMap(computation, d, cv::Mat(), newK, raw.size(), CV_16SC2, map1, map2);
+        cv::remap(raw, reference, map1, map2, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+        require(cv::norm(corrected, reference, cv::NORM_INF) == 0, "correction differs from production alpha=1 map");
+        require(maps.fixedPointMapType() == CV_16SC2 && maps.interpolationMapType() == CV_16UC1,
+                "map type is not the production fixed-point pair");
+        const auto& geometry = maps.geometry();
+        require(std::string(geometry.pixelFrame) == collection::kProductionAlpha1PixelFrame,
+                "new images are not marked with the production pixel frame");
+        require(std::string(collection::kLegacyOriginalKPixelFrame) == "collect_original_k_undistorted_full_frame",
+                "legacy original-K frame name changed");
+        require(cv::norm(geometry.originalCameraMatrix, k) == 0, "original K was replaced");
+        require(cv::norm(geometry.computationCameraMatrix, computation) == 0, "computation K skipped the float round trip");
+        require(cv::norm(geometry.outputCameraMatrix, newK) == 0, "output K is not the computed new camera matrix");
+        require(geometry.inputSize == raw.size() && geometry.outputSize == raw.size() &&
+                geometry.alpha == 1.0 && geometry.validPixROI == roi && !geometry.cropped &&
+                !geometry.flipHorizontal && !geometry.flipVertical, "full-frame production parameters changed");
+        cv::Mat legacyReference;
+        cv::undistort(raw, legacyReference, k, d, k);
+        require(cv::norm(corrected, legacyReference) > 0, "alpha=1 output still matches original-K undistortion");
         require(cv::norm(corrected, raw) > 100, "nonzero distortion did not correct image");
         require(cv::norm(raw, original) == 0, "correction modified raw image");
         require(corrected.size() == raw.size() && corrected.type() == raw.type(), "correction changed image format");
@@ -72,6 +100,19 @@ int main(int argc, char** argv) {
         require(read(temp.filePath("capture_fused.json")) == read(temp.filePath("capture_fused_undistorted.json")),
                 "raw and corrected images have different pose metadata");
         require(read(temp.filePath("T_base_flange.json")) == initialMatrix, "paired save overwrote initial matrix");
+        require(collection::saveUndistortionMetadata(primary, geometry).isEmpty(), "pixel-frame record failed");
+        const auto frame = QJsonDocument::fromJson(read(temp.filePath("capture_fused_undistorted.pixel_frame.json"))).object();
+        require(frame["pixel_frame"].toString() == QString::fromLatin1(collection::kProductionAlpha1PixelFrame),
+                "saved pixel frame is not the production definition");
+        require(!frame["cropped"].toBool() && !frame["flip_horizontal"].toBool() && !frame["flip_vertical"].toBool(),
+                "saved record crops or flips the image");
+        require(frame["alpha"].toDouble() == 1.0, "saved alpha is not 1");
+        require(frame["input_size_wh"].toArray() == frame["output_size_wh"].toArray(), "saved sizes differ");
+        require(std::abs(frame["output_camera_matrix"].toArray()[0].toArray()[0].toDouble() - newK.at<double>(0, 0)) < 1e-9,
+                "saved K_new differs from the computed matrix");
+        require(!QFile::exists(temp.filePath("capture_fused.pixel_frame.json")), "raw image received a pixel-frame record");
+        require(collection::saveUndistortionMetadata(primary, geometry).contains(QStringLiteral("不覆盖")),
+                "pixel-frame record was replaced");
         const auto savedRaw = read(rawPath), savedCorrected = read(primary);
         rejects([&] { collection::saveCaptureImages(raw, corrected, rawPath); });
         require(read(rawPath) == savedRaw && read(primary) == savedCorrected, "collision overwrote images");
@@ -114,6 +155,51 @@ int main(int argc, char** argv) {
         rejects([&] { collection::UndistortionCalibration::load(path); });
         { QFile file(QString::fromStdString(path)); require(file.open(QIODevice::WriteOnly), "cannot create malformed YAML"); file.write("not a YAML file : ["); }
         rejects([&] { collection::UndistortionCalibration::load(path); });
+
+        // Field calibration from the 2026-10-18 production comparison. K_new is
+        // computed here; the published values only check that computation.
+        const cv::Mat fieldK = (cv::Mat_<double>(3, 3) <<
+            740.42150408757766, 0, 615.92682315059858,
+            0, 740.86801562742789, 530.66704271527044,
+            0, 0, 1);
+        const cv::Mat fieldD = (cv::Mat_<double>(1, 5) <<
+            -0.13485895392804906, 0.088630466705486202,
+            -0.00012377657072698922, -0.0001135698438625164,
+            -0.011270877792727303);
+        write(fieldK, fieldD, "distortion_coefficients", false);
+        { cv::FileStorage file(path, cv::FileStorage::APPEND);
+          file << "image_width" << 1280 << "image_height" << 1024 << "camera_serial" << "DB2650007"; }
+        const cv::Size fieldSize(1280, 1024);
+        collection::UndistortionMaps fieldMaps(collection::UndistortionCalibration::load(path), fieldSize, "DB2650007");
+        const cv::Mat& fieldNewK = fieldMaps.geometry().outputCameraMatrix;
+        const double expectedNewK[4] = {697.563127074, 615.707952065, 698.282779635, 530.385497800};
+        const double actualNewK[4] = {
+            fieldNewK.at<double>(0, 0), fieldNewK.at<double>(0, 2),
+            fieldNewK.at<double>(1, 1), fieldNewK.at<double>(1, 2)};
+        for (int i = 0; i < 4; ++i)
+            require(std::abs(actualNewK[i] - expectedNewK[i]) < 1e-4, "field K_new does not match production alpha=1");
+        cv::Mat fieldRaw(fieldSize, CV_8UC3);
+        cv::RNG fieldRandom(20261018); fieldRandom.fill(fieldRaw, cv::RNG::UNIFORM, 0, 256);
+        cv::Mat fieldComputation;
+        fieldK.convertTo(fieldComputation, CV_32F);
+        fieldComputation.convertTo(fieldComputation, CV_64F);
+        cv::Rect fieldRoi;
+        const cv::Mat fieldReferenceK = cv::getOptimalNewCameraMatrix(
+            fieldComputation, fieldD, fieldSize, 1.0, fieldSize, &fieldRoi, false);
+        cv::Mat fieldMap1, fieldMap2, fieldReference;
+        cv::initUndistortRectifyMap(fieldComputation, fieldD, cv::Mat(), fieldReferenceK,
+            fieldSize, CV_16SC2, fieldMap1, fieldMap2);
+        cv::remap(fieldRaw, fieldReference, fieldMap1, fieldMap2, cv::INTER_LINEAR,
+            cv::BORDER_CONSTANT, cv::Scalar(0, 0, 0));
+        const cv::Mat fieldCorrected = fieldMaps.apply(fieldRaw);
+        require(fieldCorrected.size() == fieldSize && fieldMaps.geometry().validPixROI == fieldRoi &&
+                !fieldMaps.geometry().cropped, "field output was cropped or resized");
+        require(cv::norm(fieldCorrected, fieldReference, cv::NORM_INF) == 0,
+                "field image differs from the production remap");
+        std::vector<uchar> fieldPng;
+        require(cv::imencode(".png", fieldCorrected, fieldPng), "field PNG encode failed");
+        require(cv::norm(cv::imdecode(fieldPng, cv::IMREAD_COLOR), fieldCorrected) == 0,
+                "lossless field PNG changed pixels");
         std::cout << "Collection undistortion, validation, primary image and pose checks passed\n";
         return 0;
     } catch (const std::exception& error) {
