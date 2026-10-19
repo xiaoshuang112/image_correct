@@ -67,27 +67,54 @@ void UndistortionCalibration::validateCamera(cv::Size size, const std::string& s
 }
 
 UndistortionMaps::UndistortionMaps(const UndistortionCalibration& calibration,
-                                 cv::Size size, const std::string& serial) : m_size(size) {
+                                 cv::Size size, const std::string& serial) {
     calibration.validateCamera(size, serial);
-    // Validate the floating maps before the integer conversion can hide NaNs.
+    // Production stores the calibration intrinsics in float camera fields
+    // before getOptimalNewCameraMatrix. Reproduce that rounding, then keep
+    // the returned K_new at full precision for the remap.
+    cv::Mat computation;
+    calibration.cameraMatrix.convertTo(computation, CV_32F);
+    computation.convertTo(computation, CV_64F);
+    cv::Rect validRoi;
+    const cv::Mat newK = cv::getOptimalNewCameraMatrix(
+        computation, calibration.distortion, size, 1.0, size, &validRoi, false);
+    if (newK.size() != cv::Size(3, 3) || !cv::checkRange(newK))
+        throw std::runtime_error("去畸变输出内参无效");
+    cv::Mat output;
+    newK.convertTo(output, CV_64F);
     {
         cv::Mat x, y;
-        cv::initUndistortRectifyMap(calibration.cameraMatrix, calibration.distortion,
-            cv::Mat(), calibration.cameraMatrix, size, CV_32FC1, x, y);
+        cv::initUndistortRectifyMap(computation, calibration.distortion,
+            cv::Mat(), output, size, CV_32FC1, x, y);
         if (!cv::checkRange(x) || !cv::checkRange(y))
             throw std::runtime_error("去畸变映射包含无效数值");
     }
-    // Generate directly from double intrinsics, as cv::undistort does. Going
-    // through float maps shifts a few pixels across interpolation boundaries.
-    cv::initUndistortRectifyMap(calibration.cameraMatrix, calibration.distortion,
-        cv::Mat(), calibration.cameraMatrix, size, CV_16SC2, m_map1, m_map2);
+    cv::initUndistortRectifyMap(computation, calibration.distortion,
+        cv::Mat(), output, size, kMapType, m_map1, m_map2);
+    if (m_map1.type() != CV_16SC2 || m_map2.type() != CV_16UC1 || m_map1.size() != size)
+        throw std::runtime_error("去畸变映射类型或尺寸无效");
+
+    m_geometry.originalCameraMatrix = calibration.cameraMatrix.clone();
+    m_geometry.computationCameraMatrix = computation;
+    m_geometry.distortion = calibration.distortion.clone();
+    m_geometry.outputCameraMatrix = output;
+    m_geometry.inputSize = size;
+    m_geometry.outputSize = size;
+    m_geometry.alpha = 1.0;
+    m_geometry.validPixROI = validRoi;
+    m_geometry.cropped = false;
+    m_geometry.flipHorizontal = false;
+    m_geometry.flipVertical = false;
+    m_geometry.pixelFrame = kProductionAlpha1PixelFrame;
 }
 
 cv::Mat UndistortionMaps::apply(const cv::Mat& image) const {
-    if (image.empty() || image.size() != m_size)
+    if (image.empty() || image.size() != m_geometry.inputSize)
         throw std::runtime_error("图像分辨率与去畸变映射不匹配");
     cv::Mat corrected;
-    cv::remap(image, corrected, m_map1, m_map2, cv::INTER_LINEAR, cv::BORDER_CONSTANT);
+    cv::remap(image, corrected, m_map1, m_map2, kInterpolation, kBorder, cv::Scalar(0, 0, 0));
+    if (corrected.size() != m_geometry.outputSize)
+        throw std::runtime_error("去畸变输出尺寸与输入不一致");
     return corrected;
 }
 

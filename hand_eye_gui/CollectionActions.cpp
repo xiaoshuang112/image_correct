@@ -86,6 +86,22 @@ void CollectionController::toggleUndistortion() {
         m_undistortionMaps = std::make_shared<collection::UndistortionMaps>(
             *m_undistortionCalibration, cv::Size(m_camActualWidth, m_camActualHeight),
             m_camDeviceSerial.toStdString());
+        const auto& geometry = m_undistortionMaps->geometry();
+        const cv::Mat& output = geometry.outputCameraMatrix;
+        APP_LOG_EVENT_INFO("collection", "undistortion_map", "ready",
+            {{"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
+             {"alpha", QString::number(geometry.alpha, 'f', 1)},
+             {"input", QString("%1x%2").arg(geometry.inputSize.width).arg(geometry.inputSize.height)},
+             {"output", QString("%1x%2").arg(geometry.outputSize.width).arg(geometry.outputSize.height)},
+             {"cropped", geometry.cropped ? "true" : "false"},
+             {"flip_horizontal", geometry.flipHorizontal ? "true" : "false"},
+             {"flip_vertical", geometry.flipVertical ? "true" : "false"},
+             {"valid_roi", QString("%1,%2,%3,%4").arg(geometry.validPixROI.x).arg(geometry.validPixROI.y)
+                  .arg(geometry.validPixROI.width).arg(geometry.validPixROI.height)},
+             {"fx", QString::number(output.at<double>(0, 0), 'g', 17)},
+             {"fy", QString::number(output.at<double>(1, 1), 'g', 17)},
+             {"cx", QString::number(output.at<double>(0, 2), 'g', 17)},
+             {"cy", QString::number(output.at<double>(1, 2), 'g', 17)}});
         emit collectionChanged();
         setStatus("去畸变已启用，后续预览和拍照使用校正图像，并保留原始融合图");
     } catch (const std::exception& error) {
@@ -266,6 +282,9 @@ void CollectionController::capturePhoto() {
                         path, flange.valid ? flange.pose.data() : nullptr);
                     QStringList warnings;
                     if (undistortion) {
+                        const QString metadataError = collection::saveUndistortionMetadata(
+                            path, undistortion->geometry());
+                        if (!metadataError.isEmpty()) warnings << metadataError;
                         const auto rawRecordError = collection::saveFlangePoseRecords(
                             rawPath, flange.valid ? flange.pose.data() : nullptr);
                         if (!rawRecordError.isEmpty()) warnings << rawRecordError;
