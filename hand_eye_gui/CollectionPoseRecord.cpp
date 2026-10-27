@@ -61,10 +61,10 @@ QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
     }
     return warnings.join("；");
 }
-QString saveStandaloneTcpPose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
+QString saveStandalonePose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
     savedPath.clear();
     if (!pose || !std::all_of(pose, pose + 6, [](double v) { return std::isfinite(v); }))
-        return "TCP 位姿无效，未保存点位";
+        return "位姿无效，未保存点位";
     QDir directory(directoryPath);
     if (!QDir().mkpath(directoryPath)) return "无法创建点位保存目录";
     QLockFile lock(directory.filePath(".pose-save.lock"));
@@ -73,7 +73,7 @@ QString saveStandaloneTcpPose(const QString& directoryPath, const QString& base,
     for (int i = 2; QFileInfo::exists(path); ++i)
         path = directory.filePath(base + "_" + QString::number(i) + ".json");
     const QString error = writeJson(path, poseValues(pose));
-    if (!error.isEmpty()) return "TCP 坐标文件保存失败：" + error;
+    if (!error.isEmpty()) return "坐标文件保存失败：" + error;
     savedPath = path;
     return {};
 }

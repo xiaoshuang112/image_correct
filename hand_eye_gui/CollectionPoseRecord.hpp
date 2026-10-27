@@ -10,8 +10,8 @@ namespace collection {
 // Returns warnings; a record failure never removes or changes the image.
 QString saveFlangePoseRecords(const QString& imagePath, const double* pose);
 
-// Standalone TCP JSON uses the same six fields (mm, SDK orientation in degrees).
+// Standalone TCP/flange JSON uses the same six fields (mm, SDK orientation in degrees).
 // It does not create or update the daily flange matrix.
-QString saveStandaloneTcpPose(const QString& directory, const QString& base, const double* pose, QString& savedPath);
+QString saveStandalonePose(const QString& directory, const QString& base, const double* pose, QString& savedPath);
 
 } // namespace collection

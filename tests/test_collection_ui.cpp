@@ -107,12 +107,14 @@ SharedCollectionState {
         finishCapture(!captureFailure && !captureCancelled) // one shared completion NOTIFY
     }
     function openCollectionFolder() {}
-    function saveTcpPose(name) {
+    function saveTcpPose(name) { savePoint(name, false) }
+    function saveFlangePose(name) { savePoint(name, true) }
+    function savePoint(name, flange) {
         if (collectionBusy || !robotConnected) return
         pointName = name
-        if (poseFailure) { statusMessage = "TCP 位姿读取失败，未保存点位文件"; return }
+        if (poseFailure) { statusMessage = (flange ? "法兰" : "TCP") + "位姿读取失败，未保存点位文件"; return }
         savedPoseCount++
-        statusMessage = "TCP 坐标已保存：tcp_" + (name || "20261015_123456_001") + ".json"
+        statusMessage = (flange ? "法兰坐标已保存：flan_" : "TCP 坐标已保存：tcp_") + (name || "20261015_123456_001") + ".json"
     }
     function adjustCameraExposure(value) { cameraExposureUs = value }
     function connectRobot() { robotConnected = true }
@@ -210,11 +212,13 @@ SharedCollectionState {
         auto* level = item("levelButton");
         auto* input = item("exposureInput");
         auto* savePose = item("savePoseButton");
+        auto* saveFlange = item("saveFlangePoseButton");
+        require(saveFlange->property("text").toString() == "保存法兰坐标", "flange action label is incorrect");
         require(savePose->property("text").toString() == "保存 TCP 坐标", "TCP action label is incorrect");
         auto* undistortion = item("undistortionButton");
         require(!undistortion->isEnabled(), "undistortion enabled without calibration or camera");
         auto* pointName = item("pointNameInput");
-        require(!savePose->isEnabled(), "pose enabled without robot");
+        require(!savePose->isEnabled() && !saveFlange->isEnabled(), "pose enabled without robot");
         require(item("exposureInput5")->property("text").toString().isEmpty(), "fifth exposure is not blank");
         require(findVisual(window->contentItem(), "exposureInput6") == nullptr, "more than five exposure inputs");
         require(!capture->isEnabled() && !level->isEnabled(), "actions enabled before camera preview");
@@ -323,9 +327,47 @@ SharedCollectionState {
                 !window->property("poseEditorOpen").toBool() &&
                 controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_TCP接触点.json",
                 "confirm button failed to save TCP point or changed image count");
+        click(saveFlange);
+        require(window->property("savingFlange").toBool() &&
+                pointName->property("placeholderText").toString().startsWith("法兰"),
+                "flange button did not select flange naming mode");
+        pointName->setProperty("text", "法兰工位");
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(20);
+        require(controller->property("savedPoseCount").toInt() == 4 && count() == 3 &&
+                !window->property("poseEditorOpen").toBool() &&
+                controller->property("statusMessage").toString() == "法兰坐标已保存：flan_法兰工位.json",
+                "Enter did not save flange point independently");
+        click(saveFlange);
+        click(item("confirmPoseButton"));
+        require(controller->property("savedPoseCount").toInt() == 5 &&
+                controller->property("statusMessage").toString() == "法兰坐标已保存：flan_20261015_123456_001.json",
+                "empty flange name did not use timestamp naming");
+        click(saveFlange);
+        pointName->setProperty("text", "失败法兰点");
+        controller->setProperty("poseFailure", true);
+        QTest::keyClick(window, Qt::Key_Return);
+        QTest::qWait(20);
+        require(window->property("poseEditorOpen").toBool() &&
+                pointName->property("text").toString() == "失败法兰点" &&
+                controller->property("savedPoseCount").toInt() == 5 && count() == 3,
+                "failed flange save lost its name or changed counters");
+        controller->setProperty("collectionBusy", true);
+        require(!saveFlange->isEnabled() && !savePose->isEnabled() && !item("confirmPoseButton")->isEnabled(),
+                "point actions enabled while busy");
+        controller->setProperty("collectionBusy", false);
+        controller->setProperty("poseFailure", false);
+        click(savePose);
+        require(!window->property("savingFlange").toBool() && pointName->property("text").toString().isEmpty(),
+                "switching back to TCP retained flange mode or name");
+        pointName->setProperty("text", "重返TCP");
+        click(item("confirmPoseButton"));
+        require(controller->property("savedPoseCount").toInt() == 6 && count() == 3 &&
+                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_重返TCP.json",
+                "switching back to TCP saved a flange point");
         window->resize(1024, 740);
         QTest::qWait(50);
-        for (auto* action : {open, capture, level, savePose, undistortion, previewExposure, applyExposure,
+        for (auto* action : {open, capture, level, savePose, saveFlange, undistortion, previewExposure, applyExposure,
                              item("previewButton"), item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
@@ -339,6 +381,8 @@ SharedCollectionState {
         require(!bounds(undistortion).intersects(bounds(item("previewButton"))),
                 "undistortion and preview controls overlap at minimum window size");
         require(!bounds(capture).intersects(bounds(savePose)) &&
+                !bounds(savePose).intersects(bounds(saveFlange)) &&
+                !bounds(capture).intersects(bounds(saveFlange)) &&
                 !bounds(item("exposureInput5")).intersects(bounds(capture)),
                 "capture controls overlap at minimum window size");
         require(qAbs(bounds(open).left() - bounds(item("connectRobotButton")).left()) < 1.0,
@@ -360,10 +404,13 @@ SharedCollectionState {
                     qAbs(bounds(level).top() - bounds(capture).top()) < 1,
                     "second control rows are not aligned");
             // Qt rounds fractional device-independent pixels in layouts.
-            require(qAbs(capture->width() - savePose->width()) <= 1,
+            require(qAbs(capture->width() - savePose->width()) <= 1 &&
+                    qAbs(savePose->width() - saveFlange->width()) <= 1,
                     "capture and pose buttons have different widths");
+            for (auto* action : {capture, savePose, saveFlange})
+                require(action->implicitWidth() <= action->width() + 1, "capture action text does not fit");
             require(qAbs(bounds(capture).left() - bounds(input).left()) < 1 &&
-                    qAbs(bounds(savePose).right() - bounds(item("exposureInput5")).right()) < 1,
+                    qAbs(bounds(saveFlange).right() - bounds(item("exposureInput5")).right()) < 1,
                     "capture actions do not align with exposure group edges");
             require(bounds(input).bottom() < bounds(capture).top(),
                     "capture actions should be below exposure inputs");

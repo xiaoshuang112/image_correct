@@ -69,6 +69,7 @@ public:
     QString undistortionStatus() const { return m_undistortionStatus; }
     Q_INVOKABLE void toggleUndistortion();
     Q_INVOKABLE void saveTcpPose(const QString& name);
+    Q_INVOKABLE void saveFlangePose(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
 
@@ -134,6 +135,7 @@ signals:
     void collectionChanged();
 
 private:
+    void savePose(const QString& name, bool flange);
     void initializeCollection();
     void loadCollectionUndistortion();
     void persistCollectionString(const std::string& key, const QString& value);
