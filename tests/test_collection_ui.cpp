@@ -107,12 +107,12 @@ SharedCollectionState {
         finishCapture(!captureFailure && !captureCancelled) // one shared completion NOTIFY
     }
     function openCollectionFolder() {}
-    function saveFlangePose(name) {
+    function saveTcpPose(name) {
         if (collectionBusy || !robotConnected) return
         pointName = name
-        if (poseFailure) { statusMessage = "法兰位姿读取失败，未保存点位文件"; return }
+        if (poseFailure) { statusMessage = "TCP 位姿读取失败，未保存点位文件"; return }
         savedPoseCount++
-        statusMessage = "点位已保存：pose_" + (name || "20261015_123456_001") + ".json"
+        statusMessage = "TCP 坐标已保存：tcp_" + (name || "20261015_123456_001") + ".json"
     }
     function adjustCameraExposure(value) { cameraExposureUs = value }
     function connectRobot() { robotConnected = true }
@@ -210,6 +210,7 @@ SharedCollectionState {
         auto* level = item("levelButton");
         auto* input = item("exposureInput");
         auto* savePose = item("savePoseButton");
+        require(savePose->property("text").toString() == "保存 TCP 坐标", "TCP action label is incorrect");
         auto* undistortion = item("undistortionButton");
         require(!undistortion->isEnabled(), "undistortion enabled without calibration or camera");
         auto* pointName = item("pointNameInput");
@@ -314,6 +315,14 @@ SharedCollectionState {
                 "failed pose save lost name, counted a point, or captured an image");
         QTest::keyClick(window, Qt::Key_Escape);
         require(!window->property("poseEditorOpen").toBool(), "Escape did not close point editor");
+        controller->setProperty("poseFailure", false);
+        click(savePose);
+        pointName->setProperty("text", "TCP接触点");
+        click(item("confirmPoseButton"));
+        require(controller->property("savedPoseCount").toInt() == 3 && count() == 3 &&
+                !window->property("poseEditorOpen").toBool() &&
+                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_TCP接触点.json",
+                "confirm button failed to save TCP point or changed image count");
         window->resize(1024, 740);
         QTest::qWait(50);
         for (auto* action : {open, capture, level, savePose, undistortion, previewExposure, applyExposure,

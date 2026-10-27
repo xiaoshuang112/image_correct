@@ -12,6 +12,16 @@
 #include <cmath>
 
 namespace {
+QJsonObject poseValues(const double* pose) {
+    const bool valid = pose && std::all_of(pose, pose + 6,
+        [](double value) { return std::isfinite(value); });
+    const char* keys[] = {"x", "y", "z", "rx", "ry", "rz"};
+    QJsonObject values;
+    for (int i = 0; i < 6; ++i)
+        values.insert(keys[i], valid ? QJsonValue(pose[i]) : QJsonValue(QJsonValue::Null));
+    return values;
+}
+
 QString writeJson(const QString& path, const QJsonObject& object) {
     const QByteArray bytes = QJsonDocument(object).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
@@ -27,13 +37,8 @@ QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
         [](double value) { return std::isfinite(value); });
     const QFileInfo image(imagePath);
     const QDir directory = image.dir();
-    const char* keys[] = {"x", "y", "z", "rx", "ry", "rz"};
-    QJsonObject values;
-    for (int i = 0; i < 6; ++i)
-        values.insert(keys[i], valid ? QJsonValue(pose[i]) : QJsonValue(QJsonValue::Null));
-
     QStringList warnings;
-    const QString error = writeJson(directory.filePath(image.completeBaseName() + ".json"), values);
+    const QString error = writeJson(directory.filePath(image.completeBaseName() + ".json"), poseValues(pose));
     if (!error.isEmpty()) warnings << "法兰位姿文件保存失败：" + error;
     const QString matrixPath = directory.filePath("T_base_flange.json");
     if (valid && !QFileInfo::exists(matrixPath)) {
@@ -56,10 +61,10 @@ QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
     }
     return warnings.join("；");
 }
-QString saveStandaloneFlangePose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
+QString saveStandaloneTcpPose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
     savedPath.clear();
     if (!pose || !std::all_of(pose, pose + 6, [](double v) { return std::isfinite(v); }))
-        return "法兰位姿无效，未保存点位";
+        return "TCP 位姿无效，未保存点位";
     QDir directory(directoryPath);
     if (!QDir().mkpath(directoryPath)) return "无法创建点位保存目录";
     QLockFile lock(directory.filePath(".pose-save.lock"));
@@ -67,9 +72,9 @@ QString saveStandaloneFlangePose(const QString& directoryPath, const QString& ba
     QString path = directory.filePath(base + ".json");
     for (int i = 2; QFileInfo::exists(path); ++i)
         path = directory.filePath(base + "_" + QString::number(i) + ".json");
-    // Reuse the per-image writer and its once-only initial matrix creation.
-    const QString warnings = saveFlangePoseRecords(path, pose);
-    if (QFileInfo::exists(path)) savedPath = path;
-    return warnings;
+    const QString error = writeJson(path, poseValues(pose));
+    if (!error.isEmpty()) return "TCP 坐标文件保存失败：" + error;
+    savedPath = path;
+    return {};
 }
 } // namespace collection

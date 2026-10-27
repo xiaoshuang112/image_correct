@@ -21,14 +21,14 @@
 #include <stdexcept>
 
 namespace {
-struct FlangeRead {
+struct PoseRead {
     std::array<double, 6> pose{};
     bool valid = false;
     QString error;
 };
 
-FlangeRead readFlangePose(RobotHandle handle) {
-    FlangeRead result;
+PoseRead readFlangePose(RobotHandle handle) {
+    PoseRead result;
     double zeroTool[ROB_AXIS_NUM]{};
     const CRresult code = cr_get_AssignTCP_Pose(handle, zeroTool, result.pose.data());
     if (code != sucess) {
@@ -36,6 +36,31 @@ FlangeRead readFlangePose(RobotHandle handle) {
     } else if (!std::all_of(result.pose.begin(), result.pose.end(),
                            [](double value) { return std::isfinite(value); })) {
         result.error = "法兰位姿包含无效数值，本张位姿为空";
+    } else {
+        result.valid = true;
+    }
+    return result;
+}
+
+PoseRead readTcpPose(RobotHandle handle) {
+    PoseRead result;
+    TCPMsg tcp{};
+    CRresult code = cr_get_currentTCPmsg(handle, &tcp);
+    if (code != sucess) {
+        result.error = QString("当前 TCP 工具读取失败（错误码 %1），未保存点位文件").arg(code);
+        return result;
+    }
+    if (!std::all_of(tcp.tcpOffset, tcp.tcpOffset + ROB_AXIS_NUM,
+                     [](double value) { return std::isfinite(value); })) {
+        result.error = "TCP 工具偏移包含无效数值，未保存点位文件";
+        return result;
+    }
+    code = cr_get_AssignTCP_Pose(handle, tcp.tcpOffset, result.pose.data());
+    if (code != sucess) {
+        result.error = QString("TCP 位姿读取失败（错误码 %1），未保存点位文件").arg(code);
+    } else if (!std::all_of(result.pose.begin(), result.pose.end(),
+                           [](double value) { return std::isfinite(value); })) {
+        result.error = "TCP 位姿包含无效数值，未保存点位文件";
     } else {
         result.valid = true;
     }
@@ -237,8 +262,8 @@ void CollectionController::capturePhoto() {
                 // Read the zero-offset flange pose alongside camera acquisition.
                 // Save the PNG before waiting for the RPC result, so robot errors
                 // cannot prevent camera acquisition, fusion or image saving.
-                FlangeRead flange;
-                std::future<FlangeRead> poseRead;
+                PoseRead flange;
+                std::future<PoseRead> poseRead;
                 try {
                     if (robotConnected) {
                         poseRead = std::async(std::launch::async, [robotHandle]() {
@@ -312,9 +337,9 @@ void CollectionController::capturePhoto() {
     }
 }
 
-void CollectionController::saveFlangePose(const QString& name) {
+void CollectionController::saveTcpPose(const QString& name) {
     if (m_collectionBusy) return;
-    if (!m_robotConnected) { setStatus("请先连接机器人再保存法兰位姿"); return; }
+    if (!m_robotConnected) { setStatus("请先连接机器人再保存 TCP 坐标"); return; }
     const QString pointName = name.trimmed();
     const bool invalidCharacter = std::any_of(pointName.begin(), pointName.end(), [](QChar c) {
         return c.unicode() < 32 || QStringLiteral("\\/:*?\"<>|").contains(c);
@@ -325,23 +350,23 @@ void CollectionController::saveFlangePose(const QString& name) {
     }
     const auto time = QDateTime::currentDateTime();
     const QString directory = QDir(m_outputDirectory).filePath(time.toString("yyyy-MM-dd"));
-    const QString base = "pose_" + (pointName.isEmpty() ? time.toString("yyyyMMdd_HHmmss_zzz") : pointName);
+    const QString base = "tcp_" + (pointName.isEmpty() ? time.toString("yyyyMMdd_HHmmss_zzz") : pointName);
     const auto handle = m_robotHandle;
     beginCollectionOperation();
-    setStatus("正在读取法兰位姿…");
+    setStatus("正在读取 TCP 坐标…");
     try {
         m_collectionThread = std::thread([this, handle, directory, base]() {
             QString message; bool saved = false;
             try {
-                const auto flange = readFlangePose(handle);
-                if (!flange.valid) throw std::runtime_error((QString(flange.error).replace("本张位姿为空", "未保存点位文件")).toStdString());
+                const auto tcp = readTcpPose(handle);
+                if (!tcp.valid) throw std::runtime_error(tcp.error.toStdString());
                 if (m_cancelRequested) throw std::runtime_error("点位保存已取消");
                 QString path;
-                message = collection::saveStandaloneFlangePose(directory, base, flange.pose.data(), path);
+                message = collection::saveStandaloneTcpPose(directory, base, tcp.pose.data(), path);
                 saved = !path.isEmpty();
-                if (saved) message = "点位已保存：" + QFileInfo(path).fileName() + (message.isEmpty() ? "" : "；" + message);
+                if (saved) message = "TCP 坐标已保存：" + QFileInfo(path).fileName();
             } catch (const std::exception& error) { message = QString::fromUtf8(error.what()); }
-            catch (...) { message = "法兰位姿读取或保存发生未知异常"; }
+            catch (...) { message = "TCP 位姿读取或保存发生未知异常"; }
             QMetaObject::invokeMethod(this, [this, message, saved]() {
                 if (saved) ++m_savedPoseCount;
                 finishCollectionOperation(message);

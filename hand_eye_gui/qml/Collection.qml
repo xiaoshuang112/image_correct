@@ -62,7 +62,7 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onFrameUpdated() { cameraImage.source = "image://camera/current#" + Date.now() }
-        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage); if (root.controller.statusMessage.indexOf("点位已保存：") === 0) root.poseEditorOpen = false }
+        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage); if (root.controller.statusMessage.indexOf("TCP 坐标已保存：") === 0) root.poseEditorOpen = false }
     }
 
     ColumnLayout {
@@ -199,7 +199,7 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true; spacing: 6
                         CollectButton { objectName: "captureButton"; text: "拍照保存"; iconName: "shutter"; primary: true; leftPadding: 8; rightPadding: 8; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.ready; onClicked: root.takePhoto() }
-                        CollectButton { objectName: "savePoseButton"; text: "保存法兰位姿"; iconName: "save"; leftPadding: 8; rightPadding: 8; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.controller.robotConnected && !root.busy; onClicked: { root.poseEditorOpen = true; pointName.text = ""; pointName.forceActiveFocus() } }
+                        CollectButton { objectName: "savePoseButton"; text: "保存 TCP 坐标"; iconName: "save"; leftPadding: 8; rightPadding: 8; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.controller.robotConnected && !root.busy; onClicked: { root.poseEditorOpen = true; pointName.text = ""; pointName.forceActiveFocus() } }
                     }
                     Rectangle {
                         visible: root.poseEditorOpen
@@ -207,8 +207,8 @@ ApplicationWindow {
                         color: Theme.sunken; border.width: 1; border.color: Theme.accentLine; radius: 8
                         RowLayout {
                             anchors.fill: parent; anchors.margins: 7; spacing: 6
-                            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; Layout.minimumWidth: 40; leftPadding: 8; rightPadding: 8; enabled: !root.busy; placeholderText: "点位名称（留空按时间戳）"; onAccepted: if (confirmPose.enabled) root.controller.saveFlangePose(text); Keys.onEscapePressed: root.poseEditorOpen = false }
-                            CollectButton { id: confirmPose; objectName: "confirmPoseButton"; text: "确认保存"; leftPadding: 8; rightPadding: 8; enabled: root.controller.robotConnected && !root.busy; onClicked: root.controller.saveFlangePose(pointName.text) }
+                            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; Layout.minimumWidth: 40; leftPadding: 8; rightPadding: 8; enabled: !root.busy; placeholderText: "点位名称（留空按时间戳）"; onAccepted: if (confirmPose.enabled) root.controller.saveTcpPose(text); Keys.onEscapePressed: root.poseEditorOpen = false }
+                            CollectButton { id: confirmPose; objectName: "confirmPoseButton"; text: "确认保存"; leftPadding: 8; rightPadding: 8; enabled: root.controller.robotConnected && !root.busy; onClicked: root.controller.saveTcpPose(pointName.text) }
                             CollectButton { text: "取消"; leftPadding: 8; rightPadding: 8; onClicked: root.poseEditorOpen = false }
                         }
                     }
