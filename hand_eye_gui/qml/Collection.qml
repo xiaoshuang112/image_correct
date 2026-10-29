@@ -17,14 +17,15 @@ ApplicationWindow {
     property var controller: collectionController
     readonly property bool busy: controller.collectionBusy
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
-    readonly property bool editing: activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined
+    readonly property bool editing: (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
+        || tcpSelector.activeFocus || tcpSelector.popup.visible
     readonly property bool compact: width < 1190
     readonly property int infoWidth: compact ? 288 : 320
     readonly property int ipWidth: compact ? 100 : 110
     readonly property int resolutionWidth: compact ? 46 : 58
     readonly property int connectWidth: compact ? 74 : 86
     property bool poseEditorOpen: false
-    property bool savingFlange: false
+    readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
     property string today: Qt.formatDate(new Date(), "yyyy-MM-dd")
     readonly property string archiveDate: controller.lastCapturePath
         ? controller.lastCapturePath.split("/").slice(-2, -1).join("") : today
@@ -40,15 +41,10 @@ ApplicationWindow {
         saveExposures()
         controller.capturePhoto()
     }
-    function editPose(flange) {
-        savingFlange = flange
+    function editPose() {
         poseEditorOpen = true
         pointName.text = ""
         pointName.forceActiveFocus()
-    }
-    function savePose() {
-        if (savingFlange) controller.saveFlangePose(pointName.text)
-        else controller.saveTcpPose(pointName.text)
     }
     function recordStatus(message) {
         if (!message) return
@@ -73,7 +69,8 @@ ApplicationWindow {
     Connections {
         target: root.controller
         function onFrameUpdated() { cameraImage.source = "image://camera/current#" + Date.now() }
-        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage); if (/^(TCP 坐标|法兰坐标)已保存：/.test(root.controller.statusMessage)) root.poseEditorOpen = false }
+        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage); if (root.controller.statusMessage.indexOf("TCP 坐标已保存：") === 0) root.poseEditorOpen = false }
+        function onRobotConnectedChanged() { if (!root.controller.robotConnected) root.poseEditorOpen = false }
     }
 
     ColumnLayout {
@@ -131,9 +128,12 @@ ApplicationWindow {
                         Text { text: "机器人 IP"; color: Theme.ink2; font.pixelSize: Theme.meta; Layout.preferredWidth: 46 }
                         CollectField { objectName: "robotIpInput"; text: root.controller.robotIp; leftPadding: 7; rightPadding: 7; Layout.preferredWidth: root.ipWidth; Layout.maximumWidth: root.ipWidth; enabled: !root.controller.robotConnected && !root.busy; onEditingFinished: root.controller.robotIp = text }
                         Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                        CollectButton { objectName: "levelButton"; text: "一键调平"; iconName: "level"; leftPadding: 9; rightPadding: 9; enabled: root.ready && root.controller.robotConnected; onClicked: root.controller.levelCamera() }
-                        CollectButton { objectName: "stopButton"; text: "停止"; leftPadding: 9; rightPadding: 9; danger: true; enabled: root.controller.collectionBusy; onClicked: root.controller.cancelCollectionOperation() }
                         CollectButton { objectName: "connectRobotButton"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 4; rightPadding: 4; positive: root.controller.robotConnected; text: root.controller.robotConnected ? "断开机器人" : "连接机器人"; enabled: !root.busy; onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot() }
+                    }
+                    RowLayout {
+                        Layout.fillWidth: true; spacing: 5
+                        CollectButton { objectName: "levelButton"; text: "一键调平"; Layout.fillWidth: true; iconName: "level"; leftPadding: 9; rightPadding: 9; enabled: root.ready && root.controller.robotConnected; onClicked: root.controller.levelCamera() }
+                        CollectButton { objectName: "stopButton"; text: "停止"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 9; rightPadding: 9; danger: true; enabled: root.controller.collectionBusy; onClicked: root.controller.cancelCollectionOperation() }
                     }
                 }
             }
@@ -173,6 +173,14 @@ ApplicationWindow {
                         ToolTip.visible: hovered
                         ToolTip.text: root.controller.undistortionStatus
                     }
+                    Text {
+                        objectName: "calibrationSummary"
+                        Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight
+                        verticalAlignment: Text.AlignVCenter
+                        text: root.controller.undistortionEnabled ? "预览 / 拍照 · 去畸变" :
+                            root.controller.undistortionReady ? "去畸变参数已就绪" : "去畸变参数不可用"
+                        color: Theme.ink3; font.pixelSize: Theme.meta; elide: Text.ElideRight
+                    }
                 }
             }
             CollectCard {
@@ -208,10 +216,72 @@ ApplicationWindow {
                     }
                     Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
                     RowLayout {
+                        objectName: "tcpRow"
+                        Layout.fillWidth: true; spacing: 6
+                        ComboBox {
+                            id: tcpSelector; objectName: "tcpSelector"
+                            Layout.fillWidth: true; Layout.minimumWidth: 0
+                            implicitHeight: Theme.controlHeight
+                            model: root.controller.tcpNames
+                            currentIndex: root.controller.tcpNames.indexOf(root.controller.selectedTcp)
+                            enabled: root.controller.robotConnected && !root.busy && count > 0
+                            displayText: "TCP · " + (currentIndex >= 0 ? currentText :
+                                root.controller.robotConnected ? "请选择工具" : "连接机器人后选择")
+                            onActivated: root.controller.selectedTcp = textAt(index)
+                            Accessible.name: "选择 TCP 工具"
+                            leftPadding: 10; rightPadding: 30
+                            font.family: Theme.sans; font.pixelSize: Theme.body
+                            contentItem: Text {
+                                text: tcpSelector.displayText; font: tcpSelector.font
+                                color: tcpSelector.enabled ? Theme.ink : Theme.ink2
+                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                            }
+                            indicator: Text {
+                                x: tcpSelector.width - width - 10
+                                anchors.verticalCenter: parent.verticalCenter
+                                text: "▾"; color: tcpSelector.enabled ? Theme.ink2 : Theme.disabledInk
+                                font.pixelSize: Theme.body
+                            }
+                            background: Rectangle {
+                                radius: Theme.radiusControl; color: tcpSelector.enabled ? Theme.sunken : Theme.disabledBg
+                                border.width: 1
+                                border.color: tcpSelector.activeFocus ? Theme.accent : Theme.line
+                            }
+                            delegate: ItemDelegate {
+                                width: tcpSelector.width; height: Theme.controlHeight
+                                highlighted: tcpSelector.highlightedIndex === index
+                                contentItem: Text {
+                                    text: modelData; color: Theme.ink; font: tcpSelector.font
+                                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
+                                }
+                                background: Rectangle { color: highlighted ? Theme.accentSoft : Theme.surface }
+                            }
+                            popup: Popup {
+                                y: tcpSelector.height + 4; width: tcpSelector.width; padding: 4
+                                implicitHeight: Math.min(contentItem.implicitHeight + 8, 240)
+                                contentItem: ListView {
+                                    clip: true; implicitHeight: contentHeight
+                                    model: tcpSelector.popup.visible ? tcpSelector.delegateModel : null
+                                    currentIndex: tcpSelector.highlightedIndex
+                                    ScrollIndicator.vertical: ScrollIndicator {}
+                                }
+                                background: Rectangle { color: Theme.surface; radius: Theme.radiusControl; border.color: Theme.line }
+                            }
+                            ToolTip.visible: hovered && currentIndex >= 0
+                            ToolTip.text: currentText
+                        }
+                        CollectButton {
+                            objectName: "refreshTcpButton"; text: "刷新"
+                            Layout.preferredWidth: 48; Layout.minimumWidth: 48; Layout.maximumWidth: 48
+                            leftPadding: 6; rightPadding: 6
+                            enabled: root.controller.robotConnected && !root.busy
+                            onClicked: root.controller.refreshTcpTools()
+                        }
+                    }
+                    RowLayout {
                         Layout.fillWidth: true; spacing: 6
                         CollectButton { objectName: "captureButton"; text: "拍照保存"; iconName: "shutter"; primary: true; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.ready; onClicked: root.takePhoto() }
-                        CollectButton { objectName: "savePoseButton"; text: "保存 TCP 坐标"; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.controller.robotConnected && !root.busy; onClicked: root.editPose(false) }
-                        CollectButton { objectName: "saveFlangePoseButton"; text: "保存法兰坐标"; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.controller.robotConnected && !root.busy; onClicked: root.editPose(true) }
+                        CollectButton { objectName: "savePoseButton"; text: "保存 TCP 坐标"; iconName: "save"; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.tcpReady && !root.busy; onClicked: root.editPose() }
                     }
                     Rectangle {
                         visible: root.poseEditorOpen
@@ -219,8 +289,8 @@ ApplicationWindow {
                         color: Theme.sunken; border.width: 1; border.color: Theme.accentLine; radius: 8
                         RowLayout {
                             anchors.fill: parent; anchors.margins: 7; spacing: 6
-                            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; Layout.minimumWidth: 40; leftPadding: 8; rightPadding: 8; enabled: !root.busy; placeholderText: (root.savingFlange ? "法兰" : "TCP") + "点位名称（留空按时间戳）"; onAccepted: if (confirmPose.enabled) root.savePose(); Keys.onEscapePressed: root.poseEditorOpen = false }
-                            CollectButton { id: confirmPose; objectName: "confirmPoseButton"; text: "确认保存"; leftPadding: 8; rightPadding: 8; enabled: root.controller.robotConnected && !root.busy; onClicked: root.savePose() }
+                            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; Layout.minimumWidth: 40; leftPadding: 8; rightPadding: 8; enabled: !root.busy; placeholderText: "点位名称（留空按时间戳）"; onAccepted: if (confirmPose.enabled) root.controller.saveTcpPose(text); Keys.onEscapePressed: root.poseEditorOpen = false }
+                            CollectButton { id: confirmPose; objectName: "confirmPoseButton"; text: "确认保存"; leftPadding: 8; rightPadding: 8; enabled: root.tcpReady && !root.busy; onClicked: root.controller.saveTcpPose(pointName.text) }
                             CollectButton { text: "取消"; leftPadding: 8; rightPadding: 8; onClicked: root.poseEditorOpen = false }
                         }
                     }

@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QImage>
 #include <QTimer>
 #include <thread>
@@ -51,6 +52,8 @@ class CollectionController : public QObject
     Q_PROPERTY(bool undistortionReady READ undistortionReady NOTIFY collectionChanged)
     Q_PROPERTY(bool undistortionEnabled READ undistortionEnabled NOTIFY collectionChanged)
     Q_PROPERTY(QString undistortionStatus READ undistortionStatus NOTIFY collectionChanged)
+    Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
+    Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
 
 public:
     explicit CollectionController(QObject* parent = nullptr);
@@ -69,7 +72,10 @@ public:
     QString undistortionStatus() const { return m_undistortionStatus; }
     Q_INVOKABLE void toggleUndistortion();
     Q_INVOKABLE void saveTcpPose(const QString& name);
-    Q_INVOKABLE void saveFlangePose(const QString& name);
+    Q_INVOKABLE void refreshTcpTools();
+    QStringList tcpNames() const { return m_tcpNames; }
+    QString selectedTcp() const { return m_selectedTcp; }
+    void setSelectedTcp(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
 
@@ -133,9 +139,9 @@ signals:
     void logTextChanged();
     void frameUpdated();
     void collectionChanged();
+    void tcpToolsChanged();
 
 private:
-    void savePose(const QString& name, bool flange);
     void initializeCollection();
     void loadCollectionUndistortion();
     void persistCollectionString(const std::string& key, const QString& value);
@@ -188,6 +194,8 @@ private:
 
     // 状态
     bool     m_robotConnected = false;
+    QStringList m_tcpNames;
+    QString m_selectedTcp;
     bool     m_cameraOpened   = false;
     bool     m_previewActive  = false;
     QString  m_statusMessage  = "就绪";

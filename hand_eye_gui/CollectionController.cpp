@@ -360,6 +360,7 @@ void CollectionController::connectRobot()
                         {"ready", ready ? "true" : "false"},
                         {"elapsed_ms", QString::number(timer.elapsed())}});
     setStatus("机器人已连接");
+    refreshTcpTools();
 }
 
 void CollectionController::disconnectRobot()
@@ -391,6 +392,9 @@ void CollectionController::disconnectRobot()
         m_robotConnected = false;
         emit robotConnectedChanged();
     }
+    m_tcpNames.clear();
+    m_selectedTcp.clear();
+    emit tcpToolsChanged();
     setStatus("机器人已断开");
     APP_LOG_EVENT_INFO("robot",
                        "robot_disconnect",

@@ -19,6 +19,7 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionActions.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionPoseRecord.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/RobotTcp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionImageRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_resolver.cpp

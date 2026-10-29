@@ -102,61 +102,55 @@ int main(int argc, char** argv) {
         require(read(image) == imageBytes && read(matrixPath) == initialMatrix,
                 "record failure changed image or initial matrix");
 
-        for (const QString& prefix : {QStringLiteral("tcp_"), QStringLiteral("flan_")}) {
-            // Standalone points contain exactly six raw values and never create an image.
-            const QString points = temp.filePath("standalone_" + prefix);
-            QString saved;
-            require(collection::saveStandalonePose(points, prefix + "工位A", pose, saved).isEmpty(),
-                    "standalone point save failed");
-            require(saved == QDir(points).filePath(prefix + "工位A.json"), "point name was not preserved");
-            const QByteArray firstPoint = read(saved);
-            require(firstPoint == QJsonDocument(values).toJson(QJsonDocument::Indented),
-                    "standalone JSON differs from per-image pose JSON for the same pose");
-            const auto pointValues = object(saved);
-            require(pointValues.size() == 6 && pointValues["x"].toDouble() == 500 &&
-                    pointValues["rz"].toDouble() == 90, "standalone pose format or units changed");
-            const QString pointMatrix = QDir(points).filePath("T_base_flange.json");
-            require(!QFile::exists(pointMatrix), "Standalone point created a flange matrix");
-            // A later photograph must still establish the initial flange matrix.
-            require(collection::saveFlangePoseRecords(QDir(points).filePath("capture.png"), later).isEmpty(),
-                    "flange record after Standalone point failed");
-            const auto initialPointMatrix = read(pointMatrix);
-            require(object(pointMatrix)["T_base_flange"].toArray()[0].toArray()[3].toDouble() == 1.0,
-                    "Standalone point polluted the first photograph flange matrix");
-            require(QDir(points).entryList({"*.png", "*.jpg"}, QDir::Files).isEmpty(),
-                    "standalone save unexpectedly created an image");
-            require(collection::saveStandalonePose(points, prefix + "工位A", later, saved).isEmpty(),
-                    "duplicate point save failed");
-            require(saved.endsWith(prefix + "工位A_2.json"), "duplicate point did not receive suffix");
-            require(read(QDir(points).filePath(prefix + "工位A.json")) == firstPoint,
-                    "duplicate point overwrote original");
-            require(read(pointMatrix) == initialPointMatrix, "standalone point replaced initial matrix");
-            require(collection::saveStandalonePose(points, prefix + "工位A", later, saved).isEmpty() &&
-                    saved.endsWith(prefix + "工位A_3.json"), "third duplicate reused an occupied name");
-            require(collection::saveStandalonePose(points, prefix + "20261015_123456_001", later, saved).isEmpty(),
-                    "timestamp point name failed");
-            require(collection::saveStandalonePose(points, prefix + "A.v1", later, saved).isEmpty() &&
-                    saved.endsWith(prefix + "A.v1.json"), "dotted point name failed");
-            const auto pointFiles = QDir(points).entryList(QDir::Files);
-            require(!collection::saveStandalonePose(points, prefix + "invalid", nullptr, saved).isEmpty() &&
-                    saved.isEmpty(), "missing standalone pose was reported as saved");
-            require(!collection::saveStandalonePose(points, prefix + "invalid", invalid, saved).isEmpty() &&
-                    saved.isEmpty(), "non-finite standalone pose was reported as saved");
-            invalid[5] = std::numeric_limits<double>::infinity();
-            require(!collection::saveStandalonePose(points, prefix + "invalid", invalid, saved).isEmpty() &&
-                    saved.isEmpty(), "infinite Standalone pose was reported as saved");
-            QLockFile lock(QDir(points).filePath(".pose-save.lock"));
-            require(lock.tryLock(0), "cannot lock Standalone point directory");
-            require(!collection::saveStandalonePose(points, prefix + "locked", pose, saved).isEmpty() &&
-                    saved.isEmpty(), "Standalone point save ignored another writer");
-            lock.unlock();
-            require(QDir(points).entryList(QDir::Files) == pointFiles,
-                    "invalid standalone pose created a JSON file");
-            require(!collection::saveStandalonePose(image, prefix + "blocked", pose, saved).isEmpty() &&
-                    saved.isEmpty(), "unwritable standalone directory did not fail");
-            require(read(image) == imageBytes, "standalone disk failure changed existing image");
-        }
-        std::cout << "Flange image records and independent TCP/flange points passed\n";
+        // TCP records carry the exact tool identity and offset used by the read.
+        const QString points = temp.filePath("standalone");
+        const QString base = "tcp_探针A_工位A";
+        const double offset[] = {10, -20, 120, 0, 0, 90};
+        auto save = [&](const double* data, const QString& tool, const double* toolOffset, QString& path) {
+            return collection::saveStandaloneTcpPose(points, base, data, tool, toolOffset, path);
+        };
+        QString saved;
+        require(save(pose, "探针A", offset, saved).isEmpty(), "TCP point save failed");
+        const QString firstPath = saved;
+        const auto firstPoint = read(saved);
+        const auto point = object(saved);
+        require(point.size() == 8 && point["x"].toDouble() == 500 && point["rz"].toDouble() == 90 &&
+                point["tcp_name"].toString() == "探针A", "TCP identity or pose units changed");
+        const auto toolOffset = point["tcp_offset"].toArray();
+        require(toolOffset.size() == 6, "TCP offset has wrong size");
+        for (int i = 0; i < 6; ++i) require(toolOffset[i].toDouble() == offset[i], "TCP offset changed");
+        const QString pointMatrix = QDir(points).filePath("T_base_flange.json");
+        require(!QFile::exists(pointMatrix), "TCP point created flange matrix");
+        require(collection::saveFlangePoseRecords(QDir(points).filePath("capture.png"), later).isEmpty(),
+                "image flange record after TCP point failed");
+        const auto initialPointMatrix = read(pointMatrix);
+        require(object(pointMatrix)["T_base_flange"].toArray()[0].toArray()[3].toDouble() == 1.0,
+                "TCP point polluted initial flange matrix");
+        require(save(later, "探针A", offset, saved).isEmpty() && saved.endsWith(base + "_2.json"),
+                "duplicate TCP point overwrote original");
+        require(read(firstPath) == firstPoint && read(pointMatrix) == initialPointMatrix,
+                "later TCP save changed prior point or flange matrix");
+        require(save(later, "探针A", offset, saved).isEmpty() && saved.endsWith(base + "_3.json"),
+                "third duplicate reused occupied name");
+        const auto files = QDir(points).entryList(QDir::Files);
+        for (const double* data : {static_cast<const double*>(nullptr), static_cast<const double*>(invalid)})
+            require(!save(data, "探针A", offset, saved).isEmpty() && saved.isEmpty(), "invalid TCP pose saved");
+        require(!save(pose, "", offset, saved).isEmpty() && saved.isEmpty(), "missing TCP name saved");
+        require(!save(pose, "探针A", nullptr, saved).isEmpty() && saved.isEmpty(), "missing TCP offset saved");
+        require(!save(pose, "探针A", invalid, saved).isEmpty() && saved.isEmpty(), "NaN TCP offset saved");
+        invalid[5] = std::numeric_limits<double>::infinity();
+        require(!save(invalid, "探针A", offset, saved).isEmpty() && saved.isEmpty(), "infinite TCP pose saved");
+        require(!save(pose, "探针A", invalid, saved).isEmpty() && saved.isEmpty(), "infinite TCP offset saved");
+        QLockFile lock(QDir(points).filePath(".pose-save.lock"));
+        require(lock.tryLock(0), "cannot lock TCP point directory");
+        require(!save(pose, "探针A", offset, saved).isEmpty() && saved.isEmpty(), "concurrent writer ignored");
+        lock.unlock();
+        require(QDir(points).entryList(QDir::Files) == files, "failed TCP save created a file");
+        require(!collection::saveStandaloneTcpPose(image, base, pose, "探针A", offset, saved).isEmpty() &&
+                saved.isEmpty(), "blocked directory did not fail");
+        require(QDir(points).entryList({"*.png", "*.jpg"}, QDir::Files).isEmpty(), "TCP save created an image");
+        require(read(image) == imageBytes, "TCP save changed image");
+        std::cout << "Flange image records and named TCP metadata passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';
