@@ -398,11 +398,11 @@ ApplicationWindow {
                                 }
                             }
                             Item {
-                                anchors.centerIn: parent; width: 24; height: 24; visible: root.controller.previewActive
-                                Rectangle { x: 0; y: 11.5; width: 9; height: 1; color: Theme.reticle }
-                                Rectangle { x: 15; y: 11.5; width: 9; height: 1; color: Theme.reticle }
-                                Rectangle { x: 11.5; y: 0; width: 1; height: 9; color: Theme.reticle }
-                                Rectangle { x: 11.5; y: 15; width: 1; height: 9; color: Theme.reticle }
+                                anchors.fill: parent; visible: root.controller.previewActive
+                                Rectangle { anchors.centerIn: parent; width: parent.width; height: 1; color: Theme.reticle }
+                                Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: Theme.reticle }
+                                Rectangle { anchors.centerIn: parent; width: 21; height: 1; color: "#FF3B30" }
+                                Rectangle { anchors.centerIn: parent; width: 1; height: 21; color: "#FF3B30" }
                             }
                             Rectangle {
                                 anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 20; anchors.bottomMargin: 20
