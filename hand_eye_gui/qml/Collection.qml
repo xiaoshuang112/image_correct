@@ -332,6 +332,55 @@ ApplicationWindow {
                         CollectButton { objectName: "previewButton"; text: root.controller.previewActive ? "暂停预览" : "开始预览"; iconName: root.controller.previewActive ? "pause" : "play"; implicitHeight: 28; leftPadding: 10; rightPadding: 10; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }
                     }
                     Rectangle {
+                        Layout.fillWidth: true; implicitHeight: 48
+                        color: Theme.sunken; radius: Theme.radiusControl; border.width: 1; border.color: Theme.hairline
+                        RowLayout {
+                            anchors.fill: parent; anchors.margins: 8; spacing: 6
+                            Text { text: "BASE XY"; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta }
+                            Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 16; color: Theme.line }
+                            Text { text: "X ±"; color: Theme.ink2; font.pixelSize: Theme.body }
+                            CollectField {
+                                id: fivePointX; objectName: "fivePointXInput"
+                                text: "10.0"; Layout.preferredWidth: 58; Layout.minimumWidth: 50; Layout.maximumWidth: 58
+                                leftPadding: 6; rightPadding: 6; horizontalAlignment: TextInput.AlignHCenter
+                                validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 1; notation: DoubleValidator.StandardNotation; locale: "C" }
+                                enabled: !root.busy; Accessible.name: "Base X 偏移，毫米"
+                            }
+                            Text { text: "Y ±"; color: Theme.ink2; font.pixelSize: Theme.body }
+                            CollectField {
+                                id: fivePointY; objectName: "fivePointYInput"
+                                text: "10.0"; Layout.preferredWidth: 58; Layout.minimumWidth: 50; Layout.maximumWidth: 58
+                                leftPadding: 6; rightPadding: 6; horizontalAlignment: TextInput.AlignHCenter
+                                validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 1; notation: DoubleValidator.StandardNotation; locale: "C" }
+                                enabled: !root.busy; Accessible.name: "Base Y 偏移，毫米"
+                            }
+                            Text { text: "mm"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
+                            Text {
+                                Layout.fillWidth: true; Layout.minimumWidth: 0
+                                text: root.compact ? "5 点" : "当前位置为基准 · 完成后返回"
+                                color: Theme.ink3; font.pixelSize: Theme.meta; elide: Text.ElideRight
+                            }
+                            CollectButton {
+                                objectName: "fivePointCaptureButton"; text: "五点采图"; iconName: "shutter"
+                                Layout.preferredWidth: 98; Layout.minimumWidth: 98; Layout.maximumWidth: 98
+                                leftPadding: 8; rightPadding: 8
+                                enabled: root.ready && root.controller.robotConnected && !root.poseEditorOpen
+                                    && fivePointX.acceptableInput && fivePointY.acceptableInput
+                                onClicked: { root.saveExposures(); root.controller.captureFivePoints(Number(fivePointX.text), Number(fivePointY.text)) }
+                                ToolTip.visible: hovered
+                                ToolTip.text: "以当前位置为基准，依次拍摄基准、X+、X−、Y+、Y−；每张保存完成后再移动，最后返回基准。偏移 0.1～50 mm，线速度 10 mm/s。"
+                            }
+                        }
+                    }
+                    Text {
+                        objectName: "fivePointProgress"
+                        Layout.fillWidth: true
+                        visible: text !== ""
+                        text: root.controller.fivePointProgress
+                        color: root.busy ? Theme.accent : Theme.ink2; font.pixelSize: Theme.meta
+                        wrapMode: Text.Wrap
+                    }
+                    Rectangle {
                         id: imageArea
                         objectName: "captureImageArea"
                         // History is assigned explicitly, never bound to the live count.

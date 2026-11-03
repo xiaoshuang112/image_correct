@@ -18,6 +18,8 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/DiagnosticLogger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionActions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CollectionCapture.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/FivePointCapture.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionPoseRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RobotTcp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionImageRecord.cpp

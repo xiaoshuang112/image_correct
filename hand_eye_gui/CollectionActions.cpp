@@ -1,7 +1,8 @@
 #include "CollectionController.hpp"
 #include "DiagnosticLogger.hpp"
 #include "CollectionPoseRecord.hpp"
-#include "CollectionImageRecord.hpp"
+#include "CollectionCapture.hpp"
+#include "FivePointCapture.hpp"
 #include "RobotTcp.hpp"
 #include "ExposureList.hpp"
 #include "utils/collection_undistortion.hpp"
@@ -13,34 +14,19 @@
 #include <QDesktopServices>
 #include <QDir>
 #include <QFileInfo>
-#include <QUuid>
 #include <QUrl>
 #include <algorithm>
 #include <array>
 #include <cmath>
-#include <future>
 #include <stdexcept>
 
 namespace {
-struct PoseRead {
-    std::array<double, 6> pose{};
-    bool valid = false;
-    QString error;
-};
-
-PoseRead readFlangePose(RobotHandle handle) {
-    PoseRead result;
-    double zeroTool[ROB_AXIS_NUM]{};
-    const CRresult code = cr_get_AssignTCP_Pose(handle, zeroTool, result.pose.data());
-    if (code != sucess) {
-        result.error = QString("法兰位姿读取失败（错误码 %1），本张位姿为空").arg(code);
-    } else if (!std::all_of(result.pose.begin(), result.pose.end(),
-                           [](double value) { return std::isfinite(value); })) {
-        result.error = "法兰位姿包含无效数值，本张位姿为空";
-    } else {
-        result.valid = true;
-    }
-    return result;
+std::array<double, 6> readFlangePose(RobotHandle handle) {
+    std::array<double, 6> pose{}, zero{};
+    const auto result = cr_get_AssignTCP_Pose(handle, zero.data(), pose.data());
+    if (result != sucess)
+        throw std::runtime_error(QString("法兰位姿读取失败（错误码 %1）").arg(result).toStdString());
+    return pose;
 }
 
 }
@@ -173,15 +159,13 @@ void CollectionController::beginCollectionOperation() {
     m_previewTimer->stop();
     m_cancelRequested = false;
     m_collectionBusy = true;
+    m_fivePointProgress.clear();
     emit collectionChanged();
 }
 
 void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
     m_collectionBusy = false;
-    if (!savedPath.isEmpty()) {
-        m_lastCapturePath = savedPath;
-        ++m_savedImageCount;
-    }
+    if (!savedPath.isEmpty()) recordCapture(savedPath);
     if (m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
         m_previewTimer->start();
     emit collectionChanged();
@@ -195,15 +179,33 @@ void CollectionController::finishCollectionOperation(const QString& message, con
 void CollectionController::cancelCollectionOperation() {
     if (m_collectionBusy) {
         m_cancelRequested = true;
+        if (!m_fivePointProgress.isEmpty()) {
+            m_fivePointProgress = "正在停止五点采图…";
+            emit collectionChanged();
+        }
         setStatus("正在停止当前操作…");
     }
 }
 
-void CollectionController::capturePhoto() {
+void CollectionController::recordCapture(const QString& path) {
+    m_lastCapturePath = path;
+    ++m_savedImageCount;
+    emit collectionChanged();
+}
+
+void CollectionController::capturePhoto() { startCapture(false); }
+void CollectionController::captureFivePoints(double xMm, double yMm) { startCapture(true, xMm, yMm); }
+
+void CollectionController::startCapture(bool fivePoints, double xMm, double yMm) {
     if (m_collectionBusy) return;
     if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
         setStatus("请打开相机并等待预览画面后拍照");
         return;
+    }
+    if (fivePoints) {
+        if (!m_robotConnected) { setStatus("五点采图需要连接机器人"); return; }
+        try { collection::fivePointTargets({}, xMm, yMm); }
+        catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); return; }
     }
     std::vector<int> exposures;
     const auto errorKind = collection::parseExposureList(m_exposureList, exposures);
@@ -217,95 +219,75 @@ void CollectionController::capturePhoto() {
     }
     const auto camera = m_camera;
     const auto undistortion = m_undistortionMaps;
-    const bool robotConnected = m_robotConnected;
-    const RobotHandle robotHandle = m_robotHandle;
-    // Freeze the date at shutter time so a bracket crossing midnight stays in
-    // one daily folder, with a filename that uses the same timestamp.
-    const QDateTime captureTime = QDateTime::currentDateTime();
-    const QString directory = QDir(m_outputDirectory).filePath(captureTime.toString("yyyy-MM-dd"));
+    const auto handle = m_robotHandle;
+    std::function<std::array<double, 6>()> readPose;
+    if (m_robotConnected) readPose = [handle] { return readFlangePose(handle); };
+    const auto shutterTime = QDateTime::currentDateTime();
+    const auto output = m_outputDirectory;
     beginCollectionOperation();
-    setStatus(QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
+    setStatus(fivePoints ? "五点采图：正在检查当前基准位及目标…"
+                        : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, directory, captureTime, exposures, robotConnected, robotHandle, undistortion]() {
+        m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
+                                         output, exposures, fivePoints, xMm, yMm] {
             QString message, path;
+            int saved = 0;
+            auto progress = [this](const QString& text) {
+                QMetaObject::invokeMethod(this, [this, text] {
+                    m_fivePointProgress = m_cancelRequested ? "正在停止五点采图…" : text;
+                    emit collectionChanged();
+                    setStatus(m_fivePointProgress);
+                }, Qt::QueuedConnection);
+            };
             try {
-                int minimum = 0, maximum = 0;
-                if (!camera->getExposureRange(minimum, maximum))
-                    throw std::runtime_error("无法读取相机曝光范围");
-                for (int exposure : exposures)
-                    if (exposure < minimum || exposure > maximum)
-                        throw std::runtime_error(QString("曝光 %1 μs 超出相机范围 %2～%3 μs")
-                            .arg(exposure).arg(minimum).arg(maximum).toStdString());
-                // Read the zero-offset flange pose alongside camera acquisition.
-                // Save the PNG before waiting for the RPC result, so robot errors
-                // cannot prevent camera acquisition, fusion or image saving.
-                PoseRead flange;
-                std::future<PoseRead> poseRead;
-                try {
-                    if (robotConnected) {
-                        poseRead = std::async(std::launch::async, [robotHandle]() {
-                            return readFlangePose(robotHandle);
-                        });
-                    } else {
-                        flange.error = "机器人未连接，本张法兰位姿为空";
-                    }
-                } catch (const std::exception& error) {
-                    flange.error = "无法启动法兰位姿读取：" + QString::fromUtf8(error.what());
-                }
-                const auto frames = camera->captureMultiExposureImages(exposures);
-                if (m_cancelRequested) throw std::runtime_error("拍照已取消");
-                if (frames.size() != exposures.size())
-                    throw std::runtime_error("未采齐全部曝光帧，本次未保存图片");
-                cv::Mat fused = collection::fuseMertens(frames);
-                const cv::Mat corrected = undistortion ? undistortion->apply(fused) : cv::Mat();
-                if (m_cancelRequested) throw std::runtime_error("拍照已取消");
-                if (!QDir().mkpath(directory))
-                    throw std::runtime_error("无法创建图片保存目录");
-                const QString rawPath = QDir(directory).filePath("capture_" +
-                    captureTime.toString("yyyyMMdd_HHmmss_zzz") + "_" +
-                    QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png");
-                if (m_cancelRequested) throw std::runtime_error("拍照已取消");
-                path = collection::saveCaptureImages(fused, corrected, rawPath);
-                message = undistortion ? "多曝光融合及去畸变完成，校正图与原始图已保存" : "多曝光融合完成，图片已保存";
-                // Metadata failure is reported separately from the already
-                // committed image. Busy remains set until the read finishes,
-                // keeping the robot handle alive while the SDK uses it.
-                try {
-                    if (poseRead.valid()) {
-                        try {
-                            flange = poseRead.get();
-                        } catch (const std::exception& error) {
-                            flange.error = "法兰位姿读取异常：" + QString::fromUtf8(error.what());
-                        } catch (...) {
-                            flange.error = "法兰位姿读取发生未知异常";
-                        }
-                    }
-                    const QString recordError = collection::saveFlangePoseRecords(
-                        path, flange.valid ? flange.pose.data() : nullptr);
-                    QStringList warnings;
-                    if (undistortion) {
-                        const QString metadataError = collection::saveUndistortionMetadata(
-                            path, undistortion->geometry());
-                        if (!metadataError.isEmpty()) warnings << metadataError;
-                        const auto rawRecordError = collection::saveFlangePoseRecords(
-                            rawPath, flange.valid ? flange.pose.data() : nullptr);
-                        if (!rawRecordError.isEmpty()) warnings << rawRecordError;
-                    }
-                    if (!flange.error.isEmpty()) warnings << flange.error;
-                    if (!recordError.isEmpty()) warnings << recordError;
-                    if (!warnings.isEmpty()) message = warnings.join("；");
-                } catch (const std::exception& error) {
-                    message = "图片已保存，法兰位姿记录失败：" + QString::fromUtf8(error.what());
-                } catch (...) {
-                    message = "图片已保存，法兰位姿记录发生未知异常";
+                if (!fivePoints) {
+                    const auto result = collection::captureAndSave(*camera, output, shutterTime,
+                        exposures, undistortion, readPose, m_cancelRequested);
+                    message = result.message;
+                    path = result.path;
+                } else {
+                    collection::checkCaptureExposures(*camera, exposures);
+                    const auto origin = collection::readStationaryFlange(handle);
+                    const auto targets = collection::fivePointTargets(origin, xMm, yMm);
+                    collection::checkFivePointReachability(handle, targets);
+                    APP_LOG_EVENT_INFO("collection", "five_point", "baseline",
+                        {{"x", QString::number(origin[0], 'f', 6)}, {"y", QString::number(origin[1], 'f', 6)},
+                         {"z", QString::number(origin[2], 'f', 6)}, {"rx", QString::number(origin[3], 'f', 6)},
+                         {"ry", QString::number(origin[4], 'f', 6)}, {"rz", QString::number(origin[5], 'f', 6)},
+                         {"offset_x_mm", QString::number(xMm)}, {"offset_y_mm", QString::number(yMm)}});
+                    progress("五点采图 · 基准位稳定等待");
+                    collection::waitForStableFlange(handle, origin, m_cancelRequested);
+                    const QStringList names{"基准位", "X+", "X−", "Y+", "Y−"};
+                    collection::runFivePointCapture(targets,
+                        [&](const collection::FlangePose& target, int point) {
+                            progress(point == 0 ? QString("已保存 %1/5 · 返回基准位").arg(saved)
+                                : QString("第 %1/5 点 · %2 · 移动及稳定等待").arg(point + 1).arg(names[point]));
+                            collection::moveFlangeLinear(handle, target, m_cancelRequested);
+                        },
+                        [&](int point) {
+                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point]))
+                                throw std::runtime_error("实际位姿偏离本次拍摄目标");
+                            progress(QString("第 %1/5 点 · %2 · 正在采集及保存").arg(point + 1).arg(names[point]));
+                            const auto result = collection::captureAndSave(*camera, output, QDateTime::currentDateTime(),
+                                exposures, undistortion, readPose, m_cancelRequested);
+                            if (!result.path.isEmpty()) {
+                                ++saved;
+                                QMetaObject::invokeMethod(this, [this, image = result.path] { recordCapture(image); }, Qt::QueuedConnection);
+                                APP_LOG_EVENT_INFO("collection", "five_point_image", "saved",
+                                    {{"point", names[point]}, {"image", result.path}, {"complete", result.complete ? "true" : "false"}});
+                            }
+                            if (!result.complete) throw std::runtime_error(result.message.toStdString());
+                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point]))
+                                throw std::runtime_error("采图后检测到机器人位姿变化，已停止后续动作");
+                        }, m_cancelRequested);
+                    message = "五点采图完成 · 已保存 5/5，已回到基准位";
                 }
             } catch (const std::exception& error) {
-                path.clear();
-                message = QString::fromUtf8(error.what());
-            } catch (...) {
-                path.clear(); message = "拍照发生未知异常";
-            }
-            QMetaObject::invokeMethod(this, [this, message, path]() {
+                message = fivePoints ? QString("五点采图停止 · 已保存 %1/5：%2；未继续移动")
+                    .arg(saved).arg(QString::fromUtf8(error.what())) : QString::fromUtf8(error.what());
+            } catch (...) { message = "采图发生未知异常，已终止后续操作"; }
+            QMetaObject::invokeMethod(this, [this, message, path, fivePoints] {
+                if (fivePoints) m_fivePointProgress = message;
                 finishCollectionOperation(message, path);
             }, Qt::QueuedConnection);
         });

@@ -91,6 +91,10 @@ SharedCollectionState {
     property bool poseFailure: false
     property var tcpNames: []
     property string selectedTcp: ""
+    property string fivePointProgress: ""
+    property int fivePointCalls: 0
+    property real lastFivePointX: 0
+    property real lastFivePointY: 0
     property string currentTcp: "探针A"
     property bool tcpListFailure: false
     property string robotIp: "192.168.66.14"
@@ -130,6 +134,11 @@ SharedCollectionState {
     function connectRobot() { robotConnected = true; refreshTcpTools() }
     function disconnectRobot() { robotConnected = false; tcpNames = []; selectedTcp = "" }
     function levelCamera() {}
+    function captureFivePoints(x, y) {
+        fivePointCalls++; lastFivePointX = x; lastFivePointY = y
+        collectionBusy = true
+        fivePointProgress = "第 1/5 点 · 基准位 · 正在采集及保存"
+    }
     function cancelCollectionOperation() { collectionBusy = false }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
 }
@@ -224,6 +233,10 @@ SharedCollectionState {
         auto* savePose = item("savePoseButton");
         auto* tcpSelector = item("tcpSelector");
         auto* refreshTcp = item("refreshTcpButton");
+        auto* fivePoint = item("fivePointCaptureButton");
+        auto* fivePointX = item("fivePointXInput");
+        auto* fivePointY = item("fivePointYInput");
+        require(!fivePoint->isEnabled(), "automatic motion enabled before robot connection");
         require(findVisual(window->contentItem(), "saveFlangePoseButton") == nullptr, "obsolete flange button remains");
         require(savePose->property("text").toString() == "保存 TCP 坐标", "TCP action label is incorrect");
         auto* undistortion = item("undistortionButton");
@@ -367,7 +380,8 @@ SharedCollectionState {
         controller->setProperty("tcpListFailure", false);
         controller->setProperty("currentTcp", "已删除工具");
         click(refreshTcp);
-        require(!savePose->isEnabled() && tcpSelector->isEnabled(), "unknown active TCP silently selected another tool");
+        require(!savePose->isEnabled() && tcpSelector->isEnabled() && fivePoint->isEnabled(),
+                "unknown active TCP silently selected another tool or blocked zero-tool capture");
         require(QMetaObject::invokeMethod(tcpSelector, "activated", Q_ARG(int, 2)), "cannot choose TCP manually");
         require(savePose->isEnabled(), "valid manual selection did not enable saving");
         click(savePose);
@@ -377,9 +391,35 @@ SharedCollectionState {
         controller->setProperty("currentTcp", "探针A");
         require(QMetaObject::invokeMethod(controller.get(), "connectRobot"), "mock reconnect failed");
         require(tcpSelector->property("currentText").toString() == "探针A", "reconnect retained stale TCP");
+        require(fivePoint->isEnabled(), "five-point capture unavailable with robot and preview");
+        fivePointX->setProperty("text", "0");
+        require(!fivePoint->isEnabled(), "zero offset enables automatic capture");
+        fivePointX->setProperty("text", "51");
+        require(!fivePoint->isEnabled(), "oversized offset enables automatic capture");
+        fivePointX->setProperty("text", "7.5");
+        fivePointY->setProperty("text", "12.5");
+        fivePointX->forceActiveFocus();
+        const int beforeFive = count();
+        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+        require(count() == beforeFive, "offset editing triggered a photograph");
+        click(fivePoint);
+        require(controller->property("fivePointCalls").toInt() == 1 &&
+                controller->property("lastFivePointX").toDouble() == 7.5 &&
+                controller->property("lastFivePointY").toDouble() == 12.5,
+                "five-point action sent incorrect offsets");
+        require(!fivePoint->isEnabled() && !fivePointX->isEnabled() && !fivePointY->isEnabled() &&
+                !capture->isEnabled() && !level->isEnabled() && !tcpSelector->isEnabled() &&
+                !open->isEnabled() && !item("connectRobotButton")->isEnabled() &&
+                item("stopButton")->isEnabled(), "automatic operation leaves conflicting controls enabled");
+        require(item("fivePointProgress")->isVisible() &&
+                item("fivePointProgress")->property("text").toString().contains("1/5"), "automatic progress not visible");
+        click(item("stopButton"));
+        require(fivePoint->isEnabled(), "automatic stop left controls locked");
+        controller->setProperty("fivePointProgress", "");
         window->resize(1024, 740);
         QTest::qWait(50);
         for (auto* action : {open, capture, level, savePose, tcpSelector, refreshTcp, undistortion, previewExposure, applyExposure,
+                             fivePoint, fivePointX, fivePointY,
                              item("previewButton"), item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
@@ -392,6 +432,11 @@ SharedCollectionState {
         };
         require(!bounds(undistortion).intersects(bounds(item("previewButton"))),
                 "undistortion and preview controls overlap at minimum window size");
+        require(!bounds(fivePointX).intersects(bounds(fivePointY)) &&
+                !bounds(fivePointY).intersects(bounds(fivePoint)) &&
+                qAbs(bounds(fivePointX).top() - bounds(fivePointY).top()) < 1 &&
+                qAbs(bounds(fivePointX).top() - bounds(fivePoint).top()) < 1,
+                "automatic capture inputs/buttons overlap or are not aligned");
         require(!bounds(capture).intersects(bounds(savePose)) &&
                 !bounds(item("exposureInput5")).intersects(bounds(capture)),
                 "capture controls overlap at minimum window size");
@@ -475,6 +520,8 @@ SharedCollectionState {
             controller->setProperty("outputDirectory", QDir::homePath() + "/Pictures/caitu-collect");
             controller->setProperty("handEyePath", QCoreApplication::applicationDirPath() + "/param/hand_eye_result.yaml");
             input->setProperty("text", "5000");
+            fivePointX->setProperty("text", "10.0");
+            fivePointY->setProperty("text", "10.0");
             input->setFocus(false);
             window->contentItem()->forceActiveFocus();
             window->resize(1280, 850);

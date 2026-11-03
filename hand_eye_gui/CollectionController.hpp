@@ -54,6 +54,7 @@ class CollectionController : public QObject
     Q_PROPERTY(QString undistortionStatus READ undistortionStatus NOTIFY collectionChanged)
     Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
+    Q_PROPERTY(QString fivePointProgress READ fivePointProgress NOTIFY collectionChanged)
 
 public:
     explicit CollectionController(QObject* parent = nullptr);
@@ -75,6 +76,7 @@ public:
     Q_INVOKABLE void refreshTcpTools();
     QStringList tcpNames() const { return m_tcpNames; }
     QString selectedTcp() const { return m_selectedTcp; }
+    QString fivePointProgress() const { return m_fivePointProgress; }
     void setSelectedTcp(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
@@ -121,6 +123,7 @@ public slots:
     /// 热更新相机曝光，并将设备回读值持久化到 config.yaml。
     void adjustCameraExposure(int exposureUs);
     void capturePhoto();
+    void captureFivePoints(double xMm, double yMm);
     void levelCamera();
     void cancelCollectionOperation();
 
@@ -147,6 +150,8 @@ private:
     void persistCollectionString(const std::string& key, const QString& value);
     void persistCollectionInteger(const std::string& key, int value);
     void beginCollectionOperation();
+    void startCapture(bool fivePoints, double xMm = 0, double yMm = 0);
+    void recordCapture(const QString& path);
     void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----
     void setupPaths();
@@ -227,6 +232,7 @@ private:
     std::shared_ptr<const collection::UndistortionCalibration> m_undistortionCalibration;
     std::shared_ptr<const collection::UndistortionMaps> m_undistortionMaps;
     QString m_lastCapturePath;
+    QString m_fivePointProgress;
     int m_savedImageCount = 0;
     int m_savedPoseCount = 0;
     std::thread m_collectionThread;

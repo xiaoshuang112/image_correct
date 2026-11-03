@@ -190,7 +190,23 @@ if(BUILD_TESTS)
         target_include_directories(test_collection_pose_record PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
         target_link_libraries(test_collection_pose_record Qt5::Core ${OpenCV_LIBS})
         add_test(NAME collection_pose_records COMMAND test_collection_pose_record)
+        add_executable(test_collection_capture
+            tests/test_collection_capture.cpp
+            hand_eye_gui/CollectionCapture.cpp
+            hand_eye_gui/CollectionImageRecord.cpp
+            hand_eye_gui/CollectionPoseRecord.cpp
+            utils/collection_utils.cpp
+            utils/collection_undistortion.cpp
+            utils/calib_transform.cpp)
+        target_include_directories(test_collection_capture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+        target_link_libraries(test_collection_capture Qt5::Core ${OpenCV_LIBS})
+        add_test(NAME collection_capture COMMAND test_collection_capture)
         if(BUILD_QT_GUI)
+            add_executable(test_five_point_capture tests/test_five_point_capture.cpp
+                hand_eye_gui/FivePointCapture.cpp utils/calib_transform.cpp)
+            target_include_directories(test_five_point_capture PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CGX_SDK_DIR}/include)
+            target_link_libraries(test_five_point_capture ${OpenCV_LIBS})
+            add_test(NAME five_point_capture COMMAND test_five_point_capture)
             add_executable(test_robot_tcp tests/test_robot_tcp.cpp hand_eye_gui/RobotTcp.cpp)
             target_include_directories(test_robot_tcp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CGX_SDK_DIR}/include)
             target_link_libraries(test_robot_tcp Qt5::Core)
