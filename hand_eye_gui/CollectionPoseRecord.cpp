@@ -61,10 +61,14 @@ QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
     }
     return warnings.join("；");
 }
-QString saveStandalonePose(const QString& directoryPath, const QString& base, const double* pose, QString& savedPath) {
+QString saveStandaloneTcpPose(const QString& directoryPath, const QString& base, const double* pose,
+                             const QString& tcpName, const double* tcpOffset, QString& savedPath) {
     savedPath.clear();
     if (!pose || !std::all_of(pose, pose + 6, [](double v) { return std::isfinite(v); }))
         return "位姿无效，未保存点位";
+    if (tcpName.trimmed().isEmpty() || !tcpOffset ||
+        !std::all_of(tcpOffset, tcpOffset + 6, [](double v) { return std::isfinite(v); }))
+        return "TCP 名称或偏移无效，未保存点位";
     QDir directory(directoryPath);
     if (!QDir().mkpath(directoryPath)) return "无法创建点位保存目录";
     QLockFile lock(directory.filePath(".pose-save.lock"));
@@ -72,7 +76,12 @@ QString saveStandalonePose(const QString& directoryPath, const QString& base, co
     QString path = directory.filePath(base + ".json");
     for (int i = 2; QFileInfo::exists(path); ++i)
         path = directory.filePath(base + "_" + QString::number(i) + ".json");
-    const QString error = writeJson(path, poseValues(pose));
+    QJsonObject values = poseValues(pose);
+    values.insert("tcp_name", tcpName);
+    QJsonArray offset;
+    for (int i = 0; i < 6; ++i) offset.append(tcpOffset[i]);
+    values.insert("tcp_offset", offset);
+    const QString error = writeJson(path, values);
     if (!error.isEmpty()) return "坐标文件保存失败：" + error;
     savedPath = path;
     return {};

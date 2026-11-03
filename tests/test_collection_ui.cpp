@@ -89,6 +89,15 @@ SharedCollectionState {
     property int savedPoseCount: 0
     property string pointName: ""
     property bool poseFailure: false
+    property var tcpNames: []
+    property string selectedTcp: ""
+    property string fivePointProgress: ""
+    property bool motionFault: false
+    property int fivePointCalls: 0
+    property real lastFivePointX: 0
+    property real lastFivePointY: 0
+    property string currentTcp: "探针A"
+    property bool tcpListFailure: false
     property string robotIp: "192.168.66.14"
     property int robotPort: 2323
     property string robotPasswd: "123"
@@ -107,20 +116,31 @@ SharedCollectionState {
         finishCapture(!captureFailure && !captureCancelled) // one shared completion NOTIFY
     }
     function openCollectionFolder() {}
-    function saveTcpPose(name) { savePoint(name, false) }
-    function saveFlangePose(name) { savePoint(name, true) }
-    function savePoint(name, flange) {
+    function refreshTcpTools() {
         if (collectionBusy || !robotConnected) return
+        var previous = selectedTcp
+        tcpNames = tcpListFailure ? [] : ["探针A", "探针B", "夹具中心"]
+        selectedTcp = tcpNames.indexOf(previous) >= 0 ? previous :
+            previous === "" && tcpNames.indexOf(currentTcp) >= 0 ? currentTcp : ""
+        statusMessage = tcpListFailure ? "TCP 列表读取失败" : "已加载 TCP 列表"
+    }
+    function saveTcpPose(name) {
+        if (collectionBusy || !robotConnected || !selectedTcp) return
         pointName = name
-        if (poseFailure) { statusMessage = (flange ? "法兰" : "TCP") + "位姿读取失败，未保存点位文件"; return }
+        if (poseFailure) { statusMessage = "TCP 位姿读取失败，未保存点位文件"; return }
         savedPoseCount++
-        statusMessage = (flange ? "法兰坐标已保存：flan_" : "TCP 坐标已保存：tcp_") + (name || "20261015_123456_001") + ".json"
+        statusMessage = "TCP 坐标已保存：tcp_" + selectedTcp + "_" + (name || "20261015_123456_001") + ".json"
     }
     function adjustCameraExposure(value) { cameraExposureUs = value }
-    function connectRobot() { robotConnected = true }
-    function disconnectRobot() { robotConnected = false }
+    function connectRobot() { robotConnected = true; refreshTcpTools() }
+    function disconnectRobot() { robotConnected = false; tcpNames = []; selectedTcp = "" }
     function levelCamera() {}
-    function cancelCollectionOperation() { collectionBusy = false }
+    function captureFivePoints(x, y) {
+        fivePointCalls++; lastFivePointX = x; lastFivePointY = y
+        collectionBusy = true
+        fivePointProgress = "第 1/5 点 · 基准位 · 正在采集及保存"
+    }
+    function cancelCollectionOperation() { if (!motionFault) collectionBusy = false }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
 }
 )QML", QUrl());
@@ -212,13 +232,18 @@ SharedCollectionState {
         auto* level = item("levelButton");
         auto* input = item("exposureInput");
         auto* savePose = item("savePoseButton");
-        auto* saveFlange = item("saveFlangePoseButton");
-        require(saveFlange->property("text").toString() == "保存法兰坐标", "flange action label is incorrect");
+        auto* tcpSelector = item("tcpSelector");
+        auto* refreshTcp = item("refreshTcpButton");
+        auto* fivePoint = item("fivePointCaptureButton");
+        auto* fivePointX = item("fivePointXInput");
+        auto* fivePointY = item("fivePointYInput");
+        require(!fivePoint->isEnabled(), "automatic motion enabled before robot connection");
+        require(findVisual(window->contentItem(), "saveFlangePoseButton") == nullptr, "obsolete flange button remains");
         require(savePose->property("text").toString() == "保存 TCP 坐标", "TCP action label is incorrect");
         auto* undistortion = item("undistortionButton");
         require(!undistortion->isEnabled(), "undistortion enabled without calibration or camera");
         auto* pointName = item("pointNameInput");
-        require(!savePose->isEnabled() && !saveFlange->isEnabled(), "pose enabled without robot");
+        require(!savePose->isEnabled() && !tcpSelector->isEnabled() && !refreshTcp->isEnabled(), "pose enabled without robot");
         require(item("exposureInput5")->property("text").toString().isEmpty(), "fifth exposure is not blank");
         require(findVisual(window->contentItem(), "exposureInput6") == nullptr, "more than five exposure inputs");
         require(!capture->isEnabled() && !level->isEnabled(), "actions enabled before camera preview");
@@ -250,7 +275,7 @@ SharedCollectionState {
         QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
         require(count() == 3 && !capture->isEnabled(), "captured during another operation");
         controller->setProperty("collectionBusy", false);
-        controller->setProperty("robotConnected", true);
+        require(QMetaObject::invokeMethod(controller.get(), "connectRobot"), "mock robot connect failed");
         QTest::qWait(10);
         require(level->isEnabled(), "level action not enabled with preview and robot");
         auto click = [&](QQuickItem* button) {
@@ -325,49 +350,86 @@ SharedCollectionState {
         click(item("confirmPoseButton"));
         require(controller->property("savedPoseCount").toInt() == 3 && count() == 3 &&
                 !window->property("poseEditorOpen").toBool() &&
-                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_TCP接触点.json",
+                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_探针A_TCP接触点.json",
                 "confirm button failed to save TCP point or changed image count");
-        click(saveFlange);
-        require(window->property("savingFlange").toBool() &&
-                pointName->property("placeholderText").toString().startsWith("法兰"),
-                "flange button did not select flange naming mode");
-        pointName->setProperty("text", "法兰工位");
+        require(tcpSelector->property("currentText").toString() == "探针A", "active TCP not selected after connect");
+        tcpSelector->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Space);
+        QTest::qWait(20);
+        QTest::keyClick(window, Qt::Key_Down);
         QTest::keyClick(window, Qt::Key_Return);
         QTest::qWait(20);
-        require(controller->property("savedPoseCount").toInt() == 4 && count() == 3 &&
-                !window->property("poseEditorOpen").toBool() &&
-                controller->property("statusMessage").toString() == "法兰坐标已保存：flan_法兰工位.json",
-                "Enter did not save flange point independently");
-        click(saveFlange);
-        click(item("confirmPoseButton"));
-        require(controller->property("savedPoseCount").toInt() == 5 &&
-                controller->property("statusMessage").toString() == "法兰坐标已保存：flan_20261015_123456_001.json",
-                "empty flange name did not use timestamp naming");
-        click(saveFlange);
-        pointName->setProperty("text", "失败法兰点");
-        controller->setProperty("poseFailure", true);
-        QTest::keyClick(window, Qt::Key_Return);
-        QTest::qWait(20);
-        require(window->property("poseEditorOpen").toBool() &&
-                pointName->property("text").toString() == "失败法兰点" &&
-                controller->property("savedPoseCount").toInt() == 5 && count() == 3,
-                "failed flange save lost its name or changed counters");
-        controller->setProperty("collectionBusy", true);
-        require(!saveFlange->isEnabled() && !savePose->isEnabled() && !item("confirmPoseButton")->isEnabled(),
-                "point actions enabled while busy");
-        controller->setProperty("collectionBusy", false);
-        controller->setProperty("poseFailure", false);
+        require(controller->property("selectedTcp").toString() == "探针B" &&
+                tcpSelector->property("currentIndex").toInt() == 1, "TCP selection not bound to controller");
+        require(count() == 3, "Space while choosing a TCP accidentally captured a photo");
+        click(refreshTcp);
+        require(controller->property("selectedTcp").toString() == "探针B", "refresh discarded chosen TCP");
         click(savePose);
-        require(!window->property("savingFlange").toBool() && pointName->property("text").toString().isEmpty(),
-                "switching back to TCP retained flange mode or name");
-        pointName->setProperty("text", "重返TCP");
+        pointName->setProperty("text", "第二工具点");
         click(item("confirmPoseButton"));
-        require(controller->property("savedPoseCount").toInt() == 6 && count() == 3 &&
-                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_重返TCP.json",
-                "switching back to TCP saved a flange point");
+        require(controller->property("savedPoseCount").toInt() == 4 && count() == 3 &&
+                controller->property("statusMessage").toString() == "TCP 坐标已保存：tcp_探针B_第二工具点.json",
+                "save ignored selected TCP");
+        controller->setProperty("collectionBusy", true);
+        require(!tcpSelector->isEnabled() && !refreshTcp->isEnabled() && !savePose->isEnabled(),
+                "TCP selection can change during an operation");
+        controller->setProperty("collectionBusy", false);
+        controller->setProperty("tcpListFailure", true);
+        click(refreshTcp);
+        require(!savePose->isEnabled() && !tcpSelector->isEnabled() && capture->isEnabled(),
+                "failed TCP list enabled saving or disabled camera capture");
+        controller->setProperty("tcpListFailure", false);
+        controller->setProperty("currentTcp", "已删除工具");
+        click(refreshTcp);
+        require(!savePose->isEnabled() && tcpSelector->isEnabled() && fivePoint->isEnabled(),
+                "unknown active TCP silently selected another tool or blocked zero-tool capture");
+        require(QMetaObject::invokeMethod(tcpSelector, "activated", Q_ARG(int, 2)), "cannot choose TCP manually");
+        require(savePose->isEnabled(), "valid manual selection did not enable saving");
+        click(savePose);
+        require(QMetaObject::invokeMethod(controller.get(), "disconnectRobot"), "mock disconnect failed");
+        require(!savePose->isEnabled() && !tcpSelector->isEnabled() &&
+                !window->property("poseEditorOpen").toBool(), "disconnect retained active TCP editor");
+        controller->setProperty("currentTcp", "探针A");
+        require(QMetaObject::invokeMethod(controller.get(), "connectRobot"), "mock reconnect failed");
+        require(tcpSelector->property("currentText").toString() == "探针A", "reconnect retained stale TCP");
+        require(fivePoint->isEnabled(), "five-point capture unavailable with robot and preview");
+        fivePointX->setProperty("text", "0");
+        require(!fivePoint->isEnabled(), "zero offset enables automatic capture");
+        fivePointX->setProperty("text", "51");
+        require(!fivePoint->isEnabled(), "oversized offset enables automatic capture");
+        fivePointX->setProperty("text", "7.5");
+        fivePointY->setProperty("text", "12.5");
+        fivePointX->forceActiveFocus();
+        const int beforeFive = count();
+        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
+        require(count() == beforeFive, "offset editing triggered a photograph");
+        click(fivePoint);
+        require(controller->property("fivePointCalls").toInt() == 1 &&
+                controller->property("lastFivePointX").toDouble() == 7.5 &&
+                controller->property("lastFivePointY").toDouble() == 12.5,
+                "five-point action sent incorrect offsets");
+        require(!fivePoint->isEnabled() && !fivePointX->isEnabled() && !fivePointY->isEnabled() &&
+                !capture->isEnabled() && !level->isEnabled() && !tcpSelector->isEnabled() &&
+                !open->isEnabled() && !item("connectRobotButton")->isEnabled() &&
+                item("stopButton")->isEnabled(), "automatic operation leaves conflicting controls enabled");
+        require(item("fivePointProgress")->isVisible() &&
+                item("fivePointProgress")->property("text").toString().contains("1/5"), "automatic progress not visible");
+        click(item("stopButton"));
+        require(fivePoint->isEnabled(), "automatic stop left controls locked");
+        controller->setProperty("motionFault", true);
+        controller->setProperty("collectionBusy", true);
+        require(item("stopButton")->property("text").toString() == "重试停止" &&
+                !open->isEnabled() && !item("connectRobotButton")->isEnabled() && !fivePoint->isEnabled(),
+                "motion fault did not keep conflicting controls locked");
+        require(!window->close() && window->isVisible() && controller->property("collectionBusy").toBool(),
+                "window closed while robot stop was unconfirmed");
+        controller->setProperty("motionFault", false);
+        controller->setProperty("collectionBusy", false);
+        controller->setProperty("fivePointProgress", "");
         window->resize(1024, 740);
         QTest::qWait(50);
-        for (auto* action : {open, capture, level, savePose, saveFlange, undistortion, previewExposure, applyExposure,
+        for (auto* action : {open, capture, level, savePose, tcpSelector, refreshTcp, undistortion, previewExposure, applyExposure,
+                             fivePoint, fivePointX, fivePointY,
                              item("previewButton"), item("exposureInput5")}) {
             const QRectF bounds(action->mapToScene(QPointF(0, 0)), QSizeF(action->width(), action->height()));
             if (!QRectF(0, 0, window->width(), window->height()).contains(bounds))
@@ -380,9 +442,12 @@ SharedCollectionState {
         };
         require(!bounds(undistortion).intersects(bounds(item("previewButton"))),
                 "undistortion and preview controls overlap at minimum window size");
+        require(!bounds(fivePointX).intersects(bounds(fivePointY)) &&
+                !bounds(fivePointY).intersects(bounds(fivePoint)) &&
+                qAbs(bounds(fivePointX).top() - bounds(fivePointY).top()) < 1 &&
+                qAbs(bounds(fivePointX).top() - bounds(fivePoint).top()) < 1,
+                "automatic capture inputs/buttons overlap or are not aligned");
         require(!bounds(capture).intersects(bounds(savePose)) &&
-                !bounds(savePose).intersects(bounds(saveFlange)) &&
-                !bounds(capture).intersects(bounds(saveFlange)) &&
                 !bounds(item("exposureInput5")).intersects(bounds(capture)),
                 "capture controls overlap at minimum window size");
         require(qAbs(bounds(open).left() - bounds(item("connectRobotButton")).left()) < 1.0,
@@ -400,17 +465,25 @@ SharedCollectionState {
             require(qAbs(bounds(open).top() - bounds(previewExposure).top()) < 1 &&
                     qAbs(bounds(open).top() - bounds(input).top()) < 1,
                     "first control rows are not aligned");
-            require(qAbs(bounds(level).top() - bounds(undistortion).top()) < 1 &&
-                    qAbs(bounds(level).top() - bounds(capture).top()) < 1,
+            require(qAbs(bounds(item("connectRobotButton")).top() - bounds(undistortion).top()) < 1 &&
+                    qAbs(bounds(tcpSelector).top() - bounds(undistortion).top()) < 1,
                     "second control rows are not aligned");
+            require(qAbs(bounds(level).top() - bounds(capture).top()) < 1 &&
+                    qAbs(bounds(item("calibrationSummary")).top() - bounds(capture).top()) < 1,
+                    "third control rows are not aligned");
+            require(qAbs(bounds(tcpSelector).left() - bounds(input).left()) < 1 &&
+                    qAbs(bounds(refreshTcp).right() - bounds(item("exposureInput5")).right()) < 1 &&
+                    !bounds(tcpSelector).intersects(bounds(refreshTcp)),
+                    "TCP selector and refresh do not align with capture controls");
+            for (auto* control : {tcpSelector, refreshTcp, capture, savePose, input, previewExposure})
+                require(qAbs(control->height() - 32) < 1, "control heights are inconsistent");
             // Qt rounds fractional device-independent pixels in layouts.
-            require(qAbs(capture->width() - savePose->width()) <= 1 &&
-                    qAbs(savePose->width() - saveFlange->width()) <= 1,
+            require(qAbs(capture->width() - savePose->width()) <= 1,
                     "capture and pose buttons have different widths");
-            for (auto* action : {capture, savePose, saveFlange})
+            for (auto* action : {capture, savePose})
                 require(action->implicitWidth() <= action->width() + 1, "capture action text does not fit");
             require(qAbs(bounds(capture).left() - bounds(input).left()) < 1 &&
-                    qAbs(bounds(saveFlange).right() - bounds(item("exposureInput5")).right()) < 1,
+                    qAbs(bounds(savePose).right() - bounds(item("exposureInput5")).right()) < 1,
                     "capture actions do not align with exposure group edges");
             require(bounds(input).bottom() < bounds(capture).top(),
                     "capture actions should be below exposure inputs");
@@ -438,7 +511,7 @@ SharedCollectionState {
         checkCards();
         require(qAbs(item("controlDeck")->height() - compactHeight) < 1.0,
                 "top cards stretch vertically on a large window");
-        require(bounds(item("deviceCard")).bottom() - bounds(item("connectRobotButton")).bottom() <= 16,
+        require(bounds(item("deviceCard")).bottom() - bounds(level).bottom() <= 16,
                 "unnecessary whitespace below device controls");
         click(savePose);
         require(item("controlDeck")->height() > compactHeight &&
@@ -451,12 +524,14 @@ SharedCollectionState {
         if (argc > 1) {
             controller->setProperty("cameraOpened", false);
             controller->setProperty("previewActive", false);
-            controller->setProperty("robotConnected", false);
+            require(QMetaObject::invokeMethod(controller.get(), "disconnectRobot"), "screenshot disconnect failed");
             controller->setProperty("savedImageCount", 0);
             controller->setProperty("statusMessage", "就绪 — 打开相机即可预览和拍照");
             controller->setProperty("outputDirectory", QDir::homePath() + "/Pictures/caitu-collect");
             controller->setProperty("handEyePath", QCoreApplication::applicationDirPath() + "/param/hand_eye_result.yaml");
             input->setProperty("text", "5000");
+            fivePointX->setProperty("text", "10.0");
+            fivePointY->setProperty("text", "10.0");
             input->setFocus(false);
             window->contentItem()->forceActiveFocus();
             window->resize(1280, 850);
@@ -465,7 +540,7 @@ SharedCollectionState {
             if (argc > 2) {
                 controller->setProperty("cameraOpened", true);
                 controller->setProperty("previewActive", true);
-                controller->setProperty("robotConnected", true);
+                require(QMetaObject::invokeMethod(controller.get(), "connectRobot"), "mock robot connect failed");
                 controller->setProperty("savedImageCount", 12);
                 controller->setProperty("savedPoseCount", 3);
                 controller->setProperty("undistortionEnabled", true);
@@ -477,6 +552,13 @@ SharedCollectionState {
                     window->resize(1024, 740);
                     QTest::qWait(150);
                     require(window->grabWindow().save(QString::fromLocal8Bit(argv[3])), "compact live UI screenshot failed");
+                    if (argc > 4) {
+                        window->resize(1280, 850);
+                        click(savePose);
+                        pointName->setProperty("text", "工位_A");
+                        QTest::qWait(80);
+                        require(window->grabWindow().save(QString::fromLocal8Bit(argv[4])), "TCP editor screenshot failed");
+                    }
                 }
             }
         }

@@ -1,5 +1,6 @@
 #include "CollectionController.hpp"
 #include "CameraImageProvider.hpp"
+#include "FivePointCapture.hpp"
 #include "utils/collection_undistortion.hpp"
 #include "DiagnosticLogger.hpp"
 #include "config_resolver.hpp"
@@ -70,11 +71,21 @@ CollectionController::~CollectionController()
     m_cancelRequested = true;
     if (m_collectionThread.joinable())
         m_collectionThread.join();
+    if (m_robotConnected && m_robotStopUnconfirmed) {
+        try {
+            const auto result = cr_stop(m_robotHandle);
+            APP_LOG_EVENT_WARNING("robot", "shutdown_stop", "requested", {{"result", QString::number(result)}});
+            confirmMotionStopped();
+        } catch (const std::exception& error) {
+            APP_LOG_EVENT_ERROR("robot", "shutdown_stop", "unconfirmed",
+                {{"error", QString::fromUtf8(error.what())}, {"robot_handle_preserved", "true"}});
+        }
+    }
     m_collectionBusy = false;
     flushPendingLogs();
 
     // 事件循环退出后，工作线程投递的完成事件可能还未执行。
-    // 此时线程已经 join，可以安全地直接复位，保证硬件资源能够释放。
+    // 相机可直接释放；机器人停止仍未确认时，disconnectRobot 保留句柄。
 
     stopPreview();
     closeCamera();
@@ -360,6 +371,7 @@ void CollectionController::connectRobot()
                         {"ready", ready ? "true" : "false"},
                         {"elapsed_ms", QString::number(timer.elapsed())}});
     setStatus("机器人已连接");
+    refreshTcpTools();
 }
 
 void CollectionController::disconnectRobot()
@@ -369,12 +381,13 @@ void CollectionController::disconnectRobot()
                        "start",
                        {{"connected", QString::number(m_robotConnected)},
                         {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
-    if (m_collectionBusy) {
+    if (m_collectionBusy || m_robotStopUnconfirmed) {
         APP_LOG_EVENT_WARNING("robot",
                               "robot_disconnect",
                               "skip",
                               {{"reason", "collection_busy"}});
-        setStatus("请先停止采集操作并等待结束，再断开机器人");
+        setStatus(m_motionFault ? "机器人停止未确认，请先点击“重试停止”"
+                               : "请先停止采集操作并等待结束，再断开机器人");
         return;
     }
 
@@ -391,6 +404,9 @@ void CollectionController::disconnectRobot()
         m_robotConnected = false;
         emit robotConnectedChanged();
     }
+    m_tcpNames.clear();
+    m_selectedTcp.clear();
+    emit tcpToolsChanged();
     setStatus("机器人已断开");
     APP_LOG_EVENT_INFO("robot",
                        "robot_disconnect",

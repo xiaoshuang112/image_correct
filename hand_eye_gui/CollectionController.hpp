@@ -3,6 +3,7 @@
 
 #include <QObject>
 #include <QString>
+#include <QStringList>
 #include <QImage>
 #include <QTimer>
 #include <thread>
@@ -43,6 +44,7 @@ class CollectionController : public QObject
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
+    Q_PROPERTY(bool motionFault READ motionFault NOTIFY collectionChanged)
     Q_PROPERTY(QString outputDirectory READ outputDirectory CONSTANT)
     Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
@@ -51,6 +53,9 @@ class CollectionController : public QObject
     Q_PROPERTY(bool undistortionReady READ undistortionReady NOTIFY collectionChanged)
     Q_PROPERTY(bool undistortionEnabled READ undistortionEnabled NOTIFY collectionChanged)
     Q_PROPERTY(QString undistortionStatus READ undistortionStatus NOTIFY collectionChanged)
+    Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
+    Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
+    Q_PROPERTY(QString fivePointProgress READ fivePointProgress NOTIFY collectionChanged)
 
 public:
     explicit CollectionController(QObject* parent = nullptr);
@@ -59,6 +64,7 @@ public:
     /// 必须在 QML 引擎初始化后调用：设置 imageProvider 并完成路径初始化
     void init(CameraImageProvider* provider);
     bool collectionBusy() const { return m_collectionBusy; }
+    bool motionFault() const { return m_motionFault; }
     QString outputDirectory() const { return m_outputDirectory; }
     QString exposureList() const { return m_exposureList; }
     QString lastCapturePath() const { return m_lastCapturePath; }
@@ -69,7 +75,11 @@ public:
     QString undistortionStatus() const { return m_undistortionStatus; }
     Q_INVOKABLE void toggleUndistortion();
     Q_INVOKABLE void saveTcpPose(const QString& name);
-    Q_INVOKABLE void saveFlangePose(const QString& name);
+    Q_INVOKABLE void refreshTcpTools();
+    QStringList tcpNames() const { return m_tcpNames; }
+    QString selectedTcp() const { return m_selectedTcp; }
+    QString fivePointProgress() const { return m_fivePointProgress; }
+    void setSelectedTcp(const QString& name);
     void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
 
@@ -115,6 +125,7 @@ public slots:
     /// 热更新相机曝光，并将设备回读值持久化到 config.yaml。
     void adjustCameraExposure(int exposureUs);
     void capturePhoto();
+    void captureFivePoints(double xMm, double yMm);
     void levelCamera();
     void cancelCollectionOperation();
 
@@ -133,14 +144,19 @@ signals:
     void logTextChanged();
     void frameUpdated();
     void collectionChanged();
+    void tcpToolsChanged();
 
 private:
-    void savePose(const QString& name, bool flange);
+    friend struct CollectionControllerTestAccess;
     void initializeCollection();
     void loadCollectionUndistortion();
     void persistCollectionString(const std::string& key, const QString& value);
     void persistCollectionInteger(const std::string& key, int value);
     void beginCollectionOperation();
+    void startCapture(bool fivePoints, double xMm = 0, double yMm = 0);
+    void recordCapture(const QString& path);
+    void confirmMotionStopped();
+    void retryRobotStop();
     void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----
     void setupPaths();
@@ -188,6 +204,8 @@ private:
 
     // 状态
     bool     m_robotConnected = false;
+    QStringList m_tcpNames;
+    QString m_selectedTcp;
     bool     m_cameraOpened   = false;
     bool     m_previewActive  = false;
     QString  m_statusMessage  = "就绪";
@@ -211,6 +229,9 @@ private:
     std::string m_appPath;
     std::string m_paramPath;
     bool m_collectionBusy = false;
+    bool m_motionFault = false;
+    bool m_stopRetrying = false;
+    std::atomic<bool> m_robotStopUnconfirmed{false};
     bool m_collectionWasPreviewing = false;
     QString m_outputDirectory;
     QString m_exposureList = "5000,8500,14500,25000";
@@ -219,6 +240,7 @@ private:
     std::shared_ptr<const collection::UndistortionCalibration> m_undistortionCalibration;
     std::shared_ptr<const collection::UndistortionMaps> m_undistortionMaps;
     QString m_lastCapturePath;
+    QString m_fivePointProgress;
     int m_savedImageCount = 0;
     int m_savedPoseCount = 0;
     std::thread m_collectionThread;
