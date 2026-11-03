@@ -16,6 +16,9 @@ ApplicationWindow {
     font.pixelSize: Theme.body
     property var controller: collectionController
     readonly property bool busy: controller.collectionBusy
+    onClosing: function(close) {
+        if (root.busy) { close.accepted = false; root.controller.cancelCollectionOperation() }
+    }
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
     readonly property bool editing: (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
         || tcpSelector.activeFocus || tcpSelector.popup.visible
@@ -133,7 +136,7 @@ ApplicationWindow {
                     RowLayout {
                         Layout.fillWidth: true; spacing: 5
                         CollectButton { objectName: "levelButton"; text: "一键调平"; Layout.fillWidth: true; iconName: "level"; leftPadding: 9; rightPadding: 9; enabled: root.ready && root.controller.robotConnected; onClicked: root.controller.levelCamera() }
-                        CollectButton { objectName: "stopButton"; text: "停止"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 9; rightPadding: 9; danger: true; enabled: root.controller.collectionBusy; onClicked: root.controller.cancelCollectionOperation() }
+                        CollectButton { objectName: "stopButton"; text: root.controller.motionFault ? "重试停止" : "停止"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 9; rightPadding: 9; danger: true; enabled: root.controller.collectionBusy; onClicked: root.controller.cancelCollectionOperation() }
                     }
                 }
             }

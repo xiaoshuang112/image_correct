@@ -164,19 +164,58 @@ void CollectionController::beginCollectionOperation() {
 }
 
 void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
-    m_collectionBusy = false;
+    m_motionFault = m_robotStopUnconfirmed.load();
+    m_collectionBusy = m_motionFault;
+    m_stopRetrying = false;
     if (!savedPath.isEmpty()) recordCapture(savedPath);
-    if (m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
+    if (!m_collectionBusy && m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
         m_previewTimer->start();
-    emit collectionChanged();
     QString status = savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
     if (!savedPath.isEmpty() && message != "多曝光融合完成，图片已保存")
         status += "；" + message;
+    if (m_motionFault) {
+        status += "；未确认机器人停止，操作已锁定，请点击“重试停止”";
+        m_fivePointProgress = status;
+    }
+    emit collectionChanged();
     setStatus(status);
-    APP_LOG_EVENT_INFO("collection", "operation", "finished", {{"message", message}, {"image", savedPath}});
+    APP_LOG_EVENT_INFO("collection", "operation", m_motionFault ? "motion_locked" : "finished",
+        {{"message", status}, {"image", savedPath}});
+}
+
+void CollectionController::confirmMotionStopped() {
+    collection::confirmRobotStopped(m_robotHandle);
+    m_robotStopUnconfirmed = false;
+}
+
+void CollectionController::retryRobotStop() {
+    if (m_stopRetrying) return;
+    if (m_collectionThread.joinable()) m_collectionThread.join();
+    m_stopRetrying = true;
+    m_fivePointProgress = "正在重试停止并确认机器人状态…";
+    setStatus(m_fivePointProgress);
+    emit collectionChanged();
+    try {
+        m_collectionThread = std::thread([this] {
+            QString message;
+            try {
+                const auto result = cr_stop(m_robotHandle);
+                confirmMotionStopped();
+                message = result == sucess ? "已确认机器人停止，操作已解锁"
+                    : QString("停止指令返回错误码 %1，但已独立确认机器人停止，操作已解锁").arg(result);
+            } catch (const std::exception& error) {
+                message = QString::fromUtf8(error.what());
+            }
+            QMetaObject::invokeMethod(this, [this, message] {
+                m_fivePointProgress = message;
+                finishCollectionOperation(message);
+            }, Qt::QueuedConnection);
+        });
+    } catch (const std::exception& error) { finishCollectionOperation(QString::fromUtf8(error.what())); }
 }
 
 void CollectionController::cancelCollectionOperation() {
+    if (m_motionFault) { retryRobotStop(); return; }
     if (m_collectionBusy) {
         m_cancelRequested = true;
         if (!m_fivePointProgress.isEmpty()) {
@@ -239,6 +278,7 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                     setStatus(m_fivePointProgress);
                 }, Qt::QueuedConnection);
             };
+            if (fivePoints) m_robotStopUnconfirmed = true;
             try {
                 if (!fivePoints) {
                     const auto result = collection::captureAndSave(*camera, output, shutterTime,
@@ -286,6 +326,10 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                 message = fivePoints ? QString("五点采图停止 · 已保存 %1/5：%2；未继续移动")
                     .arg(saved).arg(QString::fromUtf8(error.what())) : QString::fromUtf8(error.what());
             } catch (...) { message = "采图发生未知异常，已终止后续操作"; }
+            if (fivePoints) {
+                try { confirmMotionStopped(); }
+                catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
+            }
             QMetaObject::invokeMethod(this, [this, message, path, fivePoints] {
                 if (fivePoints) m_fivePointProgress = message;
                 finishCollectionOperation(message, path);
@@ -461,6 +505,7 @@ void CollectionController::levelCamera() {
                 for (double joint : targetJoints)
                     if (!std::isfinite(joint)) throw std::runtime_error("调平逆解包含无效关节角");
                 if (m_cancelRequested) throw std::runtime_error("调平已取消");
+                m_robotStopUnconfirmed = true;
                 const auto result = moveToJointPos(handle, targetJoints);
                 if (result == robot_motion_cancelled) throw std::runtime_error("调平已取消");
                 if (result != sucess) throw std::runtime_error("机器人调平运动失败");
@@ -477,6 +522,10 @@ void CollectionController::levelCamera() {
                 message = "调平发生未知异常";
             }
             setRobotMotionCancelCheck(nullptr);
+            if (m_robotStopUnconfirmed) {
+                try { confirmMotionStopped(); }
+                catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
+            }
             QMetaObject::invokeMethod(this, [this, message]() {
                 finishCollectionOperation(message);
             }, Qt::QueuedConnection);

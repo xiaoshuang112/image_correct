@@ -89,7 +89,25 @@ bool flangeAtTarget(const FlangePose& actual, const FlangePose& target) {
     const cv::Mat b = calib_transform::axisAnglePoseToTransform(target.data());
     const cv::Mat rotation = a(cv::Rect(0, 0, 3, 3)).t() * b(cv::Rect(0, 0, 3, 3));
     const double angle = std::acos(std::clamp((cv::trace(rotation)[0] - 1) / 2, -1.0, 1.0)) * 180 / CV_PI;
-    return distanceSquared <= 0.2 * 0.2 && angle <= 0.2;
+    constexpr double positionToleranceMm = 0.05;
+    return distanceSquared <= positionToleranceMm * positionToleranceMm + 1e-12 && angle <= 0.2;
+}
+
+void confirmRobotStopped(RobotHandle handle) {
+    const auto started = std::chrono::steady_clock::now();
+    int stable = 0;
+    do {
+        RobotModes mode{};
+        BOOL moving = TRUE;
+        check(cr_get_robotMode(handle, &mode), "无法确认机器人停止状态");
+        check(cr_get_robotMoveStatus(handle, &moving), "无法确认机器人运动状态");
+        const bool stoppedMode = mode == Enable || mode == ProgramStop || mode == ProtectiveStop ||
+            mode == Imdstop || mode == JointIdle || mode == JointPowerOff;
+        stable = !moving && stoppedMode ? stable + 1 : 0;
+        if (stable >= 3) return;
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    } while (std::chrono::steady_clock::now() - started < std::chrono::seconds(2));
+    throw std::runtime_error("尚未确认机器人已停止");
 }
 
 void checkFivePointReachability(RobotHandle handle, const FivePointTargets& targets) {
@@ -146,7 +164,8 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
     checkFinite(target);
     double distance = 0;
     for (int axis = 0; axis < 3; ++axis) distance += std::pow(target[axis] - initial[axis], 2);
-    if (std::sqrt(distance) > maximumFivePointOffsetMm + 0.2)
+    distance = std::sqrt(distance);
+    if (distance > maximumFivePointOffsetMm + 0.2)
         throw std::runtime_error("单段直线运动超过 50 mm，未下发运动");
     auto positionOnly = initial;
     std::copy(target.begin(), target.begin() + 3, positionOnly.begin());

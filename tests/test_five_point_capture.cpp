@@ -155,6 +155,20 @@ int main() {
         robot.reset(); robot.neverReach = true;
         rejects([&] { collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 25}); });
         require(robot.stops == 1, "reported idle without reaching target passed or timed out without stop");
+        for (int point = 1; point < 5; ++point) {
+            robot.reset(); robot.neverReach = true;
+            const auto tiny = collection::fivePointTargets(origin, 0.1, 0.1);
+            rejects([&] { collection::moveFlangeLinear(1, tiny[point], robot.cancelled, {0, 200}); });
+            require(robot.stops == 1 && robot.actual == origin, "0.1 mm move succeeded while still at origin");
+            robot.reset();
+            collection::moveFlangeLinear(1, tiny[point], robot.cancelled, {0, 300});
+            require(collection::flangeAtTarget(robot.actual, tiny[point]), "valid 0.1 mm move rejected");
+        }
+        auto tinyActual = origin; tinyActual[0] += 0.049;
+        auto tinyTarget = origin; tinyTarget[0] += 0.1;
+        require(!collection::flangeAtTarget(tinyActual, tinyTarget), "small-offset capture gate is too loose");
+        tinyActual[0] = tinyTarget[0] - 0.05;
+        require(collection::flangeAtTarget(tinyActual, tinyTarget), "0.05 mm tolerance boundary rejected");
         robot.reset(); robot.lineCode = static_cast<CRresult>(1);
         rejects([&] { collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 25}); });
         require(robot.stops == 1, "uncertain command failure did not request stop");

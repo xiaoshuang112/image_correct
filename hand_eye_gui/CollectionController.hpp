@@ -44,6 +44,7 @@ class CollectionController : public QObject
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
+    Q_PROPERTY(bool motionFault READ motionFault NOTIFY collectionChanged)
     Q_PROPERTY(QString outputDirectory READ outputDirectory CONSTANT)
     Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
@@ -63,6 +64,7 @@ public:
     /// 必须在 QML 引擎初始化后调用：设置 imageProvider 并完成路径初始化
     void init(CameraImageProvider* provider);
     bool collectionBusy() const { return m_collectionBusy; }
+    bool motionFault() const { return m_motionFault; }
     QString outputDirectory() const { return m_outputDirectory; }
     QString exposureList() const { return m_exposureList; }
     QString lastCapturePath() const { return m_lastCapturePath; }
@@ -145,6 +147,7 @@ signals:
     void tcpToolsChanged();
 
 private:
+    friend struct CollectionControllerTestAccess;
     void initializeCollection();
     void loadCollectionUndistortion();
     void persistCollectionString(const std::string& key, const QString& value);
@@ -152,6 +155,8 @@ private:
     void beginCollectionOperation();
     void startCapture(bool fivePoints, double xMm = 0, double yMm = 0);
     void recordCapture(const QString& path);
+    void confirmMotionStopped();
+    void retryRobotStop();
     void finishCollectionOperation(const QString& message, const QString& savedPath = {});
     // ---- 初始化 ----
     void setupPaths();
@@ -224,6 +229,9 @@ private:
     std::string m_appPath;
     std::string m_paramPath;
     bool m_collectionBusy = false;
+    bool m_motionFault = false;
+    bool m_stopRetrying = false;
+    std::atomic<bool> m_robotStopUnconfirmed{false};
     bool m_collectionWasPreviewing = false;
     QString m_outputDirectory;
     QString m_exposureList = "5000,8500,14500,25000";

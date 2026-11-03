@@ -92,6 +92,7 @@ SharedCollectionState {
     property var tcpNames: []
     property string selectedTcp: ""
     property string fivePointProgress: ""
+    property bool motionFault: false
     property int fivePointCalls: 0
     property real lastFivePointX: 0
     property real lastFivePointY: 0
@@ -139,7 +140,7 @@ SharedCollectionState {
         collectionBusy = true
         fivePointProgress = "第 1/5 点 · 基准位 · 正在采集及保存"
     }
-    function cancelCollectionOperation() { collectionBusy = false }
+    function cancelCollectionOperation() { if (!motionFault) collectionBusy = false }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
 }
 )QML", QUrl());
@@ -415,6 +416,15 @@ SharedCollectionState {
                 item("fivePointProgress")->property("text").toString().contains("1/5"), "automatic progress not visible");
         click(item("stopButton"));
         require(fivePoint->isEnabled(), "automatic stop left controls locked");
+        controller->setProperty("motionFault", true);
+        controller->setProperty("collectionBusy", true);
+        require(item("stopButton")->property("text").toString() == "重试停止" &&
+                !open->isEnabled() && !item("connectRobotButton")->isEnabled() && !fivePoint->isEnabled(),
+                "motion fault did not keep conflicting controls locked");
+        require(!window->close() && window->isVisible() && controller->property("collectionBusy").toBool(),
+                "window closed while robot stop was unconfirmed");
+        controller->setProperty("motionFault", false);
+        controller->setProperty("collectionBusy", false);
         controller->setProperty("fivePointProgress", "");
         window->resize(1024, 740);
         QTest::qWait(50);

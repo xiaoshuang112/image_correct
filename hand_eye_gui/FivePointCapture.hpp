@@ -21,6 +21,7 @@ void runFivePointCapture(const FivePointTargets& targets,
 FlangePose readStationaryFlange(RobotHandle handle);
 bool flangeAtTarget(const FlangePose& actual, const FlangePose& target);
 void checkFivePointReachability(RobotHandle handle, const FivePointTargets& targets);
+void confirmRobotStopped(RobotHandle handle);
 
 struct LineMotionWait {
     int settlingMs = 1200;
