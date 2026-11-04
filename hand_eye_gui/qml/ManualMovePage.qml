@@ -64,6 +64,7 @@ Item {
                         ColumnLayout {
                             id: liveContent; width: parent.width; height: implicitHeight; onImplicitHeightChanged: measure.restart(); spacing: 24
                             HmiText { text: "移动前确认"; color: Theme.ink; font.pixelSize: Theme.appTitle }
+                            HmiText { objectName: "manualSpeedLabel"; Layout.fillWidth: true; text: "移动速度：" + page.controller.robotSpeedMmS + " mm/s"; font.family: Theme.mono }
                             LivePose { Layout.fillWidth: true; controller: page.controller }
                             HmiText { Layout.fillWidth: true; text: "确认所选 TCP、基坐标系和路径周围空间。点击底部「移动到目标」才会下发运动。"; font.pixelSize: Theme.body }
                             HmiText { Layout.fillWidth: true; text: "移动中锁定坐标编辑、工具切换与返回。停止未确认时保持锁定，可重试停止。"; font.pixelSize: Theme.meta }

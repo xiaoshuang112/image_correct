@@ -221,6 +221,14 @@ int test_config_resolver() {
     };
     const std::vector<int> defaultExposures{5000, 8500, 14500, 25000};
     auto collect = collection("cam_ip: \"192.168.66.253\"\n");
+    TEST_CHECK(collect.robot_speed_mm_s == 10, "old_config_retains_default_motion_speed");
+    for (int speed : {1, 1000})
+        TEST_CHECK(collection("robot_speed_mm_s: " + std::to_string(speed) + "\n").robot_speed_mm_s == speed,
+                   "configured_motion_speed_loaded");
+    for (const std::string& invalid : {"0", "-1", "1001", "1.5", ".Nan", ".Inf", "\"20\"", "[]"}) {
+        const auto result = collection("robot_speed_mm_s: " + invalid + "\n");
+        TEST_CHECK(result.robot_speed_mm_s == 10 && !result.warnings.empty(), "invalid_motion_speed_falls_back_with_diagnostic");
+    }
     TEST_CHECK(collect.robot_ip == "192.168.66.14" && collect.fusion_exposures_us == defaultExposures,
                "collection_missing_fields_use_defaults");
     collect = collection("robot_ip: \"192.168.66.25\"\nfusion_exposures_us: [4000, 8000, 12000, 16000, 20000]\n");

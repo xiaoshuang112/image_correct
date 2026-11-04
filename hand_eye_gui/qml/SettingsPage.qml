@@ -10,6 +10,7 @@ Item {
     property int tab: 0
     property string cameraIp: ""
     property string robotIp: ""
+    property string robotSpeed: ""
     property string previewWidth: ""
     property string previewHeight: ""
     property string previewExposure: ""
@@ -24,7 +25,7 @@ Item {
             var value = exposureSlots.get(i).value.trim()
             if (value !== "") exposures.push(value)
         }
-        return {cameraIp: cameraIp, robotIp: robotIp, previewWidth: previewWidth,
+        return {cameraIp: cameraIp, robotIp: robotIp, robotSpeedMmS: robotSpeed, previewWidth: previewWidth,
             previewHeight: previewHeight, cameraExposureUs: previewExposure, exposureList: exposures.join(",")}
     }
     readonly property int dirtyCount: {
@@ -48,6 +49,7 @@ Item {
     function reload() {
         loaded = false
         cameraIp = controller.cameraIp; robotIp = controller.robotIp
+        robotSpeed = String(controller.robotSpeedMmS)
         previewWidth = String(controller.previewWidth); previewHeight = String(controller.previewHeight)
         previewExposure = String(controller.cameraExposureUs)
         var values = controller.exposureList.split(/[,，;\s]+/).filter(function(v) { return v !== "" })
@@ -171,6 +173,14 @@ Item {
                                 HmiText { text: "机器人 IP" }
                                 CollectField { objectName: "robotIpInput"; Layout.fillWidth: true; text: page.robotIp; enabled: !page.locked && !page.controller.robotConnected; onTextChanged: page.robotIp = text }
                                 HmiText { visible: page.controller.robotConnected; Layout.fillWidth: true; text: "机器人已连接，断开后可编辑 IP"; font.pixelSize: Theme.meta }
+                                HmiText { text: "移动速度 · mm/s"; Layout.topMargin: 8 }
+                                CollectField {
+                                    objectName: "robotSpeedInput"; Layout.fillWidth: true
+                                    text: page.robotSpeed; enabled: !page.locked
+                                    validator: IntValidator { bottom: 1; top: 1000 }
+                                    onTextChanged: page.robotSpeed = text
+                                }
+                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s。用于手动 TCP 移动与五点采图，保存后对下一次移动生效。"; font.pixelSize: Theme.meta }
                                 HmiText { Layout.fillWidth: true; text: "TCP 工具列表与实时位姿在主页面查看。移动前请确认所选工具和目标坐标。"; font.pixelSize: Theme.meta }
                             }
                             ColumnLayout {

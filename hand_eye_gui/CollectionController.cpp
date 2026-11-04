@@ -185,6 +185,7 @@ void CollectionController::loadConfigYaml()
     fs.release();
 
     m_robotIp = QString::fromStdString(collectionConfig.robot_ip);
+    m_robotSpeedMmS = collectionConfig.robot_speed_mm_s;
     QStringList exposureValues;
     for (int exposure : collectionConfig.fusion_exposures_us) exposureValues << QString::number(exposure);
     m_exposureList = exposureValues.join(",");
@@ -218,6 +219,7 @@ void CollectionController::loadConfigYaml()
                         {"resolution_h", QString::number(m_previewHeight)},
                         {"camera_exposure_us", QString::number(m_cameraExposureUs)},
                         {"robot_ip", m_robotIp},
+                        {"robot_speed_mm_s", QString::number(m_robotSpeedMmS)},
                         {"fusion_exposures_us", m_exposureList},
                         {"camera_gain", QString::number(m_cameraGain)},
                         {"resolved", sources.join(", ")}});

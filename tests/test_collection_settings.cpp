@@ -41,6 +41,7 @@ struct CollectionSettingsTestAccess {
         c.m_camera = camera; c.m_cameraOpened = bool(camera);
     }
     static void busy(CollectionController& c, bool value) { c.m_collectionBusy = value; }
+    static void reload(CollectionController& c) { c.loadConfigYaml(); }
 };
 
 void testCollectionSettings() {
@@ -52,6 +53,11 @@ void testCollectionSettings() {
     writeFile(path, original);
     CollectionController controller;
     CollectionSettingsTestAccess::initialize(controller, temporary.path());
+    check(controller.robotSpeedMmS() == 10, "default movement speed changed");
+    for (const char* invalid : {"0", "-1", "1001", "1.5", "nan", "inf", ""}) {
+        check(!controller.applySettings({{"robotSpeedMmS", invalid}}).isEmpty() && readFile(path) == original
+              && controller.robotSpeedMmS() == 10, "invalid speed changed config or controller");
+    }
     check(!controller.applySettings({{"cameraIp", "10.0.0.40"}, {"exposureList", "5,5"}}).isEmpty()
           && readFile(path) == original && controller.cameraIp() == "192.168.66.253",
           "invalid exposure must reject entire settings page");
@@ -69,9 +75,19 @@ void testCollectionSettings() {
     check(!controller.applySettings({{"cameraIp", "10.0.0.41"}}).isEmpty()
           && readFile(path) == connectedBefore, "connected camera IP locked");
     CollectionSettingsTestAccess::busy(controller, true);
+    check(!controller.applySettings({{"robotSpeedMmS", 500}}).isEmpty() && controller.robotSpeedMmS() == 10,
+          "busy controller accepted speed change");
     check(!controller.applySettings({{"cameraExposureUs", 20000}}).isEmpty() && camera->exposure == 12000,
           "busy prevents hardware/settings update");
     CollectionSettingsTestAccess::busy(controller, false);
+    for (int speed : {1, 1000}) {
+        check(controller.applySettings({{"robotSpeedMmS", speed}}).isEmpty() && controller.robotSpeedMmS() == speed,
+              "valid speed not applied");
+        CollectionController reloaded;
+        CollectionSettingsTestAccess::initialize(reloaded, temporary.path());
+        CollectionSettingsTestAccess::reload(reloaded);
+        check(reloaded.robotSpeedMmS() == speed, "saved speed lost on restart");
+    }
     check(!controller.applySettings({{"cameraExposureUs", 51000}}).isEmpty() && camera->exposure == 12000,
           "hardware range checked before apply");
     check(controller.applySettings({{"cameraExposureUs", 20003}}).isEmpty()
@@ -83,9 +99,9 @@ void testCollectionSettings() {
           && camera->exposure == 20000 && camera->automatic, "device failure restores exposure and auto mode");
     QByteArray duplicate = readFile(path) + "robot_ip: \"10.0.0.99\"\n";
     writeFile(path, duplicate);
-    check(!controller.applySettings({{"robotIp", "10.0.0.50"}, {"cameraExposureUs", 30000}}).isEmpty()
+    check(!controller.applySettings({{"robotIp", "10.0.0.50"}, {"cameraExposureUs", 30000}, {"robotSpeedMmS", 50}}).isEmpty()
           && readFile(path) == duplicate && controller.robotIp() == "192.168.66.14"
-          && controller.cameraExposureUs() == 20000 && camera->exposure == 20000 && camera->automatic,
+          && controller.cameraExposureUs() == 20000 && camera->exposure == 20000 && camera->automatic && controller.robotSpeedMmS() == 1000,
           "write failure restores camera and leaves all settings unchanged");
     camera->invalidReadback = true;
     check(!controller.applySettings({{"cameraExposureUs", 30000}}).isEmpty()

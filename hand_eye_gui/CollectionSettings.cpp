@@ -39,11 +39,13 @@ QString CollectionController::applySettings(const QVariantMap& values) {
     };
     const QString cameraIp = text("cameraIp", m_cameraIp);
     const QString robotIp = text("robotIp", m_robotIp);
+    const int robotSpeed = integer("robotSpeedMmS", m_robotSpeedMmS, collection::maximumRobotSpeedMmS);
     const int width = integer("previewWidth", m_previewWidth, 32768);
     const int height = integer("previewHeight", m_previewHeight, 32768);
     const int requestedExposure = integer("cameraExposureUs", m_cameraExposureUs, 10000000);
     if (!validIp(cameraIp)) return fail("相机 IP 格式无效，请输入完整 IPv4 地址");
     if (!validIp(robotIp)) return fail("机器人 IP 格式无效，请输入完整 IPv4 地址");
+    if (!collection::validRobotSpeed(robotSpeed)) return fail("移动速度须为 1～1000 mm/s 范围内的整数");
     if (width < 0 || height < 0) return fail("采集宽、高须为 1～32768 范围内的整数");
     if (requestedExposure < 0) return fail("预览曝光须为 1～10000000 μs 范围内的整数");
     std::vector<int> exposures;
@@ -63,6 +65,7 @@ QString CollectionController::applySettings(const QVariantMap& values) {
     config_resolver::ConfigUpdates updates;
     if (cameraIp != m_cameraIp) updates["cam_ip"] = cameraIp.toStdString();
     if (robotIp != m_robotIp) updates["robot_ip"] = robotIp.toStdString();
+    if (robotSpeed != m_robotSpeedMmS) updates["robot_speed_mm_s"] = robotSpeed;
     if (width != m_previewWidth) updates["cam_width"] = width;
     if (height != m_previewHeight) updates["cam_height"] = height;
     if (exposureList != m_exposureList) updates["fusion_exposures_us"] = exposures;
@@ -113,6 +116,7 @@ QString CollectionController::applySettings(const QVariantMap& values) {
 
     if (m_cameraIp != cameraIp) { m_cameraIp = cameraIp; emit cameraIpChanged(); }
     if (m_robotIp != robotIp) { m_robotIp = robotIp; emit robotIpChanged(); }
+    if (m_robotSpeedMmS != robotSpeed) { m_robotSpeedMmS = robotSpeed; emit collectionChanged(); }
     if (m_previewWidth != width) { m_previewWidth = width; emit previewWidthChanged(); }
     if (m_previewHeight != height) { m_previewHeight = height; emit previewHeightChanged(); }
     if (m_cameraExposureUs != actualExposure) {

@@ -162,8 +162,9 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
 }
 
 void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick) {
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
     checkCancelled(cancelled);
+    if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     const auto initial = readStationaryFlange(handle);
     checkFinite(target);
     double distance = 0;
@@ -185,12 +186,12 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
     command.pointTransType = pointTransStop;
     command.poseTranType = poseTranMoveToTargetPose;
     command.motiontriggerMode = MovetriggerbyOnlyRpc;
-    std::fill_n(command.speed, ROB_AXIS_NUM, 10.0); // mm/s
+    std::fill_n(command.speed, ROB_AXIS_NUM, speedMmS); // mm/s
     std::fill_n(command.acc, ROB_AXIS_NUM, 20.0);   // mm/s²
     checkCancelled(cancelled);
     APP_LOG_EVENT_INFO("robot.motion", "five_point_line", "start",
         {{"x", QString::number(target[0], 'f', 3)}, {"y", QString::number(target[1], 'f', 3)},
-         {"z", QString::number(target[2], 'f', 3)}, {"speed_mm_s", "10"}});
+         {"z", QString::number(target[2], 'f', 3)}, {"speed_mm_s", QString::number(speedMmS)}});
     try {
         check(cr_move_line(handle, command, FALSE), "直线运动指令失败");
         waitForStableFlange(handle, target, cancelled, wait, tick);

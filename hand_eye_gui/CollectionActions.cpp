@@ -225,6 +225,7 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
         return;
     }
     const auto camera = m_camera;
+    const int speed = m_robotSpeedMmS;
     const auto undistortion = m_undistortionMaps;
     const auto handle = m_robotHandle;
     const auto session = robotSession();
@@ -238,7 +239,7 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                         : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
         m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
-                                         output, exposures, fivePoints, xMm, yMm, session, sampleTcp] {
+                                         output, exposures, fivePoints, xMm, yMm, session, sampleTcp, speed] {
             std::unique_lock<std::mutex> robotLock;
             if (session) robotLock = session->acquire(m_cancelRequested);
             if (session && !robotLock.owns_lock()) {
@@ -278,7 +279,11 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                         [&](const collection::FlangePose& target, int point) {
                             progress(point == 0 ? QString("已保存 %1/5 · 返回基准位").arg(saved)
                                 : QString("第 %1/5 点 · %2 · 移动及稳定等待").arg(point + 1).arg(names[point]));
-                            collection::moveFlangeLinear(handle, target, m_cancelRequested, {}, sampleTcp);
+                            // Allow the longest 50 mm leg at the selected speed, plus settling and a margin.
+                            collection::LineMotionWait wait;
+                            wait.timeoutMs = std::max(wait.timeoutMs, wait.settlingMs + 5000 +
+                                static_cast<int>(std::ceil(collection::maximumFivePointOffsetMm * 1000 / speed)));
+                            collection::moveFlangeLinear(handle, target, m_cancelRequested, wait, sampleTcp, speed);
                         },
                         [&](int point) {
                             if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point]))

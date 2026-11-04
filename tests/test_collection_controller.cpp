@@ -30,6 +30,7 @@ struct Robot {
     std::array<double, 6> pose{100, 200, 300, 180, 0, 0};
     std::atomic<bool> moving{false}, stopWorks{false}, statusFails{false};
     std::atomic<int> lines{0}, stops{0}, destroys{0}, unexpected{0};
+    std::atomic<double> lastSpeed{0};
     std::atomic<int> readDelayMs{0}, activeReads{0}, toolReads{0}, destroyDuringRead{0};
     std::atomic<bool> invalidPose{false}, poseReadFails{false};
     bool createWorks = false, powerFails = false;
@@ -41,6 +42,7 @@ struct Robot {
         pose = {100, 200, 300, 180, 0, 0};
         moving = stopWorks = statusFails = false;
         lines = stops = destroys = unexpected = 0;
+        lastSpeed = 0;
         destroyCode = sucess;
         stopCode = sdkError; failLine = true;
         readDelayMs = activeReads = toolReads = destroyDuringRead = 0;
@@ -110,6 +112,7 @@ struct CollectionControllerTestAccess {
         controller.m_cameraOpened = controller.m_previewActive = controller.m_robotConnected = true;
         controller.m_previewFrameCount = 1;
         controller.m_robotHandle = 42;
+        controller.m_robotSpeedMmS = 37;
         controller.m_outputDirectory = output;
         controller.m_exposureList = "5000,8500";
     }
@@ -154,6 +157,7 @@ extern "C" CRresult cr_kineInverse(RobotHandle, double*, double*, double* joints
     std::fill_n(joints, ROB_AXIS_NUM, 0); return sucess;
 }
 extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL) {
+    robot.lastSpeed = command.speed[0];
     ++robot.lines;
     if (robot.failLine) { robot.moving = true; return sdkError; }
     std::copy_n(command.pose, ROB_AXIS_NUM, robot.pose.begin());
@@ -267,6 +271,7 @@ int main(int argc, char** argv) {
             waitFor([&] { return !controller.collectionBusy(); }, 18000);
             require(!controller.motionFault() && controller.savedImageCount() == 5 && robot.lines == 8 &&
                     robot.pose == std::array<double, 6>{100,200,300,180,0,0}, "normal small-offset batch did not finish and unlock");
+            require(robot.lastSpeed == controller.robotSpeedMmS(), "five-point controller did not pass configured speed");
         }
         waitFor([&] { return robot.destroys == 1; });
         require(robot.destroys == 1 && robot.unexpected == 0, "normal cleanup failed or real SDK path was reached");
@@ -366,6 +371,7 @@ int main(int argc, char** argv) {
             controller.setSelectedTcp("ToolA");
             controller.moveTcpTo("120,200,300,180,0,0");
             waitFor([&] { return robot.lines > 0; });
+            require(robot.lastSpeed == controller.robotSpeedMmS(), "manual controller did not pass configured speed");
             controller.cancelCollectionOperation();
             waitFor([&] { return !controller.collectionBusy(); });
             require(!controller.motionFault() && robot.stops > 0, "manual cancellation did not stop and verify stationary");

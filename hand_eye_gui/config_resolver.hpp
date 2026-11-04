@@ -2,6 +2,7 @@
 #define CONFIG_RESOLVER_HPP
 
 #include "cameras/CameraConfig.hpp"
+#include "RobotMotionLimits.hpp"
 #include <opencv2/core/persistence.hpp>
 
 #include <string>
@@ -35,6 +36,7 @@ ResolvedCameraConfig resolveCameraConfig(const cv::FileStorage& fs,
 
 struct CollectionConfig {
     std::string robot_ip = "192.168.66.14";
+    int robot_speed_mm_s = collection::defaultRobotSpeedMmS;
     std::vector<int> fusion_exposures_us{5000, 8500, 14500, 25000};
     std::vector<std::string> warnings;
 };

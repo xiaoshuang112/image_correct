@@ -270,6 +270,7 @@ void CollectionController::moveTcpTo(const QString& text) {
     }
     const auto session = robotSession();
     const auto tool = m_selectedTcp;
+    const int speed = m_robotSpeedMmS;
     beginCollectionOperation();
     const auto sample = tcpSamplingCallback(session);
     m_manualMoveActive = true;
@@ -277,7 +278,7 @@ void CollectionController::moveTcpTo(const QString& text) {
     emit collectionChanged();
     setStatus(m_manualMoveProgress);
     try {
-        m_collectionThread = std::thread([this, session, tool, target, sample] {
+        m_collectionThread = std::thread([this, session, tool, target, sample, speed] {
             auto lock = session->acquire(m_cancelRequested);
             if (!lock.owns_lock()) {
                 QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("TCP 移动已取消"); }, Qt::QueuedConnection);
@@ -290,7 +291,7 @@ void CollectionController::moveTcpTo(const QString& text) {
                 // prove stationary before editing or teardown becomes available.
                 m_robotStopUnconfirmed = true;
                 try {
-                    collection::moveSelectedTcpLinear(session->handle, tool, target, m_cancelRequested, {1200, 180000}, sample);
+                    collection::moveSelectedTcpLinear(session->handle, tool, target, m_cancelRequested, {1200, 180000}, sample, speed);
                     message = "TCP 已到达目标，稳定等待完成";
                 } catch (const std::exception& error) { message = QString::fromUtf8(error.what()); }
                 catch (...) { message = "TCP 移动发生未知异常"; }

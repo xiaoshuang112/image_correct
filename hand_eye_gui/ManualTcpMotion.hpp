@@ -14,6 +14,7 @@ FlangePose tcpTargetToFlange(const FlangePose& target, const FlangePose& toolOff
 // and stationary status. Any exception after dispatch requests stop and rethrows;
 // the owner must independently confirmRobotStopped before unlocking operations.
 void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait = {1200, 180000}, MotionTick tick = {});
+    const std::atomic<bool>& cancelled, LineMotionWait wait = {1200, 180000}, MotionTick tick = {},
+    double speedMmS = defaultRobotSpeedMmS);
 
 } // namespace collection

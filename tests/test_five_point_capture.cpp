@@ -19,6 +19,7 @@ using collection::FlangePose;
 struct Robot {
     FlangePose actual{100, 200, 300, 180, 0, 0};
     PointControlPara command{};
+    double expectedSpeed = 10;
     CRresult modeCode = sucess, poseCode = sucess, lineCode = sucess, stopCode = sucess;
     bool issued = false, neverReach = false, badInverse = false, badJoint = false, protective = false;
     bool lostPoseDuringMove = false, invalidPoseDuringMove = false, faultDuringMove = false;
@@ -27,6 +28,7 @@ struct Robot {
     std::atomic<bool> cancelled{false};
     void reset() {
         actual = {100, 200, 300, 180, 0, 0}; command = {};
+        expectedSpeed = 10;
         modeCode = poseCode = lineCode = stopCode = sucess;
         issued = neverReach = badInverse = badJoint = protective = false;
         lostPoseDuringMove = invalidPoseDuringMove = faultDuringMove = false; inverseCode = sucess;
@@ -72,7 +74,7 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
     require(command.pointTransType == pointTransStop && command.pointTransRadius == 0, "motion blends past target");
     for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
         require(command.tcpOffset[axis] == 0 && command.coordinatePose[axis] == 0, "tool/frame offset changed");
-        require(command.speed[axis] == 10 && command.acc[axis] == 20, "motion limits changed");
+        require(command.speed[axis] == robot.expectedSpeed && command.acc[axis] == 20, "motion limits changed");
         require(std::isfinite(command.jointpos[axis]), "invalid joint reference sent");
     }
     robot.command = command; robot.issued = true; ++robot.sends;
@@ -149,6 +151,17 @@ int main() {
         require(robot.sends == 1 && robot.stops == 0 && robot.actual == targets[1] && robot.polls >= 3,
                 "movement did not confirm stopped actual pose");
         robot.reset(); int telemetry = 0;
+        for (double speed : {1.0, 1000.0}) {
+            robot.reset(); robot.expectedSpeed = speed;
+            collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300}, {}, speed);
+            require(robot.sends == 1 && robot.command.speed[0] == speed, "five-point speed not sent to SDK");
+        }
+        for (double bad : {0.0, -1.0, 1001.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+            robot.reset();
+            rejects([&] { collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300}, {}, bad); });
+            require(robot.sends == 0, "invalid five-point speed dispatched motion");
+        }
+        robot.reset();
         collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300}, [&] { ++telemetry; });
         require(telemetry >= 3, "worker telemetry callback was not sampled throughout motion");
         robot.reset();

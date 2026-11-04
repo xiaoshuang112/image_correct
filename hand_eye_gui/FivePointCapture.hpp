@@ -1,6 +1,7 @@
 #pragma once
 
 #include "robotapi.h"
+#include "RobotMotionLimits.hpp"
 #include <array>
 #include <atomic>
 #include <functional>
@@ -33,6 +34,7 @@ using MotionTick = std::function<void()>;
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
     const std::atomic<bool>& cancelled, LineMotionWait wait = {}, MotionTick tick = {});
 void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait = {}, MotionTick tick = {});
+    const std::atomic<bool>& cancelled, LineMotionWait wait = {}, MotionTick tick = {},
+    double speedMmS = defaultRobotSpeedMmS);
 
 } // namespace collection

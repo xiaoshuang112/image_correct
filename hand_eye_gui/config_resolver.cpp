@@ -198,6 +198,12 @@ CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
         if (robot.isString() && !robot.string().empty()) out.robot_ip = robot.string();
         else out.warnings.push_back("robot_ip 无效，使用默认值");
     }
+    const auto speed = fs["robot_speed_mm_s"];
+    if (!speed.empty()) {
+        if (speed.isInt() && collection::validRobotSpeed(static_cast<int>(speed)))
+            out.robot_speed_mm_s = static_cast<int>(speed);
+        else out.warnings.push_back("robot_speed_mm_s 应为 1～1000 mm/s 的整数，使用默认速度");
+    }
     const auto exposures = fs["fusion_exposures_us"];
     if (!exposures.empty()) {
         std::vector<int> values;

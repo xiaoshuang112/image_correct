@@ -17,6 +17,7 @@
 #include <memory>
 
 #include "cameras/AICamera.hpp"
+#include "RobotMotionLimits.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
 
@@ -30,6 +31,7 @@ class CollectionController : public QObject
 
     // ---- QML 可绑定属性 ----
     Q_PROPERTY(QString robotIp        READ robotIp         NOTIFY robotIpChanged)
+    Q_PROPERTY(int robotSpeedMmS READ robotSpeedMmS NOTIFY collectionChanged)
     Q_PROPERTY(QString cameraIp       READ cameraIp        NOTIFY cameraIpChanged)
     Q_PROPERTY(int     previewWidth   READ previewWidth    NOTIFY previewWidthChanged)
     Q_PROPERTY(int     previewHeight  READ previewHeight   NOTIFY previewHeightChanged)
@@ -111,6 +113,7 @@ public:
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }
+    int robotSpeedMmS() const { return m_robotSpeedMmS; }
     QString cameraIp() const        { return m_cameraIp; }
     int     previewWidth() const    { return m_previewWidth; }
     int     previewHeight() const   { return m_previewHeight; }
@@ -265,6 +268,7 @@ private:
     bool m_manualMoveActive = false;
     QString m_manualMoveProgress;
     bool     m_cameraOpened   = false;
+    int m_robotSpeedMmS = collection::defaultRobotSpeedMmS;
     bool     m_previewActive  = false;
     bool     m_previewVisible = true;
     QString  m_statusMessage  = "就绪";

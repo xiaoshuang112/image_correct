@@ -25,6 +25,7 @@ struct Robot {
     FlangePose offset{0, 0, 100, 0, 0, 0};
     FlangePose ikPose{}, ikJoints{};
     PointControlPara command{};
+    double expectedSpeed = 10;
     std::atomic<bool> cancelled{false};
     bool issued = false, neverReach = false, alwaysMoving = false, fault = false;
     bool badPose = false, badJoint = false, badInverse = false, badLimit = false;
@@ -35,6 +36,7 @@ struct Robot {
     void reset() {
         actual = {100, 200, 300, 0, 0, 0}; offset = {0, 0, 100, 0, 0, 0};
         ikPose = {}; ikJoints = {}; command = {}; cancelled = false;
+        expectedSpeed = 10;
         issued = neverReach = alwaysMoving = fault = false;
         badPose = badJoint = badInverse = badLimit = false;
         wrongIdentity = changeBeforeSend = changeDuringMove = false; limit = 360;
@@ -111,7 +113,7 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
             command.pointTransRadius == 0 && command.motiontriggerMode == MovetriggerbyOnlyRpc,
             "invalid frame, blending, or deferred trigger");
     for (int axis = 0; axis < ROB_AXIS_NUM; ++axis)
-        require(command.speed[axis] == 10 && command.acc[axis] == 20 && command.coordinatePose[axis] == 0,
+        require(command.speed[axis] == robot.expectedSpeed && command.acc[axis] == 20 && command.coordinatePose[axis] == 0,
                 "manual linear speed/frame changed");
     robot.command = command; robot.issued = true; ++robot.sends;
     return robot.lineCode;
@@ -142,6 +144,16 @@ int main(int argc, char** argv) {
         robot.reset(); robot.offset[2] = 250;
         move();
         require(robot.command.tcpOffset[2] == 250, "cached tool offset sent to motion");
+        for (double speed : {1.0, 1000.0}) {
+            robot.reset(); robot.expectedSpeed = speed;
+            collection::moveSelectedTcpLinear(1, "selected-probe", target, robot.cancelled, {0, 300}, {}, speed);
+            require(robot.sends == 1 && robot.command.speed[0] == speed, "manual speed not sent to SDK");
+        }
+        for (double bad : {0.0, -1.0, 1001.0, std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+            robot.reset();
+            rejects([&] { collection::moveSelectedTcpLinear(1, "selected-probe", target, robot.cancelled, {0, 300}, {}, bad); });
+            require(robot.sends == 0, "invalid manual speed dispatched motion");
+        }
         for (int scenario = 0; scenario < 12; ++scenario) {
             robot.reset();
             switch (scenario) {

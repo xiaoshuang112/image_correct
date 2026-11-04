@@ -105,6 +105,7 @@ SharedCollectionState {
     property string currentTcp: "探针A"
     property bool tcpListFailure: false
     property string robotIp: "192.168.66.14"
+    property int robotSpeedMmS: 10
     property string statusMessage: "界面检查"
     signal frameUpdated()
     function openCamera() { cameraOpened = true }
@@ -162,7 +163,10 @@ SharedCollectionState {
     function applySettings(values) {
         settingsCalls++
         if (settingsFailure) return settingsFailure
+        if (!/^\d+$/.test(String(values.robotSpeedMmS)) || Number(values.robotSpeedMmS) < 1 || Number(values.robotSpeedMmS) > 1000)
+            return "移动速度须为 1～1000 mm/s 范围内的整数"
         cameraIp = values.cameraIp; robotIp = values.robotIp
+        robotSpeedMmS = Number(values.robotSpeedMmS)
         previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
         cameraExposureUs = Number(values.cameraExposureUs); exposureList = values.exposureList
         return ""
@@ -303,6 +307,12 @@ SharedCollectionState {
         require(QMetaObject::invokeMethod(item("settingsPage"), "reload"), "settings reload failed");
         require(item("exposureInput") == exposureField, "settings reload recreated exposure controls");
         auto* settingsPage = item("settingsPage");
+        require(text("robotSpeedInput") == "10", "speed input did not show current speed");
+        setText("robotSpeedInput", "1000");
+        require(controller->property("robotSpeedMmS").toInt() == 10 && settingsPage->property("dirty").toBool(), "draft speed applied before save");
+        controller->setProperty("collectionBusy", true); QTest::qWait(10);
+        require(!item("robotSpeedInput")->isEnabled(), "motion did not lock speed input");
+        controller->setProperty("collectionBusy", false);
         require(!item("cameraIpInput")->isEnabled() && !item("robotIpInput")->isEnabled(), "connected device IP remains editable");
         click(item("settingsTab1"));
         setText("previewExposureInput", "15000");
@@ -323,6 +333,7 @@ SharedCollectionState {
         setText("exposureInput5", "");
         click(item("saveSettingsButton"));
         require(!settingsPage->property("dirty").toBool() && controller->property("exposureList").toString() == "25000,5000,8500", "settings save sorted exposures or retained dirty draft");
+        require(controller->property("robotSpeedMmS").toInt() == 1000 && text("robotSpeedInput") == "1000", "saved speed not reflected in input");
         setText("exposureInput2", "25000");
         const int savedCalls = controller->property("settingsCalls").toInt();
         click(item("saveSettingsButton"));
@@ -340,6 +351,7 @@ SharedCollectionState {
 
         click(item("manualPageButton"));
         require(pageIs("manual"), "manual page entry failed");
+        require(text("manualSpeedLabel").contains("1000 mm/s"), "manual page did not display configured speed");
         require(!controller->property("previewVisible").toBool(), "manual page still processes hidden preview");
         auto* manualLive = item("manualLiveCard");
         auto* manualCoordinates = findVisual(manualLive, "poseCoordinates");
@@ -479,6 +491,15 @@ SharedCollectionState {
         if (argc > 8) {
             click(item("tcpSelector")); QTest::qWait(50);
             require(window->grabWindow().save(QString::fromLocal8Bit(argv[8])), "TCP dropdown screenshot failed");
+        }
+        if (argc > 9) {
+            QTest::keyClick(window, Qt::Key_Escape); QTest::qWait(250);
+            click(item("settingsButton")); click(item("settingsTab0")); QTest::qWait(100);
+            require(window->grabWindow().save(QString::fromLocal8Bit(argv[9])), "device settings screenshot failed");
+            if (argc > 10) {
+                window->resize(760,600); QTest::qWait(100);
+                require(window->grabWindow().save(QString::fromLocal8Bit(argv[10])), "compact device settings screenshot failed");
+            }
         }
         std::cout << "Collection HMI navigation, draft persistence, pose validity, keyboard safety, motion faults, shutter and responsive layouts passed\n";
         return 0;
