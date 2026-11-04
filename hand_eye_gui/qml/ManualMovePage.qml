@@ -29,9 +29,12 @@ Item {
             id: scroll; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             Item {
-                width: scroll.availableWidth; implicitHeight: pair.height + 32
+                width: scroll.availableWidth; implicitHeight: Math.max(scroll.availableHeight, pair.height + 32)
                 Item {
-                    id: pair; x: 16; y: 16; width: parent.width - 32
+                    id: pair
+                    width: Math.min(parent.width - 32, Theme.pageContentWidth)
+                    x: Math.round((parent.width - width) / 2)
+                    y: Math.round((parent.height - height) / 2)
                     height: 400
                     onWidthChanged: measure.restart()
                     HmiPanel {
@@ -41,10 +44,10 @@ Item {
                             HmiText { text: "目标位姿"; color: Theme.ink; font.pixelSize: Theme.appTitle }
                             HmiText { Layout.fillWidth: true; text: "TCP 工具" }
                             TcpSelector { objectName: "manualTcpSelector"; Layout.fillWidth: true; controller: page.controller; enabled: !page.locked && page.controller.robotConnected && page.controller.tcpNames.length > 0 }
-                            HmiText { Layout.fillWidth: true; text: "X, Y, Z, Rx, Ry, Rz"; font.family: Theme.mono; color: Theme.ink }
+                            HmiText { Layout.fillWidth: true; text: "X,Y,Z,Rx,Ry,Rz"; font.family: Theme.mono; color: Theme.ink }
                             CollectField {
                                 objectName: "tcpTargetInput"; Layout.fillWidth: true; Layout.minimumWidth: 0
-                                text: page.targetText; placeholderText: "300, 0, 400, 0, 180, 0"
+                                text: page.targetText; placeholderText: "300,0,400,0,180,0"
                                 enabled: !page.locked; invalid: text.trim() !== "" && !page.parsed.valid
                                 onTextChanged: page.targetText = text
                             }
