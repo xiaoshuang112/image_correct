@@ -1,4 +1,5 @@
 import QtQuick 2.15
+import QtQuick.Window 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "."
@@ -31,6 +32,7 @@ ApplicationWindow {
         })
     }
     function showBackendLog() {
+        if (page !== "main") return
         var lines = controller.logText.split(/\r?\n/).filter(function(line) { return line !== "" })
         logLines = lines.slice(-1000)
         scrollLogToEnd()
@@ -49,6 +51,11 @@ ApplicationWindow {
     }
     function savePose() { pointName.text = ""; poseEditorOpen = true; poseDialog.open(); pointName.forceActiveFocus() }
     function confirmPose() { if (tcpReady && !busy) controller.saveTcpPose(pointName.text) }
+    onPageChanged: { if (page === "main" && controller.logText) showBackendLog() }
+    Binding {
+        target: root.controller; property: "previewVisible"
+        value: root.page === "main" && root.visible && root.visibility !== Window.Minimized
+    }
     onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = "" }
     onClosing: function(event) {
         if (busy) { event.accepted = false; controller.cancelCollectionOperation() }
@@ -63,6 +70,7 @@ ApplicationWindow {
         function onCollectionChanged() { root.syncHistory() }
         function onLogTextChanged() { root.showBackendLog() }
         function onFrameUpdated() {
+            if (root.page !== "main") return
             cameraImage.source = "image://camera/current#" + Date.now()
             root.hasFrame = true
             root.frameMetadata = root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")

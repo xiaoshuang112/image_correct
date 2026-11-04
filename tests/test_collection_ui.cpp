@@ -73,6 +73,7 @@ import CollectTest 1.0
 SharedCollectionState {
     property bool cameraOpened: false
     property bool previewActive: false
+    property bool previewVisible: true
     property bool robotConnected: false
     property bool undistortionReady: false
     property bool undistortionEnabled: false
@@ -247,6 +248,7 @@ SharedCollectionState {
         click(item("openCameraButton"));
         click(item("connectRobotButton"));
         require(item("captureButton")->isEnabled(), "camera connect did not start preview");
+        require(controller->property("previewVisible").toBool(), "main page did not enable preview processing");
         click(item("captureButton"));
         require(count() == 1, "capture action failed");
         window->contentItem()->forceActiveFocus();
@@ -292,6 +294,14 @@ SharedCollectionState {
 
         click(item("settingsButton"));
         require(pageIs("settings"), "settings navigation failed");
+        require(!controller->property("previewVisible").toBool() && controller->property("previewActive").toBool(), "settings did not suspend processing while preserving preview intent");
+        const auto hiddenFrameLabel = text("frameMetadata");
+        controller->setProperty("cameraActualExposureUs", 44444);
+        invoke("frameUpdated");
+        require(text("frameMetadata") == hiddenFrameLabel, "hidden preview still refreshed the image");
+        auto* exposureField = item("exposureInput");
+        require(QMetaObject::invokeMethod(item("settingsPage"), "reload"), "settings reload failed");
+        require(item("exposureInput") == exposureField, "settings reload recreated exposure controls");
         auto* settingsPage = item("settingsPage");
         require(!item("cameraIpInput")->isEnabled() && !item("robotIpInput")->isEnabled(), "connected device IP remains editable");
         click(item("settingsTab1"));
@@ -326,9 +336,11 @@ SharedCollectionState {
         click(item("settingsBackButton"));
         click(item("discardSettingsButton"));
         require(pageIs("main"), "discard did not return to main");
+        require(controller->property("previewVisible").toBool(), "returning to main did not resume preview processing");
 
         click(item("manualPageButton"));
         require(pageIs("manual"), "manual page entry failed");
+        require(!controller->property("previewVisible").toBool(), "manual page still processes hidden preview");
         auto* manualLive = item("manualLiveCard");
         auto* manualCoordinates = findVisual(manualLive, "poseCoordinates");
         auto* manualCopy = findVisual(manualLive, "copyPoseButton");
@@ -417,6 +429,16 @@ SharedCollectionState {
         require(!text("operationLog").contains("line 4\n") && text("operationLog").contains("line 1004") &&
                 text("operationLog").split('\n').size() == 1000, "backend log was not trimmed to latest 1000 lines");
         controller->setProperty("logText", "[12:00:00] 相机预览已启动\n[12:00:01] 当前 TCP：探针B\n[12:00:02] 等待操作");
+        click(item("settingsButton"));
+        const auto hiddenLog = text("operationLog");
+        controller->setProperty("logText", "[12:00:03] 子页面期间的诊断");
+        require(text("operationLog") == hiddenLog, "hidden log still rebuilt its text layout");
+        click(item("settingsBackButton"));
+        require(text("operationLog") == controller->property("logText").toString(), "returning to main lost deferred diagnostic lines");
+        window->hide(); QTest::qWait(20);
+        require(!controller->property("previewVisible").toBool(), "hidden window still processes preview");
+        window->show(); QTest::qWait(20);
+        require(controller->property("previewVisible").toBool(), "shown window did not restore preview visibility");
         if (argc > 1) {
             controller->setProperty("statusMessage", "就绪 · 预览中，等待采集");
             controller->setProperty("manualMoveProgress", "已安全停止 · 可编辑新的目标");

@@ -46,6 +46,7 @@ class CollectionController : public QObject
     Q_PROPERTY(bool    robotConnected READ robotConnected NOTIFY robotConnectedChanged)
     Q_PROPERTY(bool    cameraOpened   READ cameraOpened   NOTIFY cameraOpenedChanged)
     Q_PROPERTY(bool    previewActive  READ previewActive  NOTIFY previewActiveChanged)
+    Q_PROPERTY(bool previewVisible READ previewVisible WRITE setPreviewVisible NOTIFY previewVisibleChanged)
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
@@ -125,6 +126,8 @@ public:
     bool    robotConnected() const  { return m_robotConnected; }
     bool    cameraOpened() const    { return m_cameraOpened; }
     bool    previewActive() const   { return m_previewActive; }
+    bool previewVisible() const { return m_previewVisible; }
+    void setPreviewVisible(bool visible);
     QString statusMessage() const   { return m_statusMessage; }
     QString logText() const         { return m_logText; }
     QString diagnosticLogPath() const;
@@ -158,6 +161,7 @@ signals:
     void robotConnectedChanged();
     void cameraOpenedChanged();
     void previewActiveChanged();
+    void previewVisibleChanged();
     void statusMessageChanged();
     void logTextChanged();
     void frameUpdated();
@@ -183,6 +187,7 @@ private:
 
     // ---- 预览循环 ----
     void onPreviewTick();
+    void updatePreviewTimer();
 
     // ---- 内部辅助 ----
     void setStatus(const QString& msg);
@@ -261,6 +266,7 @@ private:
     QString m_manualMoveProgress;
     bool     m_cameraOpened   = false;
     bool     m_previewActive  = false;
+    bool     m_previewVisible = true;
     QString  m_statusMessage  = "就绪";
     QString  m_logText;
     QStringList m_pendingLogLines;

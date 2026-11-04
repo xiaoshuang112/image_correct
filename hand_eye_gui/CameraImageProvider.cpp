@@ -13,7 +13,8 @@ QImage CameraImageProvider::requestImage(const QString& /*id*/,
     QMutexLocker lock(&m_mutex);
     if (size)
         *size = m_image.size();
-    return m_image.copy();  // 返回副本，避免 QML 端与写入端竞争
+    // QImage 隐式共享持有当前帧；setImage 替换缓冲区不影响已交给 QML 的帧。
+    return m_image;
 }
 
 void CameraImageProvider::setImage(const QImage& img)

@@ -439,10 +439,10 @@ void CollectionController::startPreview()
                            "preview_start",
                            "start",
                            {{"interval_ms", QString::number(m_previewTimer->interval())}});
-        m_previewTimer->start();
         m_previewFrameCount = 0;
         m_previewEmptyCount = 0;
         m_previewActive = true;
+        updatePreviewTimer();
         emit previewActiveChanged();
         setStatus("预览中 — 空格或 Ctrl+S 拍照，自动融合多曝光");
         APP_LOG_EVENT_INFO("preview",
@@ -468,8 +468,8 @@ void CollectionController::startPreview()
 void CollectionController::stopPreview()
 {
     const bool wasActive = m_previewActive;
-    m_previewTimer->stop();
     m_previewActive = false;
+    updatePreviewTimer();
     emit previewActiveChanged();
     if (wasActive) {
         APP_LOG_EVENT_INFO("preview",
@@ -480,9 +480,27 @@ void CollectionController::stopPreview()
     }
 }
 
+void CollectionController::setPreviewVisible(bool visible)
+{
+    if (m_previewVisible == visible) return;
+    m_previewVisible = visible;
+    updatePreviewTimer();
+    emit previewVisibleChanged();
+}
+
+void CollectionController::updatePreviewTimer()
+{
+    // 页面隐藏只暂停预览处理，不改变用户的预览开关，也不影响采集线程。
+    if (m_previewVisible && m_previewActive && m_cameraOpened && !m_collectionBusy) {
+        if (!m_previewTimer->isActive()) m_previewTimer->start();
+    } else {
+        m_previewTimer->stop();
+    }
+}
+
 void CollectionController::onPreviewTick()
 {
-    if (!m_camera || !m_cameraOpened || m_collectionBusy) return;
+    if (!m_previewVisible || !m_previewActive || !m_camera || !m_cameraOpened || m_collectionBusy) return;
 
     try {
 

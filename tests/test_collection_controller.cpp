@@ -1,4 +1,5 @@
 #include "hand_eye_gui/CollectionController.hpp"
+#include "hand_eye_gui/CameraImageProvider.hpp"
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
@@ -50,11 +51,12 @@ struct Robot {
 } robot;
 class Camera : public AICamera {
 public:
+    int previewReads = 0;
     Camera() : AICamera(CameraConfig{}) {}
     bool open() override { return true; }
     void close() override {}
     bool isOpened() const override { return true; }
-    cv::Mat captureOneFrame(int) override { return {}; }
+    cv::Mat captureOneFrame(int) override { ++previewReads; return {}; }
     bool setColorExposureTime(int) override { return true; }
     int getColorExposureTime() override { return 5000; }
     bool setAutoExposure(bool) override { return true; }
@@ -70,6 +72,39 @@ public:
 
 // Inject devices only; exercise the real asynchronous controller and public API.
 struct CollectionControllerTestAccess {
+    static void verifyPreviewVisibility(const QString& output) {
+        CollectionController controller;
+        auto camera = std::make_shared<Camera>();
+        controller.m_camera = camera;
+        controller.m_cameraOpened = true;
+        controller.m_outputDirectory = output;
+        controller.m_exposureList = "5000,8500";
+        controller.startPreview();
+        waitFor([&] { return camera->previewReads > 0; });
+        controller.setPreviewVisible(false);
+        const int reads = camera->previewReads;
+        controller.onPreviewTick(); // Even an already queued timeout must be harmless.
+        require(camera->previewReads == reads && !controller.m_previewTimer->isActive() &&
+                controller.previewActive() && controller.cameraOpened(), "hidden preview still reads camera or changes user state");
+        controller.m_previewFrameCount = 1;
+        controller.capturePhoto();
+        require(controller.collectionBusy(), "hidden preview prevented capture operation");
+        controller.setPreviewVisible(true);
+        controller.onPreviewTick();
+        require(camera->previewReads == reads && !controller.m_previewTimer->isActive(), "page navigation resumed preview during capture");
+        controller.setPreviewVisible(false);
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(controller.savedImageCount() == 1 && !controller.m_previewTimer->isActive(), "capture completion restarted hidden preview or failed to save");
+        controller.setPreviewVisible(true);
+        waitFor([&] { return camera->previewReads > reads; });
+        controller.stopPreview();
+        controller.setPreviewVisible(false);
+        controller.setPreviewVisible(true);
+        require(!controller.previewActive() && !controller.m_previewTimer->isActive(), "page navigation overrode user pause");
+        controller.setPreviewVisible(false);
+        controller.startPreview();
+        require(controller.previewActive() && !controller.m_previewTimer->isActive(), "starting hidden preview enabled frame processing");
+    }
     static void prepare(CollectionController& controller, const QString& output) {
         controller.m_camera = std::make_shared<Camera>();
         controller.m_cameraOpened = controller.m_previewActive = controller.m_robotConnected = true;
@@ -170,6 +205,19 @@ int main(int argc, char** argv) {
         testCollectionSettings();
         QTemporaryDir temp;
         require(temp.isValid(), "temporary output directory failed");
+        CollectionControllerTestAccess::verifyPreviewVisibility(temp.path());
+        {
+            CameraImageProvider provider;
+            QImage source(64, 48, QImage::Format_RGB888);
+            source.fill(Qt::red);
+            provider.setImage(source);
+            source.fill(Qt::blue);
+            auto frame = provider.requestImage({}, nullptr, {});
+            provider.setImage(source);
+            require(frame.pixelColor(0, 0) == QColor(Qt::red), "provider replaced a frame still held by QML");
+            frame.fill(Qt::green);
+            require(provider.requestImage({}, nullptr, {}).pixelColor(0, 0) == QColor(Qt::blue), "consumer modified provider's shared image");
+        }
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());

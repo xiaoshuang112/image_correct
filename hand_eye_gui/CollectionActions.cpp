@@ -125,7 +125,7 @@ void CollectionController::finishCollectionOperation(const QString& message, con
     m_stopRetrying = false;
     if (!savedPath.isEmpty()) recordCapture(savedPath);
     if (!m_collectionBusy && m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
-        m_previewTimer->start();
+        updatePreviewTimer();
     QString status = savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
     if (!savedPath.isEmpty() && message != "多曝光融合完成，图片已保存")
         status += "；" + message;

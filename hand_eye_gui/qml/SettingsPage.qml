@@ -50,9 +50,8 @@ Item {
         cameraIp = controller.cameraIp; robotIp = controller.robotIp
         previewWidth = String(controller.previewWidth); previewHeight = String(controller.previewHeight)
         previewExposure = String(controller.cameraExposureUs)
-        exposureSlots.clear()
         var values = controller.exposureList.split(/[,，;\s]+/).filter(function(v) { return v !== "" })
-        for (var i = 0; i < 5; ++i) exposureSlots.append({value: i < values.length ? values[i] : ""})
+        for (var i = 0; i < exposureSlots.count; ++i) exposureSlots.setProperty(i, "value", i < values.length ? values[i] : "")
         ++revision
         savedDraft = JSON.parse(JSON.stringify(draft))
         loaded = true; feedback = "配置已载入，编辑后点击「保存配置」"
@@ -66,7 +65,14 @@ Item {
         reload(); feedback = "配置已保存"
     }
     Component.onCompleted: reload()
-    ListModel { id: exposureSlots }
+    ListModel {
+        id: exposureSlots
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+    }
     Timer {
         id: measure; interval: 0
         onTriggered: pair.height = Math.max(leftContent.implicitHeight + 40, rightContent.implicitHeight + 40,
