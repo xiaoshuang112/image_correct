@@ -1,4 +1,5 @@
 #include <QGuiApplication>
+#include <QClipboard>
 #include <QDir>
 #include <QQmlApplicationEngine>
 #include <QQmlComponent>
@@ -12,6 +13,7 @@
 #include <iostream>
 #include <functional>
 #include <memory>
+#include <limits>
 #include <stdexcept>
 
 // Match the real controller's shared NOTIFY signal: unrelated/busy changes
@@ -250,14 +252,27 @@ SharedCollectionState {
         window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Space); QTest::qWait(20);
         require(count() == 2, "main capture shortcut failed");
-        require(text("poseValue0") == "100.13", "live pose is not formatted to two decimals");
+        const QString liveCoordinates = "100.13,-20.00,300.00,0.00,179.50,0.00";
+        auto* mainPose = item("livePoseValues");
+        auto* mainCoordinates = findVisual(mainPose, "poseCoordinates");
+        auto* mainCopy = findVisual(mainPose, "copyPoseButton");
+        require(mainCoordinates && mainCopy && mainCoordinates->property("readOnly").toBool(), "missing read-only pose and copy action");
+        require(mainCoordinates->property("text").toString() == liveCoordinates && text("poseAxes") == "X,Y,Z,Rx,Ry,Rz", "live pose does not use ordered comma-separated values");
+        click(mainCopy);
+        require(QGuiApplication::clipboard()->text() == liveCoordinates && mainCopy->property("text").toString() == "已复制", "main pose copy did not write displayed coordinates to clipboard");
+        require(count() == 2 && controller->property("manualMoveCalls").toInt() == 0, "copy triggered capture or motion");
         controller->setProperty("selectedTcp", "探针B"); QTest::qWait(10);
-        require(text("poseValue0") == "—" && text("livePoseStatus").contains("工具已切换"), "previous tool pose leaked after selection");
+        require(mainCoordinates->property("text").toString() == "—" && !mainCopy->isEnabled() && text("livePoseStatus").contains("工具已切换"), "previous tool pose remained visible or copyable after selection");
         controller->setProperty("tcpPoseTool", "探针B"); QTest::qWait(10);
-        require(text("poseValue0") == "100.13", "new selected tool pose not shown");
+        require(mainCoordinates->property("text").toString() == liveCoordinates && mainCopy->isEnabled(), "new selected tool pose not shown or copyable");
         controller->setProperty("tcpPoseValid", false); QTest::qWait(10);
-        require(text("poseValue0") == "—", "stale invalid pose shown as numeric");
+        require(mainCoordinates->property("text").toString() == "—" && !mainCopy->isEnabled(), "stale pose remained visible or copyable");
         controller->setProperty("tcpPoseValid", true);
+        controller->setProperty("tcpPoseValues", QVariantList{100.125, -20.0, 300.0, 0.0, std::numeric_limits<double>::infinity(), 0.0});
+        QTest::qWait(10);
+        require(!mainCopy->isEnabled() && mainCoordinates->property("text").toString() == "—", "non-finite pose remained copyable");
+        controller->setProperty("tcpPoseValues", QVariantList{100.125, -20.0, 300.0, 0.0, 179.5, 0.0});
+        QTest::qWait(10);
         invoke("frameUpdated");
         const auto frameLabel = text("frameMetadata");
         controller->setProperty("cameraExposureUs", 33333);
@@ -314,8 +329,25 @@ SharedCollectionState {
 
         click(item("manualPageButton"));
         require(pageIs("manual"), "manual page entry failed");
+        auto* manualLive = item("manualLiveCard");
+        auto* manualCoordinates = findVisual(manualLive, "poseCoordinates");
+        auto* manualCopy = findVisual(manualLive, "copyPoseButton");
+        require(manualCoordinates && manualCopy && manualCoordinates->property("text").toString() == liveCoordinates, "manual page current pose format differs from main page");
+        QGuiApplication::clipboard()->setText("sentinel");
+        click(manualCopy);
+        require(QGuiApplication::clipboard()->text() == liveCoordinates, "manual page did not copy the current pose");
+        controller->setProperty("robotConnected", false); QTest::qWait(10);
+        require(!manualCopy->isEnabled() && manualCoordinates->property("text").toString() == "—", "disconnected pose remained copyable");
+        controller->setProperty("robotConnected", true); QTest::qWait(10);
+        auto* targetCopy = findVisual(item("parsedTargetValues"), "copyPoseButton");
+        require(targetCopy && !targetCopy->isEnabled(), "empty target remained copyable");
         setText("tcpTargetInput", "100，20,300,0,180,0");
         require(item("manualMoveButton")->isEnabled(), "valid Chinese comma target rejected");
+        click(targetCopy);
+        require(QGuiApplication::clipboard()->text() == "100.00,20.00,300.00,0.00,180.00,0.00", "target copy did not normalize six ordered values");
+        setText("tcpTargetInput", "100,20,300");
+        require(!targetCopy->isEnabled(), "invalid target remained copyable");
+        setText("tcpTargetInput", "100，20,300,0,180,0");
         item("tcpTargetInput")->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Return);
         QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
@@ -351,7 +383,7 @@ SharedCollectionState {
         for (const QSize size : {QSize(1280,850), QSize(1024,740), QSize(760,600)}) {
             window->resize(size); QTest::qWait(80);
             const QRectF viewport(0,0,size.width(),size.height());
-            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "fivePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard"}) {
+            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "fivePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard", "copyPoseButton", "poseCoordinates"}) {
                 if (!viewport.contains(bounds(item(name)))) std::cerr << name << " outside viewport at " << size.width() << "x" << size.height() << '\n';
                 require(viewport.contains(bounds(item(name))), "main action clipped at supported size");
             }

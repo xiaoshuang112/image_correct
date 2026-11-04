@@ -82,13 +82,17 @@ Item {
                 HmiText { text: page.dirty ? page.dirtyCount + " 项未保存" : "配置"; color: page.dirty ? Theme.warning : Theme.ink3 }
             }
         }
-        RowLayout {
-            Layout.fillWidth: true; Layout.margins: 16; spacing: 8
-            Repeater {
-                model: ["设备", "成像", "存储与诊断"]
-                CollectButton { objectName: "settingsTab" + index; text: modelData; selected: page.tab === index; onClicked: page.tab = index }
+        Item {
+            Layout.fillWidth: true; Layout.preferredHeight: 76
+            RowLayout {
+                width: Math.min(parent.width - 32, Theme.pageContentWidth); height: Theme.controlHeight
+                anchors.centerIn: parent; spacing: 8
+                Repeater {
+                    model: ["设备", "成像", "存储与诊断"]
+                    CollectButton { objectName: "settingsTab" + index; text: modelData; selected: page.tab === index; onClicked: page.tab = index }
+                }
+                Item { Layout.fillWidth: true }
             }
-            Item { Layout.fillWidth: true }
         }
         ScrollView {
             id: scroll
@@ -98,10 +102,12 @@ Item {
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             Item {
                 width: scroll.availableWidth
-                implicitHeight: pair.height + 32
+                implicitHeight: Math.max(scroll.availableHeight, pair.height + 32)
                 Item {
                     id: pair
-                    x: 16; y: 0; width: parent.width - 32
+                    width: Math.min(parent.width - 32, Theme.pageContentWidth)
+                    x: Math.round((parent.width - width) / 2)
+                    y: Math.round((parent.height - height) / 2)
                     height: 400
                     onWidthChanged: measure.restart()
                     HmiPanel {
