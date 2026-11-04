@@ -18,7 +18,7 @@ public:
     QImage requestImage(const QString& id, QSize* size,
                         const QSize& requestedSize) override;
 
-    /// 线程安全地更新当前帧
+    /// 共享持有已拥有像素内存的图像；借用外部缓冲区的 QImage 须先 copy()。
     void setImage(const QImage& img);
 
     /// 设置一个占位图像（"等待视频流..."）

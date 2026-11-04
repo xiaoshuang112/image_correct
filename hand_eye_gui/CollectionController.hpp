@@ -9,12 +9,15 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <QElapsedTimer>
+#include <QPointer>
+#include <QUrl>
 #include <functional>
 #include <mutex>
 #include <chrono>
 #include <thread>
 #include <atomic>
 #include <memory>
+#include <future>
 
 #include "cameras/AICamera.hpp"
 #include "RobotMotionLimits.hpp"
@@ -49,10 +52,13 @@ class CollectionController : public QObject
     Q_PROPERTY(bool    cameraOpened   READ cameraOpened   NOTIFY cameraOpenedChanged)
     Q_PROPERTY(bool    previewActive  READ previewActive  NOTIFY previewActiveChanged)
     Q_PROPERTY(bool previewVisible READ previewVisible WRITE setPreviewVisible NOTIFY previewVisibleChanged)
+    Q_PROPERTY(QSize previewDisplaySize READ previewDisplaySize WRITE setPreviewDisplaySize NOTIFY previewDisplaySizeChanged)
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
     Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
+    Q_PROPERTY(bool settingsSaving READ settingsSaving NOTIFY collectionChanged)
+    Q_PROPERTY(bool coordinatesImporting READ coordinatesImporting NOTIFY collectionChanged)
     Q_PROPERTY(bool motionFault READ motionFault NOTIFY collectionChanged)
     Q_PROPERTY(QString outputDirectory READ outputDirectory CONSTANT)
     Q_PROPERTY(QString handEyePath READ handEyePath NOTIFY collectionChanged)
@@ -81,6 +87,8 @@ public:
     /// 必须在 QML 引擎初始化后调用：设置 imageProvider 并完成路径初始化
     void init(CameraImageProvider* provider);
     bool collectionBusy() const { return m_collectionBusy; }
+    bool settingsSaving() const { return m_settingsSaving; }
+    bool coordinatesImporting() const { return m_coordinatesImporting; }
     bool motionFault() const { return m_motionFault; }
     QString outputDirectory() const { return m_outputDirectory; }
     QString handEyePath() const { return m_handEyePath; }
@@ -100,7 +108,9 @@ public:
     void setSelectedTcp(const QString& name);
     Q_INVOKABLE void openCollectionFolder();
     Q_INVOKABLE void openDiagnosticFolder();
-    Q_INVOKABLE QString applySettings(const QVariantMap& values);
+    Q_INVOKABLE void applySettings(const QVariantMap& values);
+    Q_INVOKABLE void chooseTcpCoordinateFile();
+    Q_INVOKABLE void importTcpCoordinates(const QUrl& url);
     Q_INVOKABLE QVariantMap parseTcpTarget(const QString& text) const;
     Q_INVOKABLE void moveTcpTo(const QString& text);
     QVariantList tcpPoseValues() const { return m_tcpPoseValues; }
@@ -131,6 +141,8 @@ public:
     bool    previewActive() const   { return m_previewActive; }
     bool previewVisible() const { return m_previewVisible; }
     void setPreviewVisible(bool visible);
+    QSize previewDisplaySize() const { return m_previewDisplaySize; }
+    void setPreviewDisplaySize(const QSize& size);
     QString statusMessage() const   { return m_statusMessage; }
     QString logText() const         { return m_logText; }
     QString diagnosticLogPath() const;
@@ -165,10 +177,13 @@ signals:
     void cameraOpenedChanged();
     void previewActiveChanged();
     void previewVisibleChanged();
+    void previewDisplaySizeChanged();
     void statusMessageChanged();
     void logTextChanged();
     void frameUpdated();
     void collectionChanged();
+    void settingsFinished(const QString& error);
+    void coordinatesImported(const QString& coordinates, const QString& tcpName, const QString& error);
     void tcpToolsChanged();
     void tcpPoseChanged();
 
@@ -219,8 +234,8 @@ private:
         const QString& tool, const QVariantList& values, const QString& error, qint64 timestamp);
     std::function<void()> tcpSamplingCallback(const std::shared_ptr<RobotSession>& session);
 
-    /// 将 cv::Mat (BGR) 转为 QImage (RGB)，线程安全发送到 ImageProvider
-    void publishFrame(const cv::Mat& bgr);
+    /// 后台生成适配显示尺寸、拥有像素内存的预览图像；不修改采集原图。
+    static QImage makePreviewImage(const cv::Mat& bgr, const QSize& displaySize);
 
     /// 追加日志（线程安全）；UI 侧批量刷新，避免每条触发完整重排
     void appendLog(const QString& line);
@@ -283,6 +298,14 @@ private:
 
     // 预览
     CameraImageProvider* m_imageProvider = nullptr;
+    struct PreviewFrame {
+        QImage image;
+        QSize originalSize;
+        int channels = 0;
+    };
+    std::shared_future<PreviewFrame> m_previewFuture;
+    quint64 m_previewGeneration = 0, m_pendingPreviewGeneration = 0;
+    QSize m_previewDisplaySize{1280, 960};
     QTimer*              m_previewTimer  = nullptr;
     quint64 m_previewFrameCount = 0;
     quint64 m_previewEmptyCount = 0;
@@ -293,6 +316,9 @@ private:
     std::string m_appPath;
     std::string m_paramPath;
     bool m_collectionBusy = false;
+    bool m_settingsSaving = false;
+    bool m_coordinatesImporting = false;
+    QPointer<QObject> m_coordinateDialog;
     bool m_motionFault = false;
     bool m_stopRetrying = false;
     std::atomic<bool> m_robotStopUnconfirmed{false};

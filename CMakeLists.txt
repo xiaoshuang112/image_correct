@@ -232,7 +232,7 @@ endif()
 #  Qt5 QML collection GUI (optional)
 # ============================================================
 if(BUILD_QT_GUI)
-    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2)
+    find_package(Qt5 QUIET COMPONENTS Core Quick QuickControls2 Widgets)
     if(Qt5_FOUND)
         add_subdirectory(hand_eye_gui)
         message(STATUS "Qt5 GUI enabled → target 'hand-eye-app'")

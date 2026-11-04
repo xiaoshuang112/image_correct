@@ -1,4 +1,4 @@
-#include <QGuiApplication>
+#include <QApplication>
 #include <QQmlApplicationEngine>
 #include <QQmlContext>
 #include <QDir>
@@ -34,7 +34,7 @@ int main(int argc, char* argv[])
         qputenv("QT_QUICK_BACKEND", "software");
     }
 
-    QGuiApplication app(argc, argv);
+    QApplication app(argc, argv);
     app.setApplicationName("collect-app");
     app.setOrganizationName("caitu");
     app.setApplicationVersion(QStringLiteral(APP_VERSION));

@@ -32,6 +32,33 @@ QString writeJson(const QString& path, const QJsonObject& object) {
 }
 
 namespace collection {
+QString loadPoseCoordinates(const QString& path, QString& coordinates, QString& tcpName) {
+    coordinates.clear(); tcpName.clear();
+    constexpr qint64 maximumBytes = 64 * 1024;
+    const QFileInfo info(path);
+    if (!info.isFile()) return "请选择有效的坐标 JSON 文件";
+    if (info.size() > maximumBytes) return "坐标文件超过 64 KB";
+    QFile file(path);
+    if (!file.open(QIODevice::ReadOnly)) return "无法读取坐标文件：" + file.errorString();
+    const auto bytes = file.read(maximumBytes + 1);
+    if (file.error() != QFileDevice::NoError) return "读取坐标文件失败：" + file.errorString();
+    if (bytes.size() > maximumBytes) return "坐标文件超过 64 KB";
+    QJsonParseError parseError;
+    const auto document = QJsonDocument::fromJson(bytes, &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isObject()) return "坐标文件不是有效的 JSON 对象";
+    const auto pose = document.object();
+    QStringList values;
+    for (const char* key : {"x", "y", "z", "rx", "ry", "rz"}) {
+        const auto value = pose.value(key);
+        if (!value.isDouble() || !std::isfinite(value.toDouble()))
+            return QString("坐标字段 %1 缺失或不是有效数值").arg(key);
+        values << QString::number(value.toDouble(), 'g', 17);
+    }
+    tcpName = pose.value("tcp_name").toString();
+    coordinates = values.join(',');
+    return {};
+}
+
 QString saveFlangePoseRecords(const QString& imagePath, const double* pose) {
     const bool valid = pose && std::all_of(pose, pose + 6,
         [](double value) { return std::isfinite(value); });

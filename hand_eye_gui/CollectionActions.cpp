@@ -58,6 +58,7 @@ void CollectionController::loadCollectionUndistortion() {
 
 void CollectionController::toggleUndistortion() {
     if (m_collectionBusy) return;
+    ++m_previewGeneration;
     if (m_undistortionMaps) {
         m_undistortionMaps.reset();
         emit collectionChanged();
@@ -109,6 +110,7 @@ void CollectionController::beginCollectionOperation() {
     if (m_collectionThread.joinable()) m_collectionThread.join();
     ++m_tcpPoseGeneration;
     m_collectionWasPreviewing = m_previewActive;
+    ++m_previewGeneration;
     m_previewTimer->stop();
     m_cancelRequested = false;
     m_collectionBusy = true;
@@ -179,6 +181,8 @@ void CollectionController::retryRobotStop() {
 }
 
 void CollectionController::cancelCollectionOperation() {
+    if (m_settingsSaving) { setStatus("正在保存配置，请等待完成"); return; }
+    if (m_coordinatesImporting) { setStatus("正在导入坐标，请等待完成"); return; }
     if (m_motionFault) { retryRobotStop(); return; }
     if (m_collectionBusy) {
         m_cancelRequested = true;
@@ -225,6 +229,7 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
         return;
     }
     const auto camera = m_camera;
+    const auto pendingPreview = m_previewFuture;
     const int speed = m_robotSpeedMmS;
     const auto undistortion = m_undistortionMaps;
     const auto handle = m_robotHandle;
@@ -239,7 +244,9 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                         : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
         m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
-                                         output, exposures, fivePoints, xMm, yMm, session, sampleTcp, speed] {
+                                         output, exposures, fivePoints, xMm, yMm, session, sampleTcp, speed, pendingPreview] {
+            // Drain the one in-flight frame on this worker before using the camera for capture.
+            if (pendingPreview.valid()) pendingPreview.wait();
             std::unique_lock<std::mutex> robotLock;
             if (session) robotLock = session->acquire(m_cancelRequested);
             if (session && !robotLock.owns_lock()) {

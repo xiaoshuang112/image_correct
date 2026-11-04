@@ -3,7 +3,7 @@ cmake_minimum_required(VERSION 3.10)
 project(hand-eye-app)
 
 # 查找 Qt5
-find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2)
+find_package(Qt5 REQUIRED COMPONENTS Core Quick QuickControls2 Widgets)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
@@ -77,7 +77,7 @@ target_link_directories(collection_controller PUBLIC ${CAITU_CAMERA_LIB_DIR})
 # ============================================================
 #  链接库
 # ============================================================
-set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2)
+set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2 Qt5::Widgets)
 
 target_link_libraries(collection_controller PUBLIC
     ${QT_LIBS}

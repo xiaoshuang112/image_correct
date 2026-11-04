@@ -8,6 +8,17 @@ Item {
     property bool locked: false
     signal leave()
     property string targetText: ""
+    property string importFeedback: ""
+    property bool importError: false
+    Connections {
+        target: page.controller
+        function onCoordinatesImported(coordinates, tcpName, error) {
+            page.importError = error !== ""
+            if (error) { page.importFeedback = error; return }
+            page.targetText = coordinates
+            page.importFeedback = "坐标已导入" + (tcpName ? " · 文件 TCP：" + tcpName : "") + "，请核对所选工具和目标。"
+        }
+    }
     readonly property var parsed: controller.parseTcpTarget(targetText)
     readonly property bool canMove: !locked && controller.robotConnected && controller.selectedTcp !== "" && parsed.valid
     Timer {
@@ -46,14 +57,23 @@ Item {
                             HmiText { text: "目标位姿"; color: Theme.ink; font.pixelSize: Theme.appTitle }
                             HmiText { Layout.fillWidth: true; text: "TCP 工具" }
                             TcpSelector { objectName: "manualTcpSelector"; Layout.fillWidth: true; controller: page.controller; enabled: !page.locked && page.controller.robotConnected && page.controller.tcpNames.length > 0 }
-                            HmiText { Layout.fillWidth: true; text: "X,Y,Z,Rx,Ry,Rz"; font.family: Theme.mono; color: Theme.ink }
+                            RowLayout {
+                                Layout.fillWidth: true
+                                HmiText { Layout.fillWidth: true; text: "X,Y,Z,Rx,Ry,Rz"; font.family: Theme.mono; color: Theme.ink }
+                                CollectButton {
+                                    objectName: "importCoordinatesButton"; text: "导入 JSON"; small: true
+                                    Layout.preferredWidth: 112; enabled: !page.locked
+                                    onClicked: page.controller.chooseTcpCoordinateFile()
+                                }
+                            }
                             CollectField {
                                 objectName: "tcpTargetInput"; Layout.fillWidth: true; Layout.minimumWidth: 0
                                 text: page.targetText; placeholderText: "300,0,400,0,180,0"
                                 enabled: !page.locked; invalid: text.trim() !== "" && !page.parsed.valid
-                                onTextChanged: page.targetText = text
+                                onTextChanged: { page.targetText = text; page.importFeedback = "" }
                             }
                             HmiText { Layout.fillWidth: true; text: "一次输入六个数值，使用英文或中文逗号分隔。平移 mm，旋转为轴角 °。"; font.pixelSize: Theme.meta }
+                            HmiText { objectName: "coordinateImportFeedback"; visible: text !== ""; Layout.fillWidth: true; text: page.importFeedback; color: page.importError ? Theme.danger : Theme.ink2; font.pixelSize: Theme.meta }
                             HmiText { objectName: "tcpTargetError"; Layout.fillWidth: true; text: page.targetText === "" ? "请输入目标坐标" : page.parsed.error; color: page.parsed.valid ? Theme.ink3 : Theme.warning; font.pixelSize: Theme.meta }
                             HmiText { text: "解析结果 · 只读"; font.pixelSize: Theme.meta }
                             PoseValues { objectName: "parsedTargetValues"; Layout.fillWidth: true; values: page.parsed.values || []; valid: page.parsed.valid }
@@ -85,9 +105,9 @@ Item {
                 }
                 CollectButton {
                     objectName: "manualMoveButton"; Layout.preferredWidth: 160; Layout.preferredHeight: 44
-                    text: page.locked ? page.controller.motionFault ? "重试停止" : "停止移动" : "移动到目标"
+                    text: page.controller.coordinatesImporting ? "导入中…" : page.locked ? page.controller.motionFault ? "重试停止" : "停止移动" : "移动到目标"
                     primary: !page.locked; danger: page.locked
-                    enabled: page.locked || page.canMove
+                    enabled: !page.controller.coordinatesImporting && (page.locked || page.canMove)
                     // Movement is deliberately mouse/touch only; Enter or Space cannot trigger it.
                     focusPolicy: Qt.NoFocus
                     Keys.onReturnPressed: event.accepted = true

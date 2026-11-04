@@ -62,9 +62,15 @@ Item {
     function save() {
         if (locked) return
         if (exposureError) { feedback = exposureError; return }
-        var result = controller.applySettings(draft)
-        if (result) { feedback = result; return }
-        reload(); feedback = "配置已保存"
+        feedback = "正在保存配置…"
+        controller.applySettings(draft)
+    }
+    Connections {
+        target: page.controller
+        function onSettingsFinished(error) {
+            if (error) { page.feedback = error; return }
+            page.reload(); page.feedback = "配置已保存"
+        }
     }
     Component.onCompleted: reload()
     ListModel {
@@ -216,9 +222,9 @@ Item {
             objectName: "settingsFooter"; Layout.fillWidth: true; Layout.preferredHeight: 72; color: Theme.surface
             RowLayout {
                 anchors.fill: parent; anchors.margins: 16; spacing: 12
-                HmiText { objectName: "settingsFeedback"; Layout.fillWidth: true; text: page.locked ? "操作进行中，设置已锁定" : page.feedback + (page.dirty ? " · " + page.dirtyCount + " 项未保存" : ""); color: page.dirty ? Theme.warning : Theme.ink2 }
+                HmiText { objectName: "settingsFeedback"; Layout.fillWidth: true; text: page.controller.settingsSaving ? "正在保存配置，请稍候…" : page.locked ? "操作进行中，设置已锁定" : page.feedback + (page.dirty ? " · " + page.dirtyCount + " 项未保存" : ""); color: page.dirty ? Theme.warning : Theme.ink2 }
                 CollectButton { objectName: "resetSettingsButton"; text: "还原编辑"; quiet: true; enabled: page.dirty && !page.locked; onClicked: page.reload() }
-                CollectButton { objectName: "saveSettingsButton"; text: "保存配置"; primary: true; Layout.preferredWidth: 144; enabled: !page.locked && page.dirty; onClicked: page.save() }
+                CollectButton { objectName: "saveSettingsButton"; text: page.controller.settingsSaving ? "保存中…" : "保存配置"; primary: true; Layout.preferredWidth: 144; enabled: !page.locked && page.dirty; onClicked: page.save() }
             }
         }
     }

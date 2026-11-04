@@ -20,7 +20,7 @@ QImage CameraImageProvider::requestImage(const QString& /*id*/,
 void CameraImageProvider::setImage(const QImage& img)
 {
     QMutexLocker lock(&m_mutex);
-    m_image = img.copy();
+    m_image = img;
 }
 
 void CameraImageProvider::setPlaceholder(int width, int height)

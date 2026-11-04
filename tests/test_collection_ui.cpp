@@ -71,9 +71,11 @@ int main(int argc, char** argv) {
 import QtQuick 2.15
 import CollectTest 1.0
 SharedCollectionState {
+    id: mockController
     property bool cameraOpened: false
     property bool previewActive: false
     property bool previewVisible: true
+    property size previewDisplaySize: Qt.size(1280, 960)
     property bool robotConnected: false
     property bool undistortionReady: false
     property bool undistortionEnabled: false
@@ -160,16 +162,34 @@ SharedCollectionState {
         return {valid: true, error: "", values: values}
     }
     function moveTcpTo(text) { manualMoveCalls++; lastTarget = text; manualMoveActive = true; collectionBusy = true; manualMoveProgress = "正在移动" }
+    property bool settingsSaving: false
+    property bool coordinatesImporting: false
+    property int coordinateDialogCalls: 0
+    signal coordinatesImported(string coordinates, string tcpName, string error)
+    function chooseTcpCoordinateFile() { coordinateDialogCalls++ }
+    property int settingsDelay: 0
+    property var pendingSettings
+    signal settingsFinished(string error)
+    property Timer settingsTimer: Timer { interval: mockController.settingsDelay; onTriggered: mockController.finishSettings() }
     function applySettings(values) {
         settingsCalls++
-        if (settingsFailure) return settingsFailure
-        if (!/^\d+$/.test(String(values.robotSpeedMmS)) || Number(values.robotSpeedMmS) < 1 || Number(values.robotSpeedMmS) > 1000)
-            return "移动速度须为 1～1000 mm/s 范围内的整数"
-        cameraIp = values.cameraIp; robotIp = values.robotIp
-        robotSpeedMmS = Number(values.robotSpeedMmS)
-        previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
-        cameraExposureUs = Number(values.cameraExposureUs); exposureList = values.exposureList
-        return ""
+        settingsSaving = true; collectionBusy = true
+        pendingSettings = JSON.parse(JSON.stringify(values))
+        settingsTimer.start()
+    }
+    function finishSettings() {
+        var values = pendingSettings
+        var error = settingsFailure
+        if (!error && (!/^\d+$/.test(String(values.robotSpeedMmS)) || Number(values.robotSpeedMmS) < 1 || Number(values.robotSpeedMmS) > 1000))
+            error = "移动速度须为 1～1000 mm/s 范围内的整数"
+        if (!error) {
+            cameraIp = values.cameraIp; robotIp = values.robotIp
+            robotSpeedMmS = Number(values.robotSpeedMmS)
+            previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
+            cameraExposureUs = Number(values.cameraExposureUs); exposureList = values.exposureList
+        }
+        settingsSaving = false; collectionBusy = false
+        settingsFinished(error)
     }
     function openDiagnosticFolder() { diagnosticsOpened = true }
     function captureFivePoints(x, y) {
@@ -323,7 +343,12 @@ SharedCollectionState {
         QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
         require(count() == beforeSettings && controller->property("settingsCalls").toInt() == 0, "settings keyboard triggered capture or saving");
         controller->setProperty("settingsFailure", "配置保存失败：只读目录");
+        controller->setProperty("settingsDelay", 150);
         click(item("saveSettingsButton"));
+        require(controller->property("settingsSaving").toBool() && text("saveSettingsButton") == "保存中…" &&
+                !item("settingsBackButton")->isEnabled() && !item("robotSpeedInput")->isEnabled(), "saving did not show progress and lock conflicting actions");
+        QTest::qWait(170);
+        controller->setProperty("settingsDelay", 0);
         require(settingsPage->property("dirty").toBool() && text("previewExposureInput") == "15000" && text("settingsFeedback").contains("只读目录"), "failed save discarded draft or hid backend error");
         controller->setProperty("settingsFailure", "");
         setText("exposureInput", "25000");
@@ -351,6 +376,27 @@ SharedCollectionState {
 
         click(item("manualPageButton"));
         require(pageIs("manual"), "manual page entry failed");
+        const int beforeImportMoves = controller->property("manualMoveCalls").toInt();
+        setText("tcpTargetInput", "7,8,9,10,11,12");
+        click(item("importCoordinatesButton"));
+        require(controller->property("coordinateDialogCalls").toInt() == 1 && text("tcpTargetInput") == "7,8,9,10,11,12",
+                "opening file chooser changed target before selection");
+        const QString importedCoordinates = "-122.22233831535885,-517.3887484334697,131.66895532412371,179.99967118142848,-0.012766000975997492,0.02149207938819223";
+        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, importedCoordinates),
+                Q_ARG(QString, "fixture-tool"), Q_ARG(QString, QString{})), "cannot deliver imported coordinates");
+        QTest::qWait(20);
+        require(text("tcpTargetInput") == importedCoordinates && text("coordinateImportFeedback").contains("fixture-tool") &&
+                controller->property("manualMoveCalls").toInt() == beforeImportMoves, "import changed precision, hid TCP metadata, or triggered motion");
+        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, QString{}),
+                Q_ARG(QString, QString{}), Q_ARG(QString, QString("坐标字段 rz 缺失"))), "cannot deliver import error");
+        require(text("tcpTargetInput") == importedCoordinates && text("coordinateImportFeedback").contains("rz"), "failed import erased target or hid error");
+        controller->setProperty("coordinatesImporting", true);
+        controller->setProperty("collectionBusy", true); QTest::qWait(20);
+        require(!item("importCoordinatesButton")->isEnabled() && !item("manualMoveButton")->isEnabled() &&
+                !item("tcpTargetInput")->isEnabled(), "import did not disable conflicting input/motion");
+        controller->setProperty("coordinatesImporting", false);
+        controller->setProperty("collectionBusy", false);
+        setText("tcpTargetInput", "");
         require(text("manualSpeedLabel").contains("1000 mm/s"), "manual page did not display configured speed");
         require(!controller->property("previewVisible").toBool(), "manual page still processes hidden preview");
         auto* manualLive = item("manualLiveCard");

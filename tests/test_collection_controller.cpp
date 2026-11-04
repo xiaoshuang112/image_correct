@@ -1,6 +1,8 @@
 #include "hand_eye_gui/CollectionController.hpp"
 #include "hand_eye_gui/CameraImageProvider.hpp"
-#include <QCoreApplication>
+#include <QApplication>
+#include <QFileDialog>
+#include <QFile>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
 #include <algorithm>
@@ -53,18 +55,31 @@ struct Robot {
 } robot;
 class Camera : public AICamera {
 public:
-    int previewReads = 0;
+    std::atomic<int> previewReads{0}, activePreviewReads{0};
+    std::atomic<bool> blockPreview{false}, releasePreview{false}, previewOnGui{false}, captureOverlapped{false};
+    const std::thread::id guiThread = std::this_thread::get_id();
+    cv::Mat previewFrame;
     Camera() : AICamera(CameraConfig{}) {}
     bool open() override { return true; }
     void close() override {}
     bool isOpened() const override { return true; }
-    cv::Mat captureOneFrame(int) override { ++previewReads; return {}; }
+    cv::Mat captureOneFrame(int) override {
+        ++activePreviewReads;
+        previewOnGui = std::this_thread::get_id() == guiThread;
+        ++previewReads;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
+        while (blockPreview && !releasePreview && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        --activePreviewReads;
+        return previewFrame;
+    }
     bool setColorExposureTime(int) override { return true; }
     int getColorExposureTime() override { return 5000; }
     bool setAutoExposure(bool) override { return true; }
     bool getAutoExposure() override { return false; }
     bool getExposureRange(int& low, int& high) override { low = 100; high = 50000; return true; }
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& values) override {
+        captureOverlapped = activePreviewReads > 0;
         std::vector<cv::Mat> frames;
         for (int value : values) frames.emplace_back(32, 32, CV_8UC3, cv::Scalar(value / 100, 80, 100));
         return frames;
@@ -74,6 +89,77 @@ public:
 
 // Inject devices only; exercise the real asynchronous controller and public API.
 struct CollectionControllerTestAccess {
+    static void verifyResponsivePreview(const QString& output) {
+        CameraImageProvider provider;
+        CollectionController controller;
+        auto camera = std::make_shared<Camera>();
+        camera->blockPreview = true;
+        camera->previewFrame = cv::Mat(3036, 4024, CV_8UC3, cv::Scalar(10, 20, 30));
+        controller.m_camera = camera;
+        controller.m_cameraOpened = true;
+        controller.m_imageProvider = &provider;
+        controller.m_outputDirectory = output;
+        controller.m_exposureList = "5000,8500";
+        int published = 0;
+        QObject::connect(&controller, &CollectionController::frameUpdated, [&] { ++published; });
+        controller.startPreview();
+        controller.onPreviewTick();
+        waitFor([&] { return camera->previewReads > 0; });
+        require(!camera->previewOnGui && camera->activePreviewReads == 1, "slow preview blocked the GUI thread before settings could open");
+        for (int i = 0; i < 10; ++i) controller.onPreviewTick();
+        require(camera->previewReads == 1, "preview work accumulated while a frame was still processing");
+        controller.setPreviewVisible(false); // Same operation as entering settings.
+        require(camera->activePreviewReads == 1 && published == 0, "settings waited for the frame or published it early");
+        controller.m_previewFrameCount = 1;
+        controller.capturePhoto();
+        QTimer::singleShot(10, [&] { camera->releasePreview = true; });
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(!camera->captureOverlapped && controller.savedImageCount() == 1 && published == 0,
+                "capture raced preview, failed to save, or published a hidden frame");
+        camera->previewFrame.setTo(cv::Scalar(11, 22, 33));
+        controller.setPreviewVisible(true);
+        waitFor([&] { return published > 0; });
+        controller.stopPreview();
+        const auto image = provider.requestImage({}, nullptr, {});
+        require(image.width() <= 1280 && image.height() <= 960 && image.pixelColor(0, 0) == QColor(33, 22, 11),
+                "preview was not resized/converted correctly before UI delivery");
+        cv::Mat small(2, 3, CV_8UC3, cv::Scalar(11, 22, 33));
+        const auto owned = CollectionController::makePreviewImage(small, QSize(1280, 960));
+        require(small.at<cv::Vec3b>(0, 0) == cv::Vec3b(11, 22, 33), "preview conversion mutated capture pixels");
+        small.release();
+        require(owned.pixelColor(0, 0) == QColor(33, 22, 11), "preview image referenced released frame storage");
+    }
+    static void verifyCoordinateImport(const QString& directory) {
+        CollectionController controller;
+        const QString path = directory + "/coordinate.json";
+        QFile file(path);
+        require(file.open(QIODevice::WriteOnly), "cannot create coordinate fixture");
+        file.write(R"({"rz":6,"ry":5,"rx":4,"z":3,"y":2,"x":1,"tcp_name":"fixture"})");
+        file.close();
+        QString result, tool, error;
+        int replies = 0;
+        QObject::connect(&controller, &CollectionController::coordinatesImported,
+            [&](const QString& values, const QString& name, const QString& failure) {
+                ++replies; result = values; tool = name; error = failure;
+            });
+        controller.chooseTcpCoordinateFile();
+        auto* dialog = qobject_cast<QFileDialog*>(controller.m_coordinateDialog.data());
+        require(dialog && dialog->isVisible() && !controller.collectionBusy(), "file chooser blocked or started device work");
+        dialog->selectFile(path);
+        require(QMetaObject::invokeMethod(dialog, "accept"), "file chooser could not select JSON");
+        waitFor([&] { return replies == 1; });
+        require(error.isEmpty() && result == "1,2,3,4,5,6" && tool == "fixture" &&
+                !controller.collectionBusy() && !controller.coordinatesImporting() && robot.lines == 0,
+                "file selection failed to deliver coordinates or triggered robot motion");
+        controller.importTcpCoordinates(QUrl::fromLocalFile(directory + "/missing.json"));
+        require(controller.coordinatesImporting() && controller.collectionBusy(), "import did not lock conflicting operations");
+        waitFor([&] { return replies == 2; });
+        require(!error.isEmpty() && !controller.collectionBusy() && robot.lines == 0, "failed import locked UI or moved robot");
+        controller.m_collectionBusy = true;
+        controller.importTcpCoordinates(QUrl::fromLocalFile(path));
+        require(replies == 3 && !error.isEmpty() && !controller.coordinatesImporting(), "busy controller accepted coordinate import");
+        controller.m_collectionBusy = false;
+    }
     static void verifyPreviewVisibility(const QString& output) {
         CollectionController controller;
         auto camera = std::make_shared<Camera>();
@@ -203,12 +289,16 @@ extern "C" CRresult cr_cfg_safety_joint_limit_get(RobotHandle, SafetyLimitsMode,
 }
 
 int main(int argc, char** argv) {
-    QCoreApplication app(argc, argv);
+    if (qEnvironmentVariableIsEmpty("QT_QPA_PLATFORM")) qputenv("QT_QPA_PLATFORM", "offscreen");
+    QApplication app(argc, argv);
+    app.setQuitOnLastWindowClosed(false);
     try {
         CollectionControllerTestAccess::verifySessionGates();
         testCollectionSettings();
         QTemporaryDir temp;
         require(temp.isValid(), "temporary output directory failed");
+        CollectionControllerTestAccess::verifyCoordinateImport(temp.path());
+        CollectionControllerTestAccess::verifyResponsivePreview(temp.path());
         CollectionControllerTestAccess::verifyPreviewVisibility(temp.path());
         {
             CameraImageProvider provider;

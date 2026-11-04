@@ -56,6 +56,11 @@ ApplicationWindow {
         target: root.controller; property: "previewVisible"
         value: root.page === "main" && root.visible && root.visibility !== Window.Minimized
     }
+    Binding {
+        target: root.controller; property: "previewDisplaySize"
+        value: Qt.size(Math.max(1, Math.round(cameraImage.width * root.screen.devicePixelRatio)),
+                       Math.max(1, Math.round(cameraImage.height * root.screen.devicePixelRatio)))
+    }
     onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = "" }
     onClosing: function(event) {
         if (busy) { event.accepted = false; controller.cancelCollectionOperation() }

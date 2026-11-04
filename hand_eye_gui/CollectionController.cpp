@@ -63,6 +63,7 @@ CollectionController::~CollectionController()
                         {"camera_opened", QString::number(m_cameraOpened)},
                         {"robot_connected", QString::number(m_robotConnected)}});
     m_tcpPoseTimer->stop();
+    delete m_coordinateDialog.data();
     ++m_tcpPoseGeneration;
     if (m_robotSession) m_robotSession->closing = true;
     m_cancelRequested = true;
@@ -395,6 +396,7 @@ void CollectionController::closeCamera()
     }
     stopPreview();
 
+    if (m_previewFuture.valid()) m_previewFuture.wait();
     if (m_camera) {
         m_camera->close();
     }
@@ -443,6 +445,7 @@ void CollectionController::startPreview()
                            {{"interval_ms", QString::number(m_previewTimer->interval())}});
         m_previewFrameCount = 0;
         m_previewEmptyCount = 0;
+        ++m_previewGeneration;
         m_previewActive = true;
         updatePreviewTimer();
         emit previewActiveChanged();
@@ -470,6 +473,7 @@ void CollectionController::startPreview()
 void CollectionController::stopPreview()
 {
     const bool wasActive = m_previewActive;
+    ++m_previewGeneration;
     m_previewActive = false;
     updatePreviewTimer();
     emit previewActiveChanged();
@@ -485,9 +489,18 @@ void CollectionController::stopPreview()
 void CollectionController::setPreviewVisible(bool visible)
 {
     if (m_previewVisible == visible) return;
+    ++m_previewGeneration;
     m_previewVisible = visible;
     updatePreviewTimer();
     emit previewVisibleChanged();
+}
+
+void CollectionController::setPreviewDisplaySize(const QSize& size)
+{
+    if (size.isEmpty() || size == m_previewDisplaySize) return;
+    m_previewDisplaySize = size;
+    ++m_previewGeneration;
+    emit previewDisplaySizeChanged();
 }
 
 void CollectionController::updatePreviewTimer()
@@ -503,103 +516,88 @@ void CollectionController::updatePreviewTimer()
 void CollectionController::onPreviewTick()
 {
     if (!m_previewVisible || !m_previewActive || !m_camera || !m_cameraOpened || m_collectionBusy) return;
-
     try {
-
-    cv::Mat frame = m_camera->captureOneFrame(10);
-    if (frame.empty()) {
-        ++m_previewEmptyCount;
-        if (m_previewEmptyCount == 1 || m_previewEmptyCount % 150 == 0) {
-            APP_LOG_EVENT_WARNING("preview",
-                                  "preview_frame",
-                                  "empty",
-                                  {{"empty_count", QString::number(m_previewEmptyCount)},
-                                   {"successful_frames", QString::number(m_previewFrameCount)}});
+        if (m_previewFuture.valid()) {
+            if (m_previewFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return;
+            auto completed = std::move(m_previewFuture);
+            // Navigation, settings and capture invalidate frames started with old state.
+            if (m_pendingPreviewGeneration == m_previewGeneration) {
+                const auto& frame = completed.get();
+                if (frame.image.isNull()) {
+                    ++m_previewEmptyCount;
+                    if (m_previewEmptyCount == 1 || m_previewEmptyCount % 150 == 0)
+                        APP_LOG_EVENT_WARNING("preview", "preview_frame", "empty",
+                            {{"empty_count", QString::number(m_previewEmptyCount)},
+                             {"successful_frames", QString::number(m_previewFrameCount)}});
+                } else {
+                    ++m_previewFrameCount;
+                    if (m_previewFrameCount == 1 || m_previewFrameCount % 150 == 0)
+                        APP_LOG_EVENT_DEBUG("preview", "preview_frame", "heartbeat",
+                            {{"frame", QString::number(m_previewFrameCount)},
+                             {"empty_frames", QString::number(m_previewEmptyCount)},
+                             {"size", QString("%1x%2").arg(frame.originalSize.width()).arg(frame.originalSize.height())},
+                             {"display_size", QString("%1x%2").arg(frame.image.width()).arg(frame.image.height())},
+                             {"channels", QString::number(frame.channels)}});
+                    if (m_imageProvider) m_imageProvider->setImage(frame.image);
+                    emit frameUpdated();
+                }
+            } else {
+                try { completed.get(); }
+                catch (const std::exception& error) {
+                    APP_LOG_EVENT_WARNING("preview", "preview_frame", "discarded_error", {{"message", QString::fromUtf8(error.what())}});
+                } catch (...) {
+                    APP_LOG_EVENT_WARNING("preview", "preview_frame", "discarded_error", {{"type", "unknown"}});
+                }
+            }
         }
-        return;
-    }
-    ++m_previewFrameCount;
-
-    if (m_undistortionMaps)
-        frame = m_undistortionMaps->apply(frame);
-
-    if (m_previewFrameCount == 1 || m_previewFrameCount % 150 == 0) {
-        APP_LOG_EVENT_DEBUG("preview",
-                           "preview_frame",
-                           "heartbeat",
-                           {{"frame", QString::number(m_previewFrameCount)},
-                            {"empty_frames", QString::number(m_previewEmptyCount)},
-                            {"size", QString("%1x%2").arg(frame.cols).arg(frame.rows)},
-                            {"channels", QString::number(frame.channels())}});
-    }
-
-    publishFrame(frame);
-    emit frameUpdated();
-    } catch (const std::exception& e) {
-        APP_LOG_EVENT_ERROR("preview",
-                            "preview_tick",
-                            "exception",
-                            {{"type", "std"},
-                             {"message", QString::fromUtf8(e.what())},
-                             {"frame", QString::number(m_previewFrameCount)}});
+        if (!m_previewVisible || !m_previewActive || m_collectionBusy || !m_cameraOpened) return;
+        const auto camera = m_camera;
+        const auto maps = m_undistortionMaps;
+        const auto displaySize = m_previewDisplaySize;
+        m_pendingPreviewGeneration = m_previewGeneration;
+        // One frame at a time: no worker queue and no device/pixel work on the GUI thread.
+        m_previewFuture = std::async(std::launch::async, [camera, maps, displaySize] {
+            cv::Mat bgr = camera->captureOneFrame(10);
+            if (bgr.empty()) return PreviewFrame{};
+            if (maps) bgr = maps->apply(bgr);
+            return PreviewFrame{makePreviewImage(bgr, displaySize), QSize(bgr.cols, bgr.rows), bgr.channels()};
+        }).share();
+    } catch (const std::exception& error) {
+        APP_LOG_EVENT_ERROR("preview", "preview_tick", "exception",
+            {{"message", QString::fromUtf8(error.what())}, {"frame", QString::number(m_previewFrameCount)}});
         stopPreview();
-        setStatus(QString("预览异常: %1").arg(QString::fromUtf8(e.what())));
+        setStatus(QString("预览异常: %1").arg(QString::fromUtf8(error.what())));
     } catch (...) {
-        APP_LOG_EVENT_ERROR("preview",
-                            "preview_tick",
-                            "exception",
-                            {{"type", "unknown"},
-                             {"frame", QString::number(m_previewFrameCount)}});
+        APP_LOG_EVENT_ERROR("preview", "preview_tick", "exception", {{"type", "unknown"}});
         stopPreview();
         setStatus("预览发生未知异常");
     }
 }
 
-// ===================================================================
-//  cv::Mat → QImage 转换
-// ===================================================================
-
-void CollectionController::publishFrame(const cv::Mat& bgr)
+QImage CollectionController::makePreviewImage(const cv::Mat& bgr, const QSize& displaySize)
 {
-    if (bgr.empty() || !m_imageProvider) {
-        APP_LOG_EVENT_WARNING("image",
-                              "publish_frame",
-                              "skip",
-                              {{"empty", bgr.empty() ? "true" : "false"},
-                               {"provider", QString::number(reinterpret_cast<quintptr>(m_imageProvider), 16)}});
-        return;
-    }
-
-    QImage qimg;
+    cv::Mat pixels = bgr;
+    const QSize fitted = QSize(bgr.cols, bgr.rows).scaled(displaySize, Qt::KeepAspectRatio);
+    if (fitted.width() < bgr.cols && fitted.height() < bgr.rows)
+        cv::resize(bgr, pixels, cv::Size(std::max(1, fitted.width()), std::max(1, fitted.height())), 0, 0, cv::INTER_AREA);
     cv::Mat converted;
-    if (bgr.channels() == 3) {
-        cv::cvtColor(bgr, converted, cv::COLOR_BGR2RGB);
-        qimg = QImage(converted.data, converted.cols, converted.rows,
-                      static_cast<int>(converted.step),
-                      QImage::Format_RGB888);
-    } else if (bgr.channels() == 1) {
-        qimg = QImage(bgr.data, bgr.cols, bgr.rows,
-                      static_cast<int>(bgr.step),
-                      QImage::Format_Grayscale8);
-    } else if (bgr.channels() == 4) {
-        cv::cvtColor(bgr, converted, cv::COLOR_BGRA2RGBA);
-        qimg = QImage(converted.data, converted.cols, converted.rows,
-                      static_cast<int>(converted.step),
-                      QImage::Format_RGBA8888);
+    QImage::Format format;
+    if (pixels.channels() == 3) {
+        cv::cvtColor(pixels, converted, cv::COLOR_BGR2RGB);
+        pixels = converted;
+        format = QImage::Format_RGB888;
+    } else if (pixels.channels() == 1) {
+        format = QImage::Format_Grayscale8;
+    } else if (pixels.channels() == 4) {
+        cv::cvtColor(pixels, converted, cv::COLOR_BGRA2RGBA);
+        pixels = converted;
+        format = QImage::Format_RGBA8888;
     } else {
-        APP_LOG_EVENT_WARNING("image",
-                              "publish_frame",
-                              "fail",
-                              {{"channels", QString::number(bgr.channels())},
-                               {"size", QString("%1x%2").arg(bgr.cols).arg(bgr.rows)}});
-        return;
+        throw std::runtime_error("预览图像通道数无效");
     }
-
-    m_imageProvider->setImage(qimg.copy());
+    // Own the pixels before the worker's cv::Mat is released. Saved images keep full resolution.
+    return QImage(pixels.data, pixels.cols, pixels.rows, static_cast<int>(pixels.step), format).copy();
 }
-
-// ===================================================================
-// ===================================================================
 
 void CollectionController::appendLog(const QString& line)
 {

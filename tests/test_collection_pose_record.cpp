@@ -148,6 +148,31 @@ int main(int argc, char** argv) {
         require(QDir(points).entryList(QDir::Files) == files, "failed TCP save created a file");
         require(!collection::saveStandaloneTcpPose(image, base, pose, "探针A", offset, saved).isEmpty() &&
                 saved.isEmpty(), "blocked directory did not fail");
+
+        QString coordinates, tool;
+        require(collection::loadPoseCoordinates(firstPath, coordinates, tool).isEmpty() &&
+                coordinates == "500,-200,750,0,0,90" && tool == "探针A", "saved TCP JSON did not import in axis order");
+        const QString imported = temp.filePath("导入点位.json");
+        auto import = [&](const QByteArray& bytes) {
+            QFile file(imported);
+            require(file.open(QIODevice::WriteOnly), "cannot write import fixture");
+            require(file.write(bytes) == bytes.size(), "cannot write complete import fixture");
+            file.close();
+            return collection::loadPoseCoordinates(imported, coordinates, tool);
+        };
+        require(import(R"({"rx":179.99967118142848,"ry":-0.012766000975997492,"rz":0.02149207938819223,"x":-122.22233831535885,"y":-517.3887484334697,"z":131.66895532412371})").isEmpty(), "screenshot JSON rejected");
+        const auto parts = coordinates.split(',');
+        require(parts.size() == 6 && parts[0].toDouble() == -122.22233831535885 &&
+                parts[3].toDouble() == 179.99967118142848 && parts[5].toDouble() == 0.02149207938819223,
+                "import rounded coordinates or used JSON key order");
+        for (const QByteArray& invalidJson : {QByteArray("[]"), QByteArray("{broken"),
+                QByteArray(R"({"x":1,"y":2,"z":3,"rx":4,"ry":5})"),
+                QByteArray(R"({"x":null,"y":2,"z":3,"rx":4,"ry":5,"rz":6})"),
+                QByteArray(R"({"x":"1","y":2,"z":3,"rx":4,"ry":5,"rz":6})"),
+                QByteArray(R"({"x":1e999,"y":2,"z":3,"rx":4,"ry":5,"rz":6})"), QByteArray(65537, ' ')})
+            require(!import(invalidJson).isEmpty() && coordinates.isEmpty(), "malformed or oversized JSON yielded motion coordinates");
+        require(!collection::loadPoseCoordinates(temp.filePath("missing.json"), coordinates, tool).isEmpty(), "missing file imported");
+        require(!collection::loadPoseCoordinates(matrixPath, coordinates, tool).isEmpty(), "transform matrix mistaken for six-axis coordinates");
         require(QDir(points).entryList({"*.png", "*.jpg"}, QDir::Files).isEmpty(), "TCP save created an image");
         require(read(image) == imageBytes, "TCP save changed image");
         std::cout << "Flange image records and named TCP metadata passed\n";
