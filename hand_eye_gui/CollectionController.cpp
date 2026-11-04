@@ -21,16 +21,6 @@
 #include <cmath>
 #include <stdexcept>
 
-namespace {
-
-constexpr int kMinimumConfiguredExposureUs = 1;
-constexpr int kMaximumConfiguredExposureUs = 10000000;
-
-} // namespace
-
-// ---- 静态成员 ----
-CollectionController* CollectionController::s_instance = nullptr;
-
 // ===================================================================
 //  构造 / 析构
 // ===================================================================
@@ -38,7 +28,11 @@ CollectionController* CollectionController::s_instance = nullptr;
 CollectionController::CollectionController(QObject* parent)
     : QObject(parent)
 {
-    s_instance = this;
+    m_robotDelivery = std::shared_ptr<QObject>(new QObject, [](QObject* value) { value->deleteLater(); });
+    m_tcpPoseTimer = new QTimer(this);
+    m_tcpPoseTimer->setInterval(200);
+    connect(m_tcpPoseTimer, &QTimer::timeout, this, &CollectionController::pollTcpPose);
+    m_tcpPoseTimer->start();
 
     m_previewTimer = new QTimer(this);
     m_previewTimer->setInterval(66);  // ~15 fps
@@ -68,9 +62,20 @@ CollectionController::~CollectionController()
                         {"preview", QString::number(m_previewActive)},
                         {"camera_opened", QString::number(m_cameraOpened)},
                         {"robot_connected", QString::number(m_robotConnected)}});
+    m_tcpPoseTimer->stop();
+    ++m_tcpPoseGeneration;
+    if (m_robotSession) m_robotSession->closing = true;
     m_cancelRequested = true;
     if (m_collectionThread.joinable())
         m_collectionThread.join();
+    // A connect worker may finish after the event loop stopped, before its UI
+    // delivery. Adopt the pending handle so shutdown still releases it safely.
+    if (const auto pending = m_pendingRobotHandle.exchange(0)) {
+        m_robotHandle = pending;
+        m_robotConnected = true;
+        m_robotSession = std::make_shared<RobotSession>(pending);
+        m_robotSession->closing = true;
+    }
     if (m_robotConnected && m_robotStopUnconfirmed) {
         try {
             const auto result = cr_stop(m_robotHandle);
@@ -91,7 +96,6 @@ CollectionController::~CollectionController()
     closeCamera();
     disconnectRobot();
 
-    s_instance = nullptr;
     DiagnosticLogger::instance().setUiSink({});
     APP_LOG_EVENT_INFO("controller",
                        "ui_controller",
@@ -228,87 +232,6 @@ void CollectionController::loadConfigYaml()
 //  属性 setter
 // ===================================================================
 
-void CollectionController::setRobotIp(const QString& v) {
-    if (m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "robot_ip"},
-                               {"reason", "collection_busy"}});
-        return;
-    }
-    if (m_robotIp != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "robot_ip"},
-                            {"from", m_robotIp},
-                            {"to", v}});
-        m_robotIp = v; emit robotIpChanged();
-        persistCollectionString("robot_ip", v);
-    }
-}
-void CollectionController::setCameraIp(const QString& v) {
-    if (m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "camera_ip"},
-                               {"reason", "collection_busy"}});
-        return;
-    }
-    if (m_cameraIp != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "camera_ip"},
-                            {"from", m_cameraIp},
-                            {"to", v}});
-        m_cameraIp = v; emit cameraIpChanged();
-        persistCollectionString("cam_ip", v);
-    }
-}
-void CollectionController::setPreviewWidth(int v) {
-    if (m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "preview_width"},
-                               {"reason", "collection_busy"}});
-        return;
-    }
-    if (m_previewWidth != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "preview_width"},
-                            {"from", QString::number(m_previewWidth)},
-                            {"to", QString::number(v)}});
-        m_previewWidth = v; emit previewWidthChanged();
-        persistCollectionInteger("cam_width", v);
-    }
-}
-void CollectionController::setPreviewHeight(int v) {
-    if (m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("config",
-                              "config_update",
-                              "skip",
-                              {{"field", "preview_height"},
-                               {"reason", "collection_busy"}});
-        return;
-    }
-    if (m_previewHeight != v) {
-        APP_LOG_EVENT_INFO("config",
-                           "config_update",
-                           "success",
-                           {{"field", "preview_height"},
-                            {"from", QString::number(m_previewHeight)},
-                            {"to", QString::number(v)}});
-        m_previewHeight = v; emit previewHeightChanged();
-        persistCollectionInteger("cam_height", v);
-    }
-}
-
 QString CollectionController::diagnosticLogPath() const
 {
     return DiagnosticLogger::instance().logFilePath();
@@ -318,237 +241,6 @@ QString CollectionController::cameraBackend() const
 {
     return QStringLiteral("mvs");
 }
-
-void CollectionController::connectRobot()
-{
-    if (m_collectionBusy) {
-        setStatus("采集操作中，不能更改机器人连接");
-        return;
-    }
-    if (m_robotConnected) {
-        APP_LOG_EVENT_INFO("robot",
-                           "robot_connect",
-                           "skip",
-                           {{"reason", "already_connected"}});
-        setStatus("机器人已连接");
-        return;
-    }
-
-    QElapsedTimer timer;
-    timer.start();
-    APP_LOG_EVENT_INFO("robot",
-                       "robot_connect",
-                       "start",
-                       {{"endpoint", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)}});
-    setStatus("正在连接机器人...");
-
-    QByteArray ip   = m_robotIp.toLocal8Bit();
-    QByteArray pwd  = m_robotPasswd.toLocal8Bit();
-
-    CRresult ret = cr_create_robot(&m_robotHandle, ip.data(),
-                                    m_robotPort, pwd.data());
-    if (ret != sucess) {
-        APP_LOG_EVENT_ERROR("robot",
-                            "robot_connect",
-                            "fail",
-                            {{"endpoint", QString("%1:%2").arg(m_robotIp).arg(m_robotPort)},
-                             {"error", QString::number(ret)},
-                             {"elapsed_ms", QString::number(timer.elapsed())}});
-        setStatus(QString("连接机器人失败 (err=%1)").arg(ret));
-        emit robotConnectedChanged();
-        return;
-    }
-
-    m_robotConnected = true;
-    emit robotConnectedChanged();
-
-    // 上电使能
-    const bool ready = checkAndRestoreRobotHand();
-    APP_LOG_EVENT_INFO("robot",
-                       "robot_connect",
-                       "success",
-                       {{"handle", QString::number(static_cast<qulonglong>(m_robotHandle))},
-                        {"ready", ready ? "true" : "false"},
-                        {"elapsed_ms", QString::number(timer.elapsed())}});
-    setStatus("机器人已连接");
-    refreshTcpTools();
-}
-
-void CollectionController::disconnectRobot()
-{
-    APP_LOG_EVENT_INFO("robot",
-                       "robot_disconnect",
-                       "start",
-                       {{"connected", QString::number(m_robotConnected)},
-                        {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
-    if (m_collectionBusy || m_robotStopUnconfirmed) {
-        APP_LOG_EVENT_WARNING("robot",
-                              "robot_disconnect",
-                              "skip",
-                              {{"reason", "collection_busy"}});
-        setStatus(m_motionFault ? "机器人停止未确认，请先点击“重试停止”"
-                               : "请先停止采集操作并等待结束，再断开机器人");
-        return;
-    }
-
-    if (m_robotConnected) {
-        if (m_robotHandle != 0) {
-            const CRresult result = cr_destroy_robot(m_robotHandle);
-            if (result != sucess)
-                APP_LOG_EVENT_WARNING("robot",
-                                     "robot_destroy",
-                                     "fail",
-                                     {{"error", QString::number(result)}});
-        }
-        m_robotHandle = 0;
-        m_robotConnected = false;
-        emit robotConnectedChanged();
-    }
-    m_tcpNames.clear();
-    m_selectedTcp.clear();
-    emit tcpToolsChanged();
-    setStatus("机器人已断开");
-    APP_LOG_EVENT_INFO("robot",
-                       "robot_disconnect",
-                       "complete",
-                       {{"connected", QString::number(false)}});
-}
-
-bool CollectionController::checkAndRestoreRobotHand()
-{
-    if (!m_robotConnected || m_robotHandle == 0) {
-        APP_LOG_EVENT_WARNING("robot",
-                              "robot_prepare",
-                              "skip",
-                              {{"reason", "not_connected"},
-                               {"connected", QString::number(m_robotConnected)},
-                               {"handle", QString::number(static_cast<qulonglong>(m_robotHandle))}});
-        return false;
-    }
-
-    enum RobotModes robotMode;
-    CRresult res = cr_get_robotMode(m_robotHandle, &robotMode);
-    if (res != sucess) {
-        APP_LOG_EVENT_ERROR("robot",
-                           "robot_mode",
-                           "fail",
-                           {{"error", QString::number(res)}});
-        setStatus("获取机械臂模式失败");
-        return false;
-    }
-    APP_LOG_EVENT_DEBUG("robot",
-                        "robot_mode",
-                        "ready",
-                        {{"mode", QString::number(static_cast<int>(robotMode))}});
-    if (robotMode != JointPowerOff) {
-        APP_LOG_EVENT_INFO("robot",
-                           "robot_prepare",
-                           "success",
-                           {{"action", "already_powered"},
-                            {"mode", QString::number(static_cast<int>(robotMode))}});
-        return true;  // 已上电
-    }
-
-    setStatus("机械臂未上电，正在上电使能...");
-
-    res = cr_FaultReset(m_robotHandle);
-    if (res == sucess) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    } else {
-        APP_LOG_EVENT_ERROR("robot",
-                            "robot_prepare",
-                            "fail",
-                            {{"step", "fault_reset"},
-                             {"error", QString::number(res)}});
-        setStatus("故障复位失败");
-        return false;
-    }
-
-    res = cr_poweron(m_robotHandle);
-    if (res != sucess) {
-        APP_LOG_EVENT_ERROR("robot",
-                            "robot_prepare",
-                            "fail",
-                            {{"step", "power_on"},
-                             {"error", QString::number(res)}});
-        setStatus("上电失败");
-        return false;
-    }
-
-    const auto waitForMode = [this, &robotMode](enum RobotModes target,
-                                                const char* phase) {
-        constexpr int kPollIntervalMs = 100;
-        constexpr int kMaxPolls = 300;  // 最多等待 30 秒
-        QElapsedTimer timer;
-        timer.start();
-        for (int poll = 1; poll <= kMaxPolls; ++poll) {
-            const CRresult modeRet = cr_get_robotMode(m_robotHandle, &robotMode);
-            if (modeRet != sucess) {
-                APP_LOG_EVENT_ERROR("robot",
-                                    "robot_prepare",
-                                    "retry_fail",
-                                    {{"phase", QString::fromLatin1(phase)},
-                                     {"error", QString::number(modeRet)},
-                                     {"poll", QString::number(poll)},
-                                     {"elapsed_ms", QString::number(timer.elapsed())}});
-                return false;
-            }
-            if (robotMode == target) {
-                APP_LOG_EVENT_INFO("robot",
-                                  "robot_prepare",
-                                  "success",
-                                  {{"phase", QString::fromLatin1(phase)},
-                                   {"mode", QString::number(static_cast<int>(robotMode))},
-                                   {"poll", QString::number(poll)},
-                                   {"elapsed_ms", QString::number(timer.elapsed())}});
-                return true;
-            }
-            std::this_thread::sleep_for(std::chrono::milliseconds(kPollIntervalMs));
-        }
-        APP_LOG_EVENT_ERROR("robot",
-                            "robot_prepare",
-                            "timeout",
-                            {{"phase", QString::fromLatin1(phase)},
-                             {"target", QString::number(static_cast<int>(target))},
-                             {"last_mode", QString::number(static_cast<int>(robotMode))},
-                             {"elapsed_ms", QString::number(timer.elapsed())},
-                             {"poll_limit", QString::number(300)}});
-        return false;
-    };
-
-    if (!waitForMode(JointIdle, "power_on")) {
-        setStatus("等待机械臂上电就绪超时或通信失败");
-        return false;
-    }
-
-    res = cr_enable(m_robotHandle);
-    if (res != sucess) {
-        APP_LOG_EVENT_ERROR("robot",
-                            "robot_prepare",
-                            "fail",
-                            {{"step", "enable"},
-                             {"error", QString::number(res)}});
-        setStatus("使能失败");
-        return false;
-    }
-
-    if (!waitForMode(ProgramStop, "enable")) {
-        setStatus("等待机械臂使能就绪超时或通信失败");
-        return false;
-    }
-
-    setStatus("机械臂已上电使能");
-    APP_LOG_EVENT_INFO("robot",
-                       "robot_prepare",
-                       "success",
-                       {{"mode", QString::number(static_cast<int>(robotMode))},
-                        {"result", "ready"}});
-    return true;
-}
-
-// ===================================================================
-//  相机操作
-// ===================================================================
 
 void CollectionController::openCamera()
 {
@@ -721,135 +413,6 @@ void CollectionController::closeCamera()
                        {{"opened", "false"}});
 }
 
-void CollectionController::adjustCameraExposure(int exposureUs)
-{
-    if (m_collectionBusy) {
-        APP_LOG_EVENT_WARNING("camera", "exposure_update", "skip",
-                              {{"reason", "collection_busy"},
-                               {"requested_us", QString::number(exposureUs)}});
-        setStatus("采集操作中，不能调整曝光");
-        return;
-    }
-    if (exposureUs < kMinimumConfiguredExposureUs ||
-        exposureUs > kMaximumConfiguredExposureUs) {
-        APP_LOG_EVENT_WARNING(
-            "camera", "exposure_update", "invalid_value",
-            {{"requested_us", QString::number(exposureUs)},
-             {"valid_range", QString("%1..%2")
-                  .arg(kMinimumConfiguredExposureUs)
-                  .arg(kMaximumConfiguredExposureUs)}});
-        setStatus(QString("曝光值无效，有效范围为 %1–%2 μs")
-                      .arg(kMinimumConfiguredExposureUs)
-                      .arg(kMaximumConfiguredExposureUs));
-        return;
-    }
-
-    const bool cameraReady = m_cameraOpened && static_cast<bool>(m_camera);
-    const int previousConfigured = m_cameraExposureUs;
-    int previousDevice = -1;
-    int actualExposure = exposureUs;
-    bool deviceChanged = false;
-
-    if (cameraReady) {
-        int minimumUs = 0;
-        int maximumUs = 0;
-        if (m_camera->getExposureRange(minimumUs, maximumUs) &&
-            (exposureUs < minimumUs || exposureUs > maximumUs)) {
-            APP_LOG_EVENT_WARNING(
-                "camera", "exposure_update", "out_of_device_range",
-                {{"requested_us", QString::number(exposureUs)},
-                 {"device_min_us", QString::number(minimumUs)},
-                 {"device_max_us", QString::number(maximumUs)}});
-            setStatus(QString("曝光超出相机范围：%1–%2 μs")
-                          .arg(minimumUs).arg(maximumUs));
-            return;
-        }
-
-        previousDevice = m_camera->getColorExposureTime();
-        if (m_camera->getAutoExposure() && !m_camera->setAutoExposure(false)) {
-            const CameraErrorDetail error = m_camera->lastError();
-            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
-                                {{"step", "disable_auto_exposure"},
-                                 {"detail", QString::fromStdString(error.message)}});
-            setStatus("关闭自动曝光失败，曝光未更新");
-            return;
-        }
-        if (!m_camera->setColorExposureTime(exposureUs)) {
-            const CameraErrorDetail error = m_camera->lastError();
-            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
-                                {{"step", "apply_device"},
-                                 {"requested_us", QString::number(exposureUs)},
-                                 {"detail", QString::fromStdString(error.message)}});
-            setStatus("相机曝光更新失败");
-            return;
-        }
-        deviceChanged = true;
-        actualExposure = m_camera->getColorExposureTime();
-        if (actualExposure <= 0) {
-            if (previousDevice > 0)
-                m_camera->setColorExposureTime(previousDevice);
-            APP_LOG_EVENT_ERROR("camera", "exposure_update", "fail",
-                                {{"step", "device_readback"},
-                                 {"requested_us", QString::number(exposureUs)}});
-            setStatus("相机曝光回读失败，已尝试恢复原值");
-            return;
-        }
-    }
-
-    const std::string configPath = m_appPath + "config.yaml";
-    std::string persistError;
-    if (!config_resolver::updateFlatIntegerConfigFile(
-            configPath, "camera_exposure_us", actualExposure, persistError)) {
-        if (deviceChanged && previousDevice > 0)
-            m_camera->setColorExposureTime(previousDevice);
-        const int restoredActual = cameraReady
-            ? m_camera->getColorExposureTime() : -1;
-        if (m_cameraActualExposureUs != restoredActual) {
-            m_cameraActualExposureUs = restoredActual;
-            emit cameraActualExposureUsChanged();
-        }
-        APP_LOG_EVENT_ERROR(
-            "config", "exposure_persist", "fail",
-            {{"path", QString::fromStdString(configPath)},
-             {"requested_us", QString::number(exposureUs)},
-             {"actual_us", QString::number(actualExposure)},
-             {"rollback_us", QString::number(previousDevice)},
-             {"error", QString::fromStdString(persistError)}});
-        setStatus("曝光配置保存失败，相机已尝试恢复原值");
-        return;
-    }
-
-    if (m_cameraExposureUs != actualExposure) {
-        m_cameraExposureUs = actualExposure;
-        emit cameraExposureUsChanged();
-    }
-    const int newActual = cameraReady ? actualExposure : -1;
-    if (m_cameraActualExposureUs != newActual) {
-        m_cameraActualExposureUs = newActual;
-        emit cameraActualExposureUsChanged();
-    }
-
-    APP_LOG_EVENT_INFO(
-        "camera", "exposure_update", "success",
-        {{"requested_us", QString::number(exposureUs)},
-         {"actual_us", QString::number(actualExposure)},
-         {"previous_configured_us", QString::number(previousConfigured)},
-         {"camera_opened", cameraReady ? "true" : "false"},
-         {"preview_active", m_previewActive ? "true" : "false"},
-         {"config_path", QString::fromStdString(configPath)}});
-    if (cameraReady) {
-        setStatus(QString("曝光已调整为 %1 μs，并已保存")
-                      .arg(actualExposure));
-    } else {
-        setStatus(QString("曝光已保存为 %1 μs，下次打开相机生效")
-                      .arg(actualExposure));
-    }
-}
-
-// ===================================================================
-//  预览
-// ===================================================================
-
 void CollectionController::startPreview()
 {
     if (m_collectionBusy) return;
@@ -1018,11 +581,6 @@ void CollectionController::publishFrame(const cv::Mat& bgr)
 // ===================================================================
 // ===================================================================
 
-bool CollectionController::robotMotionCancellationRequested()
-{
-    return s_instance && s_instance->m_cancelRequested.load();
-}
-
 void CollectionController::appendLog(const QString& line)
 {
     if (QThread::currentThread() != thread()) {
@@ -1051,8 +609,8 @@ void CollectionController::flushPendingLogs()
     m_logText += m_pendingLogLines.join(QString());
     m_pendingLogLines.clear();
 
-    // 仅保留最近约 800 行，避免内存无限增长
-    constexpr int kMaxUiLogLines = 800;
+    // 与界面一致，仅保留最近 1000 行，避免内存无限增长。
+    constexpr int kMaxUiLogLines = 1000;
     int newlineCount = m_logText.count('\n');
     while (newlineCount > kMaxUiLogLines) {
         const int idx = m_logText.indexOf('\n');

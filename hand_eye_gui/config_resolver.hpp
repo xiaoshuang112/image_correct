@@ -5,6 +5,8 @@
 #include <opencv2/core/persistence.hpp>
 
 #include <string>
+#include <map>
+#include <variant>
 #include <vector>
 
 // config.yaml 相机配置三级解析（纯 C++ + OpenCV，无 Qt，可无硬件单测）。
@@ -42,8 +44,14 @@ struct CollectionConfig {
 CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
                                          const CollectionConfig& defaults = {});
 
-// 保留原文件注释与排版，只更新顶层整数键。目标文件通过同目录临时文件
+// 保留原文件注释与排版，只更新指定顶层键。目标文件通过同目录临时文件
 // 校验后原子替换；键不存在时插入到 YAML 文档头之后。
+using ConfigValue = std::variant<int, std::string, std::vector<int>>;
+using ConfigUpdates = std::map<std::string, ConfigValue>;
+// Validate and commit all edited settings in one replacement; never partially
+// persist a page when a later key is invalid or duplicated in the original.
+bool updateFlatConfigFile(const std::string& path, const ConfigUpdates& updates,
+                          std::string& error);
 bool updateFlatIntegerConfigFile(const std::string& path,
                                  const std::string& key,
                                  int value,

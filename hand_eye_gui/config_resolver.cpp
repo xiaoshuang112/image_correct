@@ -215,8 +215,6 @@ CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
 }
 
 namespace {
-using ConfigValue = std::variant<int, std::string, std::vector<int>>;
-
 std::string yamlValue(const ConfigValue& value) {
     if (const auto* number = std::get_if<int>(&value)) return std::to_string(*number);
     std::ostringstream text;
@@ -233,18 +231,27 @@ std::string yamlValue(const ConfigValue& value) {
     return text.str();
 }
 
-bool updateFlatConfigValueFile(const std::string& path,
-                               const std::string& key,
-                               const ConfigValue& value,
+bool updateFlatConfigValuesFile(const std::string& path,
+                               const ConfigUpdates& updates,
                                std::string& error) {
     namespace fs = std::filesystem;
     error.clear();
-    if (path.empty() || key.empty() || key.find_first_not_of(
-            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") !=
-            std::string::npos) {
-        error = "invalid config path or key";
-        return false;
+    if (path.empty()) { error = "invalid config path"; return false; }
+    for (const auto& [key, value] : updates) {
+        if (key.empty() || key.find_first_not_of(
+                "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") !=
+                std::string::npos) {
+            error = "invalid config path or key";
+            return false;
+        }
+        if (const auto* string = std::get_if<std::string>(&value)) {
+            if (string->find_first_of("\r\n") != std::string::npos || string->find('\0') != std::string::npos) {
+                error = "config string contains a line break or null character";
+                return false;
+            }
+        }
     }
+    if (updates.empty()) return true;
 
     const fs::path destination(path);
     const fs::path parent = destination.parent_path().empty()
@@ -289,52 +296,54 @@ bool updateFlatConfigValueFile(const std::string& path,
     if (lines.empty())
         lines = {"%YAML:1.0", "---"};
 
-    size_t matchCount = 0;
-    size_t matchIndex = 0;
-    for (size_t index = 0; index < lines.size(); ++index) {
-        size_t colonPosition = 0;
-        if (isTopLevelKeyLine(lines[index], key, colonPosition)) {
-            ++matchCount;
-            matchIndex = index;
-        }
-    }
-    if (matchCount > 1) {
-        error = "duplicate top-level config key: " + key;
-        return false;
-    }
-
-    const std::string replacement = key + ": " + yamlValue(value);
-    if (matchCount == 1) {
-        const std::string originalLine = lines[matchIndex];
-        const size_t comment = commentPosition(originalLine);
-        lines[matchIndex] = replacement;
-        if (comment != std::string::npos)
-            lines[matchIndex] += " " + originalLine.substr(comment);
-        // Remove a block sequence or wrapped flow sequence belonging to this
-        // key. Preserve comments/blank lines and all following top-level keys.
-        if (std::holds_alternative<std::vector<int>>(value)) {
-            size_t end = matchIndex + 1;
-            while (end < lines.size()) {
-                const auto& next = lines[end];
-                const size_t first = next.find_first_not_of(" \t");
-                if (first == std::string::npos || next[first] == '#') { ++end; continue; }
-                const bool sequenceItem = next[first] == '-' && first + 1 < next.size() && next[first + 1] == ' ';
-                if (first == 0 && !sequenceItem && next[first] != ']') break;
-                lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(end));
-            }
-        }
-    } else {
-        size_t insertIndex = 0;
+    for (const auto& [key, value] : updates) {
+        size_t matchCount = 0;
+        size_t matchIndex = 0;
         for (size_t index = 0; index < lines.size(); ++index) {
-            if (lines[index] == "---") {
-                insertIndex = index + 1;
-                break;
+            size_t colonPosition = 0;
+            if (isTopLevelKeyLine(lines[index], key, colonPosition)) {
+                ++matchCount;
+                matchIndex = index;
             }
-            if (lines[index].rfind("%YAML", 0) == 0)
-                insertIndex = index + 1;
         }
-        lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertIndex),
-                     replacement);
+        if (matchCount > 1) {
+            error = "duplicate top-level config key: " + key;
+            return false;
+        }
+
+        const std::string replacement = key + ": " + yamlValue(value);
+        if (matchCount == 1) {
+            const std::string originalLine = lines[matchIndex];
+            const size_t comment = commentPosition(originalLine);
+            lines[matchIndex] = replacement;
+            if (comment != std::string::npos)
+                lines[matchIndex] += " " + originalLine.substr(comment);
+            // Remove a block sequence or wrapped flow sequence belonging to this
+            // key. Preserve comments/blank lines and all following top-level keys.
+            if (std::holds_alternative<std::vector<int>>(value)) {
+                size_t end = matchIndex + 1;
+                while (end < lines.size()) {
+                    const auto& next = lines[end];
+                    const size_t first = next.find_first_not_of(" \t");
+                    if (first == std::string::npos || next[first] == '#') { ++end; continue; }
+                    const bool sequenceItem = next[first] == '-' && first + 1 < next.size() && next[first + 1] == ' ';
+                    if (first == 0 && !sequenceItem && next[first] != ']') break;
+                    lines.erase(lines.begin() + static_cast<std::ptrdiff_t>(end));
+                }
+            }
+        } else {
+            size_t insertIndex = 0;
+            for (size_t index = 0; index < lines.size(); ++index) {
+                if (lines[index] == "---") {
+                    insertIndex = index + 1;
+                    break;
+                }
+                if (lines[index].rfind("%YAML", 0) == 0)
+                    insertIndex = index + 1;
+            }
+            lines.insert(lines.begin() + static_cast<std::ptrdiff_t>(insertIndex),
+                         replacement);
+        }
     }
 
     std::ostringstream updated;
@@ -364,29 +373,32 @@ bool updateFlatConfigValueFile(const std::string& path,
 
     try {
         cv::FileStorage validation(temporary.string(), cv::FileStorage::READ);
-        if (!validation.isOpened() || validation[key].empty()) {
+        if (!validation.isOpened()) {
             error = "updated config failed YAML validation";
             validation.release();
             fs::remove(temporary, ec);
             return false;
         }
-        const auto node = validation[key];
-        bool matches = false;
-        if (const auto* number = std::get_if<int>(&value))
-            matches = node.isInt() && static_cast<int>(node) == *number;
-        else if (const auto* string = std::get_if<std::string>(&value))
-            matches = node.isString() && node.string() == *string;
-        else if (node.isSeq()) {
-            std::vector<int> persisted;
-            node >> persisted;
-            matches = persisted == std::get<std::vector<int>>(value);
+        for (const auto& [key, value] : updates) {
+            const auto node = validation[key];
+            bool matches = false;
+            if (const auto* number = std::get_if<int>(&value))
+                matches = node.isInt() && static_cast<int>(node) == *number;
+            else if (const auto* string = std::get_if<std::string>(&value))
+                matches = node.isString() && node.string() == *string;
+            else if (node.isSeq()) {
+                std::vector<int> persisted;
+                node >> persisted;
+                matches = persisted == std::get<std::vector<int>>(value);
+            }
+            if (!matches) {
+                error = "updated config value failed readback";
+                validation.release();
+                fs::remove(temporary, ec);
+                return false;
+            }
         }
         validation.release();
-        if (!matches) {
-            error = "updated config value failed readback";
-            fs::remove(temporary, ec);
-            return false;
-        }
     } catch (const std::exception& exception) {
         error = exception.what();
         fs::remove(temporary, ec);
@@ -407,23 +419,24 @@ bool updateFlatConfigValueFile(const std::string& path,
 }
 } // namespace
 
+bool updateFlatConfigFile(const std::string& path, const ConfigUpdates& updates,
+                          std::string& error) {
+    return updateFlatConfigValuesFile(path, updates, error);
+}
+
 bool updateFlatIntegerConfigFile(const std::string& path, const std::string& key,
                                  int value, std::string& error) {
-    return updateFlatConfigValueFile(path, key, value, error);
+    return updateFlatConfigFile(path, {{key, value}}, error);
 }
 
 bool updateFlatStringConfigFile(const std::string& path, const std::string& key,
                                 const std::string& value, std::string& error) {
-    if (value.find_first_of("\r\n") != std::string::npos || value.find('\0') != std::string::npos) {
-        error = "config string contains a line break or null character";
-        return false;
-    }
-    return updateFlatConfigValueFile(path, key, value, error);
+    return updateFlatConfigFile(path, {{key, value}}, error);
 }
 
 bool updateFlatIntegerSequenceConfigFile(const std::string& path, const std::string& key,
                                          const std::vector<int>& values, std::string& error) {
-    return updateFlatConfigValueFile(path, key, values, error);
+    return updateFlatConfigFile(path, {{key, values}}, error);
 }
 
 }  // namespace config_resolver

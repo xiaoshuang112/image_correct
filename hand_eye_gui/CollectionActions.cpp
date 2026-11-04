@@ -6,10 +6,6 @@
 #include "RobotTcp.hpp"
 #include "ExposureList.hpp"
 #include "utils/collection_undistortion.hpp"
-#include "config_resolver.hpp"
-#include "utils/collection_utils.hpp"
-#include "utils/calib_transform.hpp"
-#include "utils/robot_util.hpp"
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
@@ -109,61 +105,21 @@ void CollectionController::openCollectionFolder() {
     setStatus("已打开图片文件夹");
 }
 
-void CollectionController::setExposureList(const QString& value) {
-    if (m_collectionBusy) return;
-    if (m_exposureList == value.trimmed()) return;
-    m_exposureList = value.trimmed();
-    emit collectionChanged();
-    if (m_appPath.empty()) return;
-    std::vector<int> exposures;
-    const auto errorKind = collection::parseExposureList(m_exposureList, exposures);
-    if (errorKind == collection::ExposureListError::InvalidValue) {
-        setStatus("融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
-        return;
-    }
-    if (errorKind == collection::ExposureListError::InvalidCount) {
-        setStatus("融合曝光应包含 2～5 个数值，未写入配置");
-        return;
-    }
-    std::string error;
-    if (!config_resolver::updateFlatIntegerSequenceConfigFile(
-            m_appPath + "config.yaml", "fusion_exposures_us", exposures, error)) {
-        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
-            {{"field", "fusion_exposures_us"}, {"error", QString::fromStdString(error)}});
-        setStatus("曝光序列已更新，但配置保存失败：" + QString::fromStdString(error));
-    }
-}
-
-void CollectionController::persistCollectionString(const std::string& key, const QString& value) {
-    if (m_appPath.empty()) return;
-    std::string error;
-    if (!config_resolver::updateFlatStringConfigFile(m_appPath + "config.yaml", key, value.toStdString(), error)) {
-        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
-            {{"field", QString::fromStdString(key)}, {"error", QString::fromStdString(error)}});
-        setStatus("本次参数已更新，但配置保存失败：" + QString::fromStdString(error));
-    }
-}
-
-void CollectionController::persistCollectionInteger(const std::string& key, int value) {
-    if (m_appPath.empty()) return;
-    std::string error;
-    if (!config_resolver::updateFlatIntegerConfigFile(m_appPath + "config.yaml", key, value, error)) {
-        APP_LOG_EVENT_ERROR("config", "collection_persist", "fail",
-            {{"field", QString::fromStdString(key)}, {"error", QString::fromStdString(error)}});
-        setStatus("本次参数已更新，但配置保存失败：" + QString::fromStdString(error));
-    }
-}
 void CollectionController::beginCollectionOperation() {
     if (m_collectionThread.joinable()) m_collectionThread.join();
+    ++m_tcpPoseGeneration;
     m_collectionWasPreviewing = m_previewActive;
     m_previewTimer->stop();
     m_cancelRequested = false;
     m_collectionBusy = true;
     m_fivePointProgress.clear();
+    m_manualMoveProgress.clear();
     emit collectionChanged();
 }
 
 void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
+    if (!m_manualMoveProgress.isEmpty()) m_manualMoveProgress = message;
+    m_manualMoveActive = false;
     m_motionFault = m_robotStopUnconfirmed.load();
     m_collectionBusy = m_motionFault;
     m_stopRetrying = false;
@@ -176,6 +132,7 @@ void CollectionController::finishCollectionOperation(const QString& message, con
     if (m_motionFault) {
         status += "；未确认机器人停止，操作已锁定，请点击“重试停止”";
         m_fivePointProgress = status;
+        if (!m_manualMoveProgress.isEmpty()) m_manualMoveProgress = status;
     }
     emit collectionChanged();
     setStatus(status);
@@ -192,11 +149,18 @@ void CollectionController::retryRobotStop() {
     if (m_stopRetrying) return;
     if (m_collectionThread.joinable()) m_collectionThread.join();
     m_stopRetrying = true;
+    m_cancelRequested = false;
     m_fivePointProgress = "正在重试停止并确认机器人状态…";
     setStatus(m_fivePointProgress);
     emit collectionChanged();
+    const auto session = robotSession();
     try {
-        m_collectionThread = std::thread([this] {
+        m_collectionThread = std::thread([this, session] {
+            auto robotLock = session->acquire(m_cancelRequested);
+            if (!robotLock.owns_lock()) {
+                QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("操作已取消"); }, Qt::QueuedConnection);
+                return;
+            }
             QString message;
             try {
                 const auto result = cr_stop(m_robotHandle);
@@ -218,6 +182,10 @@ void CollectionController::cancelCollectionOperation() {
     if (m_motionFault) { retryRobotStop(); return; }
     if (m_collectionBusy) {
         m_cancelRequested = true;
+        if (m_manualMoveActive) {
+            m_manualMoveProgress = "正在停止 TCP 移动…";
+            emit collectionChanged();
+        }
         if (!m_fivePointProgress.isEmpty()) {
             m_fivePointProgress = "正在停止五点采图…";
             emit collectionChanged();
@@ -259,16 +227,24 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
     const auto camera = m_camera;
     const auto undistortion = m_undistortionMaps;
     const auto handle = m_robotHandle;
+    const auto session = robotSession();
     std::function<std::array<double, 6>()> readPose;
     if (m_robotConnected) readPose = [handle] { return readFlangePose(handle); };
     const auto shutterTime = QDateTime::currentDateTime();
     const auto output = m_outputDirectory;
     beginCollectionOperation();
+    const auto sampleTcp = tcpSamplingCallback(session);
     setStatus(fivePoints ? "五点采图：正在检查当前基准位及目标…"
                         : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
         m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
-                                         output, exposures, fivePoints, xMm, yMm] {
+                                         output, exposures, fivePoints, xMm, yMm, session, sampleTcp] {
+            std::unique_lock<std::mutex> robotLock;
+            if (session) robotLock = session->acquire(m_cancelRequested);
+            if (session && !robotLock.owns_lock()) {
+                QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("操作已取消"); }, Qt::QueuedConnection);
+                return;
+            }
             QString message, path;
             int saved = 0;
             auto progress = [this](const QString& text) {
@@ -296,13 +272,13 @@ void CollectionController::startCapture(bool fivePoints, double xMm, double yMm)
                          {"ry", QString::number(origin[4], 'f', 6)}, {"rz", QString::number(origin[5], 'f', 6)},
                          {"offset_x_mm", QString::number(xMm)}, {"offset_y_mm", QString::number(yMm)}});
                     progress("五点采图 · 基准位稳定等待");
-                    collection::waitForStableFlange(handle, origin, m_cancelRequested);
+                    collection::waitForStableFlange(handle, origin, m_cancelRequested, {}, sampleTcp);
                     const QStringList names{"基准位", "X+", "X−", "Y+", "Y−"};
                     collection::runFivePointCapture(targets,
                         [&](const collection::FlangePose& target, int point) {
                             progress(point == 0 ? QString("已保存 %1/5 · 返回基准位").arg(saved)
                                 : QString("第 %1/5 点 · %2 · 移动及稳定等待").arg(point + 1).arg(names[point]));
-                            collection::moveFlangeLinear(handle, target, m_cancelRequested);
+                            collection::moveFlangeLinear(handle, target, m_cancelRequested, {}, sampleTcp);
                         },
                         [&](int point) {
                             if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point]))
@@ -344,7 +320,11 @@ void CollectionController::setSelectedTcp(const QString& name) {
     if (m_collectionBusy || !m_robotConnected || (!name.isEmpty() && !m_tcpNames.contains(name))) return;
     if (m_selectedTcp == name) return;
     m_selectedTcp = name;
+    m_tcpPoseLastFailure.clear();
+    ++m_tcpPoseGeneration;
+    invalidateTcpPose(name.isEmpty() ? "请选择 TCP 工具" : "正在读取所选 TCP…");
     emit tcpToolsChanged();
+    pollTcpPose();
 }
 
 void CollectionController::refreshTcpTools() {
@@ -352,12 +332,20 @@ void CollectionController::refreshTcpTools() {
     const QString previous = m_selectedTcp;
     m_tcpNames.clear();
     m_selectedTcp.clear();
+    ++m_tcpPoseGeneration;
+    invalidateTcpPose("正在读取 TCP 列表…");
     emit tcpToolsChanged();
     const auto handle = m_robotHandle;
+    const auto session = robotSession();
     beginCollectionOperation();
     setStatus("正在读取 TCP 列表…");
     try {
-        m_collectionThread = std::thread([this, handle, previous]() {
+        m_collectionThread = std::thread([this, handle, previous, session]() {
+            auto robotLock = session->acquire(m_cancelRequested);
+            if (!robotLock.owns_lock()) {
+                QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("操作已取消"); }, Qt::QueuedConnection);
+                return;
+            }
             collection::TcpList tools;
             QString selected, message;
             try {
@@ -409,10 +397,16 @@ void CollectionController::saveTcpPose(const QString& name) {
     const QString base = "tcp_" + fileTool + "_" +
         (pointName.isEmpty() ? time.toString("yyyyMMdd_HHmmss_zzz") : pointName);
     const auto handle = m_robotHandle;
+    const auto session = robotSession();
     beginCollectionOperation();
     setStatus("正在读取 TCP 坐标：" + selected + "…");
     try {
-        m_collectionThread = std::thread([this, handle, directory, base, selected]() {
+        m_collectionThread = std::thread([this, handle, directory, base, selected, session]() {
+            auto robotLock = session->acquire(m_cancelRequested);
+            if (!robotLock.owns_lock()) {
+                QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("操作已取消"); }, Qt::QueuedConnection);
+                return;
+            }
             QString message; bool saved = false;
             try {
                 const auto tcp = collection::readTcpPose(handle, selected);
@@ -430,108 +424,4 @@ void CollectionController::saveTcpPose(const QString& name) {
             }, Qt::QueuedConnection);
         });
     } catch (const std::exception& error) { finishCollectionOperation(QString::fromUtf8(error.what())); }
-}
-
-void CollectionController::levelCamera() {
-    if (m_collectionBusy) return;
-    if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0 || !m_robotConnected) {
-        setStatus("调平需要预览画面和机器人连接");
-        return;
-    }
-    // Parallel mounting: without calibration, level the flange at its current
-    // position. A real matrix instead preserves the calibrated camera centre.
-    cv::Mat flangeCamera = cv::Mat::eye(4, 4, CV_64F);
-    bool calibrated = false;
-    try {
-        if (QFileInfo::exists(m_handEyePath)) {
-            cv::FileStorage storage;
-            try {
-                storage.open(m_handEyePath.toStdString(), cv::FileStorage::READ);
-            } catch (const cv::Exception&) {
-                throw std::runtime_error("手眼标定文件格式无效");
-            }
-            if (!storage.isOpened()) throw std::runtime_error("无法读取手眼标定文件");
-            const auto node = storage["T_flange_camera"];
-            if (!node.empty()) {
-                try {
-                    if (node.isSeq()) {
-                        std::vector<double> values; node >> values;
-                        if (values.size() != 16) throw std::runtime_error("手眼矩阵需要 16 个数值");
-                        flangeCamera = cv::Mat(4, 4, CV_64F, values.data()).clone();
-                    } else {
-                        node >> flangeCamera;
-                        flangeCamera.convertTo(flangeCamera, CV_64F);
-                    }
-                    collection::validateTransform(flangeCamera);
-                    std::string unit = "m";
-                    if (!storage["translation_unit"].empty()) storage["translation_unit"] >> unit;
-                    if (unit != "m" && unit != "mm")
-                        throw std::runtime_error("手眼矩阵平移单位须为 m 或 mm");
-                    if (unit == "mm") flangeCamera(cv::Rect(3, 0, 1, 3)) /= 1000.0;
-                    calibrated = true;
-                } catch (const cv::Exception&) {
-                    throw std::runtime_error("手眼矩阵格式无效");
-                }
-            }
-        }
-    } catch (const std::exception& error) {
-        setStatus(QString("调平失败: %1").arg(QString::fromUtf8(error.what())));
-        return;
-    }
-    const RobotHandle handle = m_robotHandle;
-    beginCollectionOperation();
-    setRobotMotionCancelCheck(&CollectionController::robotMotionCancellationRequested);
-    setStatus(calibrated ? "正在调平：镜头平面水平，相机向下…"
-                         : "正在调平：法兰垂直向下，相机与法兰平行…");
-    try {
-        m_collectionThread = std::thread([this, handle, flangeCamera, calibrated]() {
-            QString message;
-            try {
-                enum RobotModes mode;
-                BOOL moving = TRUE;
-                if (cr_get_robotMode(handle, &mode) != sucess ||
-                    (mode != ProgramStop && mode != Enable) ||
-                    cr_get_robotMoveStatus(handle, &moving) != sucess || moving)
-                    throw std::runtime_error("请让机器人处于使能且停止状态后调平");
-                double joints[ROB_AXIS_NUM]{}, pose[ROB_AXIS_NUM]{}, targetPose[ROB_AXIS_NUM]{}, targetJoints[ROB_AXIS_NUM]{};
-                if (cr_get_jointActualPos(handle, joints) != sucess ||
-                    cr_kineForward(handle, joints, pose) != sucess)
-                    throw std::runtime_error("读取机器人位姿失败");
-                const auto target = collection::downwardFlangeTarget(
-                    calib_transform::axisAnglePoseToTransform(pose), flangeCamera);
-                calib_transform::transformToAxisAnglePose(target, targetPose);
-                if (cr_kineInverse(handle, targetPose, joints, targetJoints) != sucess)
-                    throw std::runtime_error("调平目标不可达，请调整机器人位置后重试");
-                for (double joint : targetJoints)
-                    if (!std::isfinite(joint)) throw std::runtime_error("调平逆解包含无效关节角");
-                if (m_cancelRequested) throw std::runtime_error("调平已取消");
-                m_robotStopUnconfirmed = true;
-                const auto result = moveToJointPos(handle, targetJoints);
-                if (result == robot_motion_cancelled) throw std::runtime_error("调平已取消");
-                if (result != sucess) throw std::runtime_error("机器人调平运动失败");
-                if (cr_get_jointActualPos(handle, joints) != sucess || cr_kineForward(handle, joints, pose) != sucess)
-                    throw std::runtime_error("无法读取调平后的实际位姿");
-                const cv::Mat actualCamera = calib_transform::axisAnglePoseToTransform(pose) * flangeCamera;
-                const double tilt = std::acos(std::clamp(-actualCamera.at<double>(2, 2), -1.0, 1.0)) * 180 / CV_PI;
-                if (tilt > 1.0) throw std::runtime_error("调平后的相机倾角超过 1°");
-                message = QString(calibrated ? "调平完成，相机向下，倾角 %1°"
-                                             : "调平完成，法兰垂直向下，倾角 %1°").arg(tilt, 0, 'f', 2);
-            } catch (const std::exception& error) {
-                message = QString::fromUtf8(error.what());
-            } catch (...) {
-                message = "调平发生未知异常";
-            }
-            setRobotMotionCancelCheck(nullptr);
-            if (m_robotStopUnconfirmed) {
-                try { confirmMotionStopped(); }
-                catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
-            }
-            QMetaObject::invokeMethod(this, [this, message]() {
-                finishCollectionOperation(message);
-            }, Qt::QueuedConnection);
-        });
-    } catch (const std::exception& error) {
-        setRobotMotionCancelCheck(nullptr);
-        finishCollectionOperation(QString::fromUtf8(error.what()));
-    }
 }

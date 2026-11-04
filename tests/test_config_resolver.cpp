@@ -192,6 +192,29 @@ int test_config_resolver() {
                "duplicate_exposure_rejected");
     TEST_CHECK(readFile() == duplicateBefore, "duplicate_file_unchanged");
 
+    // A settings page commits all keys together, preserving nested profiles,
+    // comments and exposure order. Failure on any key leaves the original intact.
+    writeFile("%YAML:1.0\n---\n# retained\ncam_ip: \"10.0.0.1\" # camera\n"
+              "robot_ip: \"10.0.0.2\"\ncamera_profile: \"legacy\"\n"
+              "legacy:\n  camera_gain: 7\nfusion_exposures_us:\n  - 5000\n  - 8500\n");
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath,
+        {{"cam_ip", std::string("192.168.66.253")}, {"robot_ip", std::string("192.168.66.14")},
+         {"cam_width", 4024}, {"fusion_exposures_us", std::vector<int>{25000, 5000, 8500}}}, err),
+        "settings_batch_commits");
+    TEST_CHECK(readFile().find("# retained") != std::string::npos &&
+        readFile().find("# camera") != std::string::npos &&
+        readFile().find("  camera_gain: 7") != std::string::npos &&
+        readFile().find("fusion_exposures_us: [25000, 5000, 8500]") != std::string::npos,
+        "settings_batch_preserves_unrelated_and_order");
+    writeFile("%YAML:1.0\n---\ncam_ip: \"10.0.0.1\"\nrobot_ip: \"10.0.0.2\"\nrobot_ip: \"10.0.0.3\"\n");
+    const auto batchBefore = readFile();
+    TEST_CHECK(!config_resolver::updateFlatConfigFile(kCfgPath,
+        {{"cam_ip", std::string("192.168.66.253")}, {"robot_ip", std::string("192.168.66.14")}}, err)
+        && readFile() == batchBefore, "later_duplicate_rolls_back_whole_batch");
+    TEST_CHECK(!config_resolver::updateFlatConfigFile(kCfgPath,
+        {{"cam_ip", std::string("192.168.66.253")}, {"robot_ip", std::string("bad\nkey: 1")}}, err)
+        && readFile() == batchBefore, "batch_injected_string_rejected_before_write");
+
     auto collection = [&](const std::string& body) {
         cv::FileStorage config("%YAML:1.0\n---\n" + body, cv::FileStorage::READ | cv::FileStorage::MEMORY);
         return config_resolver::resolveCollectionConfig(config);

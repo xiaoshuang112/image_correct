@@ -1,11 +1,18 @@
 <RCC>
     <qresource prefix="/">
         <file>qml/Collection.qml</file>
+        <file>qml/HmiText.qml</file>
+        <file>qml/HmiPanel.qml</file>
+        <file>qml/TcpSelector.qml</file>
+        <file>qml/PoseValues.qml</file>
+        <file>qml/LivePose.qml</file>
+        <file>qml/SettingsPage.qml</file>
+        <file>qml/ManualMovePage.qml</file>
+
         <file>qml/CollectIcon.qml</file>
         <file>qml/CollectButton.qml</file>
         <file>qml/CollectField.qml</file>
         <file>qml/CollectCard.qml</file>
-        <file>qml/CollectCardHeader.qml</file>
         <file>qml/Theme.qml</file>
         <file>qml/qmldir</file>
     </qresource>

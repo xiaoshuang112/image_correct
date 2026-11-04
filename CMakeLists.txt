@@ -163,11 +163,10 @@ if(BUILD_TESTS)
     add_test(NAME caitu_tests COMMAND caitu_tests)
     add_executable(test_collection
         tests/test_collection.cpp
-        utils/collection_utils.cpp
-        utils/calib_transform.cpp)
+        utils/collection_utils.cpp)
     target_include_directories(test_collection PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
     target_link_libraries(test_collection ${OpenCV_LIBS})
-    add_test(NAME collection_geometry_synthetic_bgr_fusion_png COMMAND test_collection)
+    add_test(NAME collection_synthetic_bgr_fusion_png COMMAND test_collection)
     find_package(Qt5 QUIET COMPONENTS Core Quick Test)
     if(Qt5Core_FOUND)
         add_executable(test_exposure_list tests/test_exposure_list.cpp)
@@ -211,6 +210,12 @@ if(BUILD_TESTS)
             target_include_directories(test_robot_tcp PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CGX_SDK_DIR}/include)
             target_link_libraries(test_robot_tcp Qt5::Core)
             add_test(NAME robot_tcp COMMAND test_robot_tcp)
+            add_executable(test_manual_tcp_motion tests/test_manual_tcp_motion.cpp
+                hand_eye_gui/ManualTcpMotion.cpp hand_eye_gui/RobotTcp.cpp
+                hand_eye_gui/FivePointCapture.cpp utils/calib_transform.cpp)
+            target_include_directories(test_manual_tcp_motion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CGX_SDK_DIR}/include)
+            target_link_libraries(test_manual_tcp_motion Qt5::Core ${OpenCV_LIBS})
+            add_test(NAME manual_tcp_motion COMMAND test_manual_tcp_motion)
         endif()
     endif()
     if(Qt5Test_FOUND)
