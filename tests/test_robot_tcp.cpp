@@ -63,6 +63,15 @@ int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
     const auto error = static_cast<CRresult>(1);
     try {
+        const int originalLookups = lookups;
+        const auto parsed = collection::parseTcpTarget(" 1， -2.5, +3.0 ， .4,5e1, -6 ");
+        require(parsed == std::array<double, ROB_AXIS_NUM>{1, -2.5, 3, .4, 50, -6}, "decimal parser changed values");
+        for (const auto* text : {"", "1,2,3,4,5", "1,2,3,4,5,6,", "1,2,3,4,5,6,7",
+                "1,2,,4,5,6", "1,2,3,4,5,", "1,2,3,4,5,NaN", "Inf,2,3,4,5,6",
+                "1,2,3,4,5,-inf", "1,2,3,4,5,1e999", "1,2,3,4,5,6mm", "1,2,3,4,5,0x10",
+                "1,2,3,4,5,6 7", "1;2;3;4;5;6", "1,2,3,4,5,1_000"})
+            rejects([&] { collection::parseTcpTarget(QString::fromUtf8(text)); }, "invalid target accepted");
+        require(lookups == originalLookups, "pure parser contacted SDK");
         auto list = collection::readTcpList(1);
         require(list.names == QStringList{"probe-a", "probe-b"} && list.current == "probe-a", "TCP list order/default changed");
         count = TCP_MAX_NUM;

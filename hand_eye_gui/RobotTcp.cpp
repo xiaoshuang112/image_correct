@@ -1,5 +1,7 @@
 #include "RobotTcp.hpp"
 #include <QByteArray>
+#include <QLocale>
+#include <QRegularExpression>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -30,6 +32,28 @@ void checkOffset(const TCPMsg& tcp) {
 } // namespace
 
 namespace collection {
+std::array<double, ROB_AXIS_NUM> parseTcpTarget(const QString& text) {
+    QString normalized = text;
+    normalized.replace(QChar(0xff0c), QChar(','));
+    const auto fields = normalized.split(',', Qt::KeepEmptyParts);
+    if (fields.size() != ROB_AXIS_NUM)
+        throw std::runtime_error("TCP 目标须按 X,Y,Z,Rx,Ry,Rz 输入恰好 6 个数值，以英文或中文逗号分隔");
+    static const QRegularExpression decimal(
+        QStringLiteral("^[+-]?(?:[0-9]+(?:\\.[0-9]*)?|\\.[0-9]+)(?:[eE][+-]?[0-9]+)?$"));
+    std::array<double, ROB_AXIS_NUM> result{};
+    const char* labels[] = {"X", "Y", "Z", "Rx", "Ry", "Rz"};
+    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
+        const QString field = fields[axis].trimmed();
+        bool valid = false;
+        const double value = QLocale::c().toDouble(field, &valid);
+        if (field.isEmpty() || !decimal.match(field).hasMatch() || !valid || !std::isfinite(value))
+            throw std::runtime_error(QString("TCP 目标的 %1 须为有限十进制数，不能留空或含有其他字符")
+                .arg(labels[axis]).toStdString());
+        result[axis] = value;
+    }
+    return result;
+}
+
 TcpList readTcpList(RobotHandle handle) {
     std::array<TCPMsg, TCP_MAX_NUM> tools{};
     int count = 0;

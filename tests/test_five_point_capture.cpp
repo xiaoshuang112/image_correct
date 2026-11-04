@@ -1,10 +1,12 @@
 #include "hand_eye_gui/FivePointCapture.hpp"
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -146,6 +148,23 @@ int main() {
         collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300});
         require(robot.sends == 1 && robot.stops == 0 && robot.actual == targets[1] && robot.polls >= 3,
                 "movement did not confirm stopped actual pose");
+        robot.reset(); int telemetry = 0;
+        collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300}, [&] { ++telemetry; });
+        require(telemetry >= 3, "worker telemetry callback was not sampled throughout motion");
+        robot.reset();
+        rejects([&] { collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 300},
+            [] { throw std::runtime_error("telemetry read failed"); }); });
+        require(robot.stops == 1, "telemetry failure during motion did not stop");
+        robot.reset(); int delayedTicks = 0;
+        const auto timeoutError = rejects([&] {
+            collection::waitForStableFlange(1, origin, robot.cancelled, {0, 30}, [&] {
+                ++delayedTicks;
+                std::this_thread::sleep_for(std::chrono::milliseconds(50));
+            });
+        });
+        require(delayedTicks == 1 && robot.actual == origin && robot.sends == 0 &&
+                timeoutError.find("超时") != std::string::npos,
+                "telemetry callback overrun returned arrival success beyond timeout");
         robot.reset(); robot.cancelled = true;
         rejects([&] { collection::moveFlangeLinear(1, targets[1], robot.cancelled, {0, 100}); });
         require(robot.sends == 0, "pre-cancelled motion was sent");

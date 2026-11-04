@@ -2,646 +2,207 @@ import QtQuick 2.15
 import QtQuick.Controls 2.15
 import QtQuick.Layouts 1.15
 import "."
-
 ApplicationWindow {
     id: root
-    visible: true
-    width: 1280
-    height: 850
-    minimumWidth: 1024
-    minimumHeight: 740
+    visible: true; width: 1280; height: 850; minimumWidth: 760; minimumHeight: 600
     title: "COLLECT · 图像采集 · " + appVersion
-    color: Theme.bg
-    font.family: Theme.sans
-    font.pixelSize: Theme.body
+    color: Theme.bg; font.family: Theme.sans; font.pixelSize: Theme.body
     property var controller: collectionController
-    readonly property bool busy: controller.collectionBusy
-    onClosing: function(close) {
-        if (root.busy) { close.accepted = false; root.controller.cancelCollectionOperation() }
-    }
-    readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
-    readonly property bool editing: (activeFocusItem !== null && activeFocusItem.cursorPosition !== undefined)
-        || tcpSelector.activeFocus || tcpSelector.popup.visible
-    readonly property bool compact: width < 1190
-    readonly property int infoWidth: compact ? 288 : 320
-    readonly property int ipWidth: compact ? 100 : 110
-    readonly property int resolutionWidth: compact ? 46 : 58
-    readonly property int connectWidth: compact ? 74 : 86
+    property string page: "main"
+    property bool fivePointMode: false
     property bool poseEditorOpen: false
+    readonly property bool busy: controller.collectionBusy || controller.manualMoveActive || controller.motionFault
+    readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
+    readonly property bool compact: width < 1100 || height < 740
     readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
-    property string today: Qt.formatDate(new Date(), "yyyy-MM-dd")
-    readonly property string archiveDate: controller.lastCapturePath
-        ? controller.lastCapturePath.split("/").slice(-2, -1).join("") : today
-    function saveExposures() {
-        var values = []
-        for (var i = 0; i < exposureSlots.count; ++i) {
-            var value = exposureSlots.get(i).value.trim()
-            if (value !== "") values.push(value)
-        }
-        controller.exposureList = values.join(",")
+    readonly property bool editing: activeFocusItem !== null && (activeFocusItem.cursorPosition !== undefined || activeFocusItem.hasOwnProperty("currentIndex"))
+    readonly property bool shortcutReady: page === "main" && ready && !fivePointMode && !editing && !poseEditorOpen && !tcpSelector.activeFocus && !tcpSelector.popup.visible
+    property var logLines: []
+    property string frameMetadata: ""
+    property bool hasFrame: false
+    property int seenCount: controller.savedImageCount
+    property int shutterSerial: 0
+    property bool historyReady: false
+    function takePhoto() { if (ready && page === "main") controller.capturePhoto() }
+    function scrollLogToEnd() {
+        Qt.callLater(function() {
+            logText.cursorPosition = logText.length
+            logScroll.contentItem.contentY = Math.max(0, logText.contentHeight - logScroll.availableHeight)
+        })
     }
-    function takePhoto() {
-        saveExposures()
-        controller.capturePhoto()
-    }
-    function editPose() {
-        poseEditorOpen = true
-        pointName.text = ""
-        pointName.forceActiveFocus()
+    function showBackendLog() {
+        var lines = controller.logText.split(/\r?\n/).filter(function(line) { return line !== "" })
+        logLines = lines.slice(-1000)
+        scrollLogToEnd()
     }
     function recordStatus(message) {
-        if (!message) return
-        var follow = operationLog.atYEnd || activityLog.count === 0
-        var failed = /失败|异常|无效|超出|超时|不可达|无法/.test(message)
-        activityLog.append({stamp: Qt.formatTime(new Date(), "hh:mm:ss"), message: message, failed: failed})
-        if (activityLog.count > 200) activityLog.remove(0, activityLog.count - 200)
-        if (follow) Qt.callLater(function() { operationLog.positionViewAtEnd() })
+        if (!message || controller.logText !== "") return
+        var next = logLines.slice(); next.push("[" + Qt.formatTime(new Date(), "hh:mm:ss") + "] " + message)
+        logLines = next.slice(-1000)
+        scrollLogToEnd()
     }
-    Component.onCompleted: {
-        var values = controller.exposureList.split(/[,，;\s]+/).filter(function(value) { return value !== "" })
-        for (var i = 0; i < 5; ++i) exposureSlots.append({value: i < values.length ? values[i] : ""})
-        recordStatus("程序启动 · Git 版本 " + appGitCommit)
-        recordStatus(controller.statusMessage)
+    function syncHistory() {
+        var count = controller.savedImageCount
+        if (historyReady && count > seenCount) { ++shutterSerial; shutterFlash.restart() }
+        else if (count < seenCount) { shutterFlash.stop(); flash.opacity = 0 }
+        seenCount = count; historyReady = true
     }
-    Timer { interval: 60000; running: true; repeat: true; onTriggered: root.today = Qt.formatDate(new Date(), "yyyy-MM-dd") }
-    ListModel { id: activityLog }
-    ListModel { id: exposureSlots }
-    Shortcut { sequence: "Space"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready && !root.editing; onActivated: root.takePhoto() }
-    Shortcut { sequence: "S"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready && !root.editing; onActivated: root.takePhoto() }
-    Shortcut { sequence: "Ctrl+S"; autoRepeat: false; context: Qt.WindowShortcut; enabled: root.ready && !root.editing; onActivated: root.takePhoto() }
+    function savePose() { pointName.text = ""; poseEditorOpen = true; poseDialog.open(); pointName.forceActiveFocus() }
+    function confirmPose() { if (tcpReady && !busy) controller.saveTcpPose(pointName.text) }
+    onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = "" }
+    onClosing: function(event) {
+        if (busy) { event.accepted = false; controller.cancelCollectionOperation() }
+        else if (page === "settings" && settings.dirty) { event.accepted = false; settings.requestLeave() }
+    }
+    Component.onCompleted: { seenCount = controller.savedImageCount; historyReady = true; recordStatus("程序启动 · " + appGitCommit); recordStatus(controller.statusMessage); if (controller.logText) showBackendLog() }
+    Shortcut { sequence: "Space"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
+    Shortcut { sequence: "S"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
+    Shortcut { sequence: "Ctrl+S"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
     Connections {
         target: root.controller
-        function onFrameUpdated() { cameraImage.source = "image://camera/current#" + Date.now() }
-        function onStatusMessageChanged() { root.recordStatus(root.controller.statusMessage); if (root.controller.statusMessage.indexOf("TCP 坐标已保存：") === 0) root.poseEditorOpen = false }
-        function onRobotConnectedChanged() { if (!root.controller.robotConnected) root.poseEditorOpen = false }
+        function onCollectionChanged() { root.syncHistory() }
+        function onLogTextChanged() { root.showBackendLog() }
+        function onFrameUpdated() {
+            cameraImage.source = "image://camera/current#" + Date.now()
+            root.hasFrame = true
+            root.frameMetadata = root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
+        }
+        function onStatusMessageChanged() {
+            root.recordStatus(root.controller.statusMessage)
+            if (root.poseEditorOpen && root.controller.statusMessage.indexOf("TCP 坐标已保存：") === 0) poseDialog.close()
+        }
+        function onRobotConnectedChanged() { if (!root.controller.robotConnected) poseDialog.close() }
     }
-
-    ColumnLayout {
-        anchors.fill: parent
-        anchors.margins: Theme.margin
-        spacing: Theme.gap
-
-        RowLayout {
-            Layout.fillWidth: true; Layout.preferredHeight: 36
-            spacing: 10
+    Item {
+        anchors.fill: parent; visible: root.page === "main"
+        ColumnLayout {
+            anchors.fill: parent; spacing: 0
             Rectangle {
-                Layout.preferredWidth: 28; Layout.preferredHeight: 28
-                radius: Theme.radiusControl; color: Theme.accentSoft; border.width: 1; border.color: Theme.accentLine
-                CollectIcon { anchors.centerIn: parent; width: 18; height: 18; name: "aperture"; ink: Theme.accent }
-            }
-            Text { text: "图像采集"; color: Theme.ink; font.pixelSize: Theme.appTitle; font.weight: Font.Medium }
-            Rectangle { Layout.preferredWidth: 3; Layout.preferredHeight: 3; radius: 1.5; color: Theme.ink3 }
-            Text { text: "多曝光融合采集"; color: Theme.ink2; font.pixelSize: Theme.body }
-            Item { Layout.fillWidth: true }
-            Text { text: "COLLECT · " + appGitCommit; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-        }
-
-        RowLayout {
-            id: controlDeck
-            objectName: "controlDeck"
-            readonly property real availableWidth: width - spacing * 2
-            readonly property real contentHeight: Math.max(deviceControls.implicitHeight, calibrationControls.implicitHeight, captureControls.implicitHeight) + Theme.padding * 2
-            Layout.fillWidth: true
-            Layout.minimumHeight: contentHeight; Layout.preferredHeight: contentHeight; Layout.maximumHeight: contentHeight
-            spacing: Theme.gap
-            CollectCard {
-                objectName: "deviceCard"
-                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0
-                Layout.preferredWidth: controlDeck.availableWidth * (root.compact ? 0.44 : 0.42)
-                implicitHeight: deviceControls.implicitHeight + Theme.padding * 2
-                ColumnLayout {
-                    id: deviceControls
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                    height: implicitHeight; spacing: 8
-                    CollectCardHeader { number: "01"; title: "设备连接"; tint: Theme.section1; tintSoft: Theme.section1Soft }
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 5
-                        Text { text: "相机 IP"; color: Theme.ink2; font.pixelSize: Theme.meta; Layout.preferredWidth: 46 }
-                        CollectField { objectName: "cameraIpInput"; text: root.controller.cameraIp; leftPadding: 7; rightPadding: 7; Layout.preferredWidth: root.ipWidth; Layout.maximumWidth: root.ipWidth; enabled: !root.controller.cameraOpened && !root.busy; onEditingFinished: root.controller.cameraIp = text }
-                        Text { text: "分辨率"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                        CollectField { objectName: "resolutionWidthInput"; text: root.controller.previewWidth; Layout.preferredWidth: root.resolutionWidth; Layout.maximumWidth: root.resolutionWidth; Layout.minimumWidth: 42; leftPadding: 5; rightPadding: 5; validator: IntValidator { bottom: 1; top: 32768 } enabled: !root.controller.cameraOpened && !root.busy; onEditingFinished: if (acceptableInput) root.controller.previewWidth = parseInt(text) }
-                        Text { text: "×"; color: Theme.ink3; font.pixelSize: Theme.meta }
-                        CollectField { objectName: "resolutionHeightInput"; text: root.controller.previewHeight; Layout.preferredWidth: root.resolutionWidth; Layout.maximumWidth: root.resolutionWidth; Layout.minimumWidth: 42; leftPadding: 5; rightPadding: 5; validator: IntValidator { bottom: 1; top: 32768 } enabled: !root.controller.cameraOpened && !root.busy; onEditingFinished: if (acceptableInput) root.controller.previewHeight = parseInt(text) }
-                        Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                        CollectButton { objectName: "openCameraButton"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 4; rightPadding: 4; positive: root.controller.cameraOpened; text: root.controller.cameraOpened ? "断开相机" : "连接并预览"; enabled: !root.busy; onClicked: { if (root.controller.cameraOpened) root.controller.closeCamera(); else { root.controller.openCamera(); if (root.controller.cameraOpened) root.controller.startPreview() } } }
+                color: Theme.surface; Layout.fillWidth: true; Layout.preferredHeight: 56
+                RowLayout {
+                    anchors.fill: parent; anchors.leftMargin: 16; anchors.rightMargin: 16; spacing: 12
+                    CollectIcon { ink: Theme.accent; Layout.preferredWidth: 24; Layout.preferredHeight: 24 }
+                    HmiText { visible: root.width >= 1100; text: "图像采集"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.DemiBold }
+                    Rectangle {
+                        Layout.fillWidth: true; Layout.minimumWidth: 80; Layout.preferredHeight: 28; radius: 14
+                        readonly property color tone: root.controller.motionFault || /失败[:：]|失败$|异常|故障/.test(root.controller.statusMessage) ? Theme.danger : root.busy ? Theme.accent : root.controller.cameraOpened ? Theme.ok : Theme.warning
+                        color: Qt.rgba(tone.r,tone.g,tone.b,0.12); border.color: Qt.rgba(tone.r,tone.g,tone.b,0.35)
+                        HmiText { objectName: "globalStatus"; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; text: root.controller.statusMessage; color: parent.tone; elide: Text.ElideRight; wrapMode: Text.NoWrap; verticalAlignment: Text.AlignVCenter }
                     }
-                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 5
-                        Text { text: "机器人 IP"; color: Theme.ink2; font.pixelSize: Theme.meta; Layout.preferredWidth: 46 }
-                        CollectField { objectName: "robotIpInput"; text: root.controller.robotIp; leftPadding: 7; rightPadding: 7; Layout.preferredWidth: root.ipWidth; Layout.maximumWidth: root.ipWidth; enabled: !root.controller.robotConnected && !root.busy; onEditingFinished: root.controller.robotIp = text }
-                        Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                        CollectButton { objectName: "connectRobotButton"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 4; rightPadding: 4; positive: root.controller.robotConnected; text: root.controller.robotConnected ? "断开机器人" : "连接机器人"; enabled: !root.busy; onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot() }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 5
-                        CollectButton { objectName: "levelButton"; text: "一键调平"; Layout.fillWidth: true; iconName: "level"; leftPadding: 9; rightPadding: 9; enabled: root.ready && root.controller.robotConnected; onClicked: root.controller.levelCamera() }
-                        CollectButton { objectName: "stopButton"; text: root.controller.motionFault ? "重试停止" : "停止"; Layout.preferredWidth: root.connectWidth; Layout.maximumWidth: root.connectWidth; leftPadding: 9; rightPadding: 9; danger: true; enabled: root.controller.collectionBusy; onClicked: root.controller.cancelCollectionOperation() }
-                    }
-                }
-            }
-            CollectCard {
-                objectName: "calibrationCard"
-                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0
-                Layout.preferredWidth: controlDeck.availableWidth * (root.compact ? 0.20 : 0.18)
-                implicitHeight: calibrationControls.implicitHeight + Theme.padding * 2
-                ColumnLayout {
-                    id: calibrationControls
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                    height: implicitHeight; spacing: 8
-                    CollectCardHeader { number: "02"; title: "图像校准"; tint: Theme.section2; tintSoft: Theme.section2Soft }
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 4
-                        Text { text: "预览曝光"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                        CollectField {
-                            id: previewExposure; objectName: "previewExposureInput"
-                            text: root.controller.cameraExposureUs; leftPadding: 6; rightPadding: 6
-                            Layout.preferredWidth: root.compact ? 64 : 76; Layout.maximumWidth: root.compact ? 64 : 76; Layout.minimumWidth: 50
-                            validator: IntValidator { bottom: 1; top: 1000000 }
-                            enabled: !root.busy
-                        }
-                        Text { text: "μs"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                        Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
-                        CollectButton { objectName: "applyPreviewExposureButton"; text: "应用"; leftPadding: 5; rightPadding: 5; Layout.preferredWidth: 36; Layout.maximumWidth: 36; enabled: !root.busy && previewExposure.acceptableInput; onClicked: root.controller.adjustCameraExposure(parseInt(previewExposure.text)) }
-                    }
-                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
                     CollectButton {
-                        objectName: "undistortionButton"
-                        Layout.fillWidth: true
-                        text: root.controller.undistortionEnabled ? "去畸变已启用" : "一键去畸变"
-                        iconName: "undistort"; positive: root.controller.undistortionEnabled
-                        leftPadding: 8; rightPadding: 8
-                        enabled: !root.busy && root.controller.cameraOpened && (root.controller.undistortionReady || root.controller.undistortionEnabled)
-                        onClicked: root.controller.toggleUndistortion()
-                        ToolTip.visible: hovered
-                        ToolTip.text: root.controller.undistortionStatus
+                        objectName: "openCameraButton"; small: true; text: root.controller.cameraOpened ? "断开相机" : "连接相机"; enabled: !root.busy
+                        onClicked: { if (root.controller.cameraOpened) root.controller.closeCamera(); else { root.controller.openCamera(); if (root.controller.cameraOpened) root.controller.startPreview() } }
                     }
-                    Text {
-                        objectName: "calibrationSummary"
-                        Layout.fillWidth: true; Layout.preferredHeight: Theme.controlHeight
-                        verticalAlignment: Text.AlignVCenter
-                        text: root.controller.undistortionEnabled ? "预览 / 拍照 · 去畸变" :
-                            root.controller.undistortionReady ? "去畸变参数已就绪" : "去畸变参数不可用"
-                        color: Theme.ink3; font.pixelSize: Theme.meta; elide: Text.ElideRight
-                    }
+                    CollectButton { objectName: "connectRobotButton"; small: true; text: root.controller.robotConnected ? "断开机器人" : "连接机器人"; enabled: !root.busy; onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot() }
+                    HmiText { visible: root.width >= 1100; text: appGitCommit; font.family: Theme.mono; font.pixelSize: Theme.meta }
+                    CollectButton { objectName: "settingsButton"; small: true; text: "设置"; quiet: true; enabled: !root.busy; onClicked: { settings.reload(); root.page = "settings" } }
                 }
             }
-            CollectCard {
-                objectName: "captureCard"
-                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0
-                Layout.preferredWidth: controlDeck.availableWidth * (root.compact ? 0.36 : 0.40)
-                implicitHeight: captureControls.implicitHeight + Theme.padding * 2
-                ColumnLayout {
-                    id: captureControls
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                    height: implicitHeight; spacing: 8
-                    CollectCardHeader {
-                        number: "03"; title: "数据采集"
-                        Text { text: "融合曝光 · μs"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                        CollectButton { objectName: "collectionFolderButton"; text: "图片目录"; quiet: true; iconName: "folder"; implicitHeight: 20; leftPadding: 0; rightPadding: 0; implicitWidth: contentItem.implicitWidth; onClicked: root.controller.openCollectionFolder() }
-                    }
-                    RowLayout {
-                        objectName: "exposureRow"
-                        Layout.fillWidth: true; spacing: 6
-                        Repeater {
-                            model: exposureSlots
-                            CollectField {
-                                objectName: index === 0 ? "exposureInput" : "exposureInput" + (index + 1)
-                                text: value; placeholderText: "可选"; leftPadding: 3; rightPadding: 3
-                                horizontalAlignment: TextInput.AlignHCenter
-                                Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 42
-                                validator: IntValidator { bottom: 1; top: 1000000 }
-                                enabled: !root.busy
-                                onTextEdited: exposureSlots.setProperty(index, "value", text)
-                                onEditingFinished: root.saveExposures()
-                            }
-                        }
-                    }
-                    Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
-                    RowLayout {
-                        objectName: "tcpRow"
-                        Layout.fillWidth: true; spacing: 6
-                        ComboBox {
-                            id: tcpSelector; objectName: "tcpSelector"
-                            Layout.fillWidth: true; Layout.minimumWidth: 0
-                            implicitHeight: Theme.controlHeight
-                            model: root.controller.tcpNames
-                            currentIndex: root.controller.tcpNames.indexOf(root.controller.selectedTcp)
-                            enabled: root.controller.robotConnected && !root.busy && count > 0
-                            displayText: "TCP · " + (currentIndex >= 0 ? currentText :
-                                root.controller.robotConnected ? "请选择工具" : "连接机器人后选择")
-                            onActivated: root.controller.selectedTcp = textAt(index)
-                            Accessible.name: "选择 TCP 工具"
-                            leftPadding: 10; rightPadding: 30
-                            font.family: Theme.sans; font.pixelSize: Theme.body
-                            contentItem: Text {
-                                text: tcpSelector.displayText; font: tcpSelector.font
-                                color: tcpSelector.enabled ? Theme.ink : Theme.ink2
-                                verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
-                            }
-                            indicator: Text {
-                                x: tcpSelector.width - width - 10
-                                anchors.verticalCenter: parent.verticalCenter
-                                text: "▾"; color: tcpSelector.enabled ? Theme.ink2 : Theme.disabledInk
-                                font.pixelSize: Theme.body
-                            }
-                            background: Rectangle {
-                                radius: Theme.radiusControl; color: tcpSelector.enabled ? Theme.sunken : Theme.disabledBg
-                                border.width: 1
-                                border.color: tcpSelector.activeFocus ? Theme.accent : Theme.line
-                            }
-                            delegate: ItemDelegate {
-                                width: tcpSelector.width; height: Theme.controlHeight
-                                highlighted: tcpSelector.highlightedIndex === index
-                                contentItem: Text {
-                                    text: modelData; color: Theme.ink; font: tcpSelector.font
-                                    verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight
-                                }
-                                background: Rectangle { color: highlighted ? Theme.accentSoft : Theme.surface }
-                            }
-                            popup: Popup {
-                                y: tcpSelector.height + 4; width: tcpSelector.width; padding: 4
-                                implicitHeight: Math.min(contentItem.implicitHeight + 8, 240)
-                                contentItem: ListView {
-                                    clip: true; implicitHeight: contentHeight
-                                    model: tcpSelector.popup.visible ? tcpSelector.delegateModel : null
-                                    currentIndex: tcpSelector.highlightedIndex
-                                    ScrollIndicator.vertical: ScrollIndicator {}
-                                }
-                                background: Rectangle { color: Theme.surface; radius: Theme.radiusControl; border.color: Theme.line }
-                            }
-                            ToolTip.visible: hovered && currentIndex >= 0
-                            ToolTip.text: currentText
-                        }
-                        CollectButton {
-                            objectName: "refreshTcpButton"; text: "刷新"
-                            Layout.preferredWidth: 48; Layout.minimumWidth: 48; Layout.maximumWidth: 48
-                            leftPadding: 6; rightPadding: 6
-                            enabled: root.controller.robotConnected && !root.busy
-                            onClicked: root.controller.refreshTcpTools()
-                        }
-                    }
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 6
-                        CollectButton { objectName: "captureButton"; text: "拍照保存"; iconName: "shutter"; primary: true; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.ready; onClicked: root.takePhoto() }
-                        CollectButton { objectName: "savePoseButton"; text: "保存 TCP 坐标"; iconName: "save"; leftPadding: 6; rightPadding: 6; Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; enabled: root.tcpReady && !root.busy; onClicked: root.editPose() }
-                    }
-                    Rectangle {
-                        visible: root.poseEditorOpen
-                        Layout.fillWidth: true; implicitHeight: 48
-                        color: Theme.sunken; border.width: 1; border.color: Theme.accentLine; radius: 8
-                        RowLayout {
-                            anchors.fill: parent; anchors.margins: 7; spacing: 6
-                            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; Layout.minimumWidth: 40; leftPadding: 8; rightPadding: 8; enabled: !root.busy; placeholderText: "点位名称（留空按时间戳）"; onAccepted: if (confirmPose.enabled) root.controller.saveTcpPose(text); Keys.onEscapePressed: root.poseEditorOpen = false }
-                            CollectButton { id: confirmPose; objectName: "confirmPoseButton"; text: "确认保存"; leftPadding: 8; rightPadding: 8; enabled: root.tcpReady && !root.busy; onClicked: root.controller.saveTcpPose(pointName.text) }
-                            CollectButton { text: "取消"; leftPadding: 8; rightPadding: 8; onClicked: root.poseEditorOpen = false }
-                        }
-                    }
-                }
-            }
-        }
-
-        RowLayout {
-            Layout.fillWidth: true; Layout.fillHeight: true; spacing: Theme.gap
-            CollectCard {
-                objectName: "viewfinder"
-                Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0
-                ColumnLayout {
-                    anchors.fill: parent; spacing: 10
-                    RowLayout {
-                        Layout.fillWidth: true; spacing: 8
-                        Text { text: "实时预览"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.Medium }
-                        Rectangle {
-                            id: statusChip
-                            readonly property bool live: root.controller.previewActive
-                            readonly property bool paused: root.controller.cameraOpened && !live
-                            readonly property color tone: live ? Theme.ok : paused ? Theme.accent : Theme.ink2
-                            Layout.preferredHeight: 20; Layout.preferredWidth: chipRow.implicitWidth + 16
-                            radius: Theme.radiusSmall; color: live ? Theme.okSoft : paused ? Theme.accentSoft : Theme.chip
-                            Row {
-                                id: chipRow
-                                anchors.centerIn: parent; spacing: 6
-                                Rectangle { width: 6; height: 6; radius: 3; anchors.verticalCenter: parent.verticalCenter; color: statusChip.live ? Theme.ok : statusChip.paused ? Theme.accent : Theme.ink3 }
-                                Text { text: statusChip.live ? "LIVE" : statusChip.paused ? "PAUSED" : "OFFLINE"; color: statusChip.tone; font.family: Theme.mono; font.pixelSize: 10; font.letterSpacing: 1; anchors.verticalCenter: parent.verticalCenter }
-                            }
-                        }
-                        Text {
-                            objectName: "undistortionStatus"
-                            Layout.fillWidth: true; Layout.minimumWidth: 0
-                            text: root.controller.undistortionEnabled ? "去畸变已启用 · 预览 / 拍照" : root.controller.undistortionReady ? "去畸变参数已加载 · 未启用" : "去畸变参数不可用"
-                            color: root.controller.undistortionEnabled ? Theme.ok : Theme.ink2
-                            font.pixelSize: Theme.meta; elide: Text.ElideRight
-                        }
-                        CollectButton { objectName: "previewButton"; text: root.controller.previewActive ? "暂停预览" : "开始预览"; iconName: root.controller.previewActive ? "pause" : "play"; implicitHeight: 28; leftPadding: 10; rightPadding: 10; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }
-                    }
-                    Rectangle {
-                        Layout.fillWidth: true; implicitHeight: 48
-                        color: Theme.sunken; radius: Theme.radiusControl; border.width: 1; border.color: Theme.hairline
-                        RowLayout {
-                            anchors.fill: parent; anchors.margins: 8; spacing: 6
-                            Text { text: "BASE XY"; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                            Rectangle { Layout.preferredWidth: 1; Layout.preferredHeight: 16; color: Theme.line }
-                            Text { text: "X ±"; color: Theme.ink2; font.pixelSize: Theme.body }
-                            CollectField {
-                                id: fivePointX; objectName: "fivePointXInput"
-                                text: "10.0"; Layout.preferredWidth: 58; Layout.minimumWidth: 50; Layout.maximumWidth: 58
-                                leftPadding: 6; rightPadding: 6; horizontalAlignment: TextInput.AlignHCenter
-                                validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 1; notation: DoubleValidator.StandardNotation; locale: "C" }
-                                enabled: !root.busy; Accessible.name: "Base X 偏移，毫米"
-                            }
-                            Text { text: "Y ±"; color: Theme.ink2; font.pixelSize: Theme.body }
-                            CollectField {
-                                id: fivePointY; objectName: "fivePointYInput"
-                                text: "10.0"; Layout.preferredWidth: 58; Layout.minimumWidth: 50; Layout.maximumWidth: 58
-                                leftPadding: 6; rightPadding: 6; horizontalAlignment: TextInput.AlignHCenter
-                                validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 1; notation: DoubleValidator.StandardNotation; locale: "C" }
-                                enabled: !root.busy; Accessible.name: "Base Y 偏移，毫米"
-                            }
-                            Text { text: "mm"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                            Text {
-                                Layout.fillWidth: true; Layout.minimumWidth: 0
-                                text: root.compact ? "5 点" : "当前位置为基准 · 完成后返回"
-                                color: Theme.ink3; font.pixelSize: Theme.meta; elide: Text.ElideRight
-                            }
-                            CollectButton {
-                                objectName: "fivePointCaptureButton"; text: "五点采图"; iconName: "shutter"
-                                Layout.preferredWidth: 98; Layout.minimumWidth: 98; Layout.maximumWidth: 98
-                                leftPadding: 8; rightPadding: 8
-                                enabled: root.ready && root.controller.robotConnected && !root.poseEditorOpen
-                                    && fivePointX.acceptableInput && fivePointY.acceptableInput
-                                onClicked: { root.saveExposures(); root.controller.captureFivePoints(Number(fivePointX.text), Number(fivePointY.text)) }
-                                ToolTip.visible: hovered
-                                ToolTip.text: "以当前位置为基准，依次拍摄基准、X+、X−、Y+、Y−；每张保存完成后再移动，最后返回基准。偏移 0.1～50 mm，线速度 10 mm/s。"
-                            }
-                        }
-                    }
-                    Text {
-                        objectName: "fivePointProgress"
-                        Layout.fillWidth: true
-                        visible: text !== ""
-                        text: root.controller.fivePointProgress
-                        color: root.busy ? Theme.accent : Theme.ink2; font.pixelSize: Theme.meta
-                        wrapMode: Text.Wrap
-                    }
-                    Rectangle {
-                        id: imageArea
-                        objectName: "captureImageArea"
-                        // History is assigned explicitly, never bound to the live count.
-                        property int seenCount: 0
-                        property var countController: null
-                        property bool countHistoryReady: false
-                        function resetCountHistory() {
-                            shutterFlash.stop()
-                            flash.opacity = 0
-                            countController = root.controller
-                            seenCount = root.controller ? root.controller.savedImageCount : 0
-                            countHistoryReady = true
-                        }
-                        function observeSavedImageCount() {
-                            if (!countHistoryReady || countController !== root.controller) {
-                                resetCountHistory()
-                                return
-                            }
-                            var count = root.controller.savedImageCount
-                            if (count < seenCount) {
-                                // A reset starts a fresh baseline, with no flash.
-                                resetCountHistory()
-                                return
-                            }
-                            if (count > seenCount) shutterFlash.restart()
-                            seenCount = count
-                        }
-                        Component.onCompleted: resetCountHistory()
-                        Connections {
-                            target: root
-                            function onControllerChanged() { imageArea.resetCountHistory() }
-                        }
-                        Layout.fillWidth: true; Layout.fillHeight: true
-                        color: Theme.viewfinder; radius: 6; clip: true
-                        Connections {
-                            target: root.controller
-                            function onSavedImageCountChanged() {
-                                imageArea.observeSavedImageCount()
-                            }
-                        }
-                        Image { id: cameraImage; anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false; visible: root.controller.cameraOpened; source: "image://camera/current" }
-                        Item {
-                            id: frame
-                            anchors.centerIn: parent
-                            width: cameraImage.visible && cameraImage.paintedWidth > 0 ? cameraImage.paintedWidth : parent.width
-                            height: cameraImage.visible && cameraImage.paintedHeight > 0 ? cameraImage.paintedHeight : parent.height
-                            Repeater {
-                                model: 2
-                                Rectangle { visible: root.controller.previewActive; x: Math.round(frame.width * (index + 1) / 3); width: 1; height: frame.height; color: Theme.gridLine }
-                            }
-                            Repeater {
-                                model: 2
-                                Rectangle { visible: root.controller.previewActive; y: Math.round(frame.height * (index + 1) / 3); width: frame.width; height: 1; color: Theme.gridLine }
-                            }
-                            Repeater {
-                                model: 4
-                                Item {
-                                    visible: root.controller.cameraOpened
-                                    width: 18; height: 18
-                                    x: index % 2 === 0 ? 12 : frame.width - 30
-                                    y: index < 2 ? 12 : frame.height - 30
-                                    Rectangle { y: index < 2 ? 0 : 16; width: 18; height: 2; color: Theme.bracket }
-                                    Rectangle { x: index % 2 === 0 ? 0 : 16; width: 2; height: 18; color: Theme.bracket }
-                                }
-                            }
-                            Item {
-                                anchors.fill: parent; visible: root.controller.previewActive
-                                Rectangle { anchors.centerIn: parent; width: parent.width; height: 1; color: Theme.reticle }
-                                Rectangle { anchors.centerIn: parent; width: 1; height: parent.height; color: Theme.reticle }
-                                Rectangle { anchors.centerIn: parent; width: 120; height: 3; color: "#FF3B30" }
-                                Rectangle { anchors.centerIn: parent; width: 3; height: 120; color: "#FF3B30" }
-                            }
-                            Rectangle {
-                                anchors.left: parent.left; anchors.bottom: parent.bottom; anchors.leftMargin: 20; anchors.bottomMargin: 20
-                                height: 22; width: modelText.implicitWidth + 16; radius: Theme.radiusSmall; color: Theme.overlay; visible: root.controller.cameraOpened
-                                Text { id: modelText; anchors.centerIn: parent; text: root.controller.cameraModel; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                            }
-                            Rectangle {
-                                anchors.right: parent.right; anchors.bottom: parent.bottom; anchors.rightMargin: 20; anchors.bottomMargin: 20
-                                height: 22; width: infoText.implicitWidth + 16; radius: Theme.radiusSmall; color: Theme.overlay
-                                Text {
-                                    id: infoText; anchors.centerIn: parent; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta
-                                    text: root.controller.cameraOpened ? root.controller.cameraActualWidth + "×" + root.controller.cameraActualHeight + "  ·  " + root.controller.cameraExposureUs + " μs"
-                                        : "EXP " + root.controller.cameraExposureUs + " μs"
-                                }
-                            }
-                        }
-                        Rectangle {
-                            anchors.centerIn: parent; width: pausedRow.implicitWidth + 28; height: 34; radius: 6
-                            color: Theme.overlayStrong; border.width: 1; border.color: Theme.line; visible: root.controller.cameraOpened && !root.controller.previewActive && !root.busy
-                            Row {
-                                id: pausedRow
-                                anchors.centerIn: parent; spacing: 8
-                                CollectIcon { width: 16; height: 16; name: "pause"; ink: Theme.accent; anchors.verticalCenter: parent.verticalCenter }
-                                Text { text: "预览已暂停"; color: Theme.ink; font.pixelSize: Theme.body; anchors.verticalCenter: parent.verticalCenter }
-                            }
-                        }
-                        Column {
-                            anchors.centerIn: parent; spacing: 10; visible: !root.controller.cameraOpened
-                            Rectangle {
-                                width: 64; height: 64; radius: 32; color: "transparent"; border.width: 1; border.color: Theme.line
-                                anchors.horizontalCenter: parent.horizontalCenter
-                                CollectIcon { anchors.centerIn: parent; width: 30; height: 30; name: "aperture"; ink: Theme.ink3 }
-                            }
-                            Item { width: 1; height: 2 }
-                            Text { text: "等待相机画面"; color: Theme.ink; font.pixelSize: 16; anchors.horizontalCenter: parent.horizontalCenter }
-                            Text { text: "连接相机，即可开始预览与拍照"; color: Theme.ink2; font.pixelSize: Theme.body; anchors.horizontalCenter: parent.horizontalCenter }
-                            Text { text: "TARGET " + root.controller.cameraIp; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta; anchors.horizontalCenter: parent.horizontalCenter }
-                        }
-                        Rectangle {
-                            anchors.fill: parent; color: Theme.overlay; visible: root.busy
-                            Column {
-                                anchors.centerIn: parent; spacing: 10
-                                CollectIcon {
-                                    width: 36; height: 36; name: "spinner"; ink: Theme.accent; anchors.horizontalCenter: parent.horizontalCenter
-                                    NumberAnimation on rotation { from: 0; to: 360; duration: 900; loops: Animation.Infinite; running: root.busy }
-                                }
-                                Text { text: "正在执行操作…"; color: Theme.ink; font.pixelSize: Theme.body; anchors.horizontalCenter: parent.horizontalCenter }
-                            }
-                        }
-                        Rectangle {
-                            id: flash
-                            objectName: "shutterFlashOverlay"
-                            anchors.fill: parent; radius: 6; color: "white"; opacity: 0
-                            NumberAnimation { id: shutterFlash; objectName: "shutterFlashAnimation"; target: flash; property: "opacity"; from: 0.22; to: 0; duration: 260; easing.type: Easing.OutCubic }
-                        }
-                    }
-                }
-            }
-            ColumnLayout {
-                id: sidebar
-                Layout.preferredWidth: root.infoWidth; Layout.minimumWidth: root.infoWidth; Layout.maximumWidth: root.infoWidth
-                Layout.fillHeight: true; spacing: Theme.gap
+            RowLayout {
+                objectName: "mainDeck"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.margins: 16; spacing: 16
                 CollectCard {
-                    id: sessionCard
-                    objectName: "sessionCard"
-                    Layout.fillWidth: true; implicitHeight: sessionInfo.implicitHeight + Theme.padding * 2
+                    objectName: "mainControls"; Layout.preferredWidth: root.compact ? 248 : 300; Layout.fillHeight: true; padding: root.compact ? 12 : 20
                     ColumnLayout {
-                        id: sessionInfo
-                        anchors.fill: parent; spacing: 8
+                        anchors.fill: parent; spacing: root.compact ? 8 : 12
+                        HmiText { visible: !root.compact; text: "采集模式"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }
                         RowLayout {
-                            Layout.fillWidth: true
-                            Text { text: "采集概况"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.Medium }
-                            Item { Layout.fillWidth: true }
-                            Text { text: root.archiveDate; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
+                            Layout.fillWidth: true; spacing: 4
+                            CollectButton { objectName: "singleModeButton"; text: "单次"; selected: !root.fivePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.fivePointMode = false }
+                            CollectButton { objectName: "fivePointModeButton"; text: "五点"; selected: root.fivePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.fivePointMode = true }
                         }
                         RowLayout {
-                            Layout.fillWidth: true; spacing: 16
-                            ColumnLayout {
-                                Layout.fillWidth: true; spacing: 0
-                                Text { objectName: "savedImageCount"; text: root.controller.savedImageCount; color: Theme.ink; font.family: Theme.mono; font.pixelSize: Theme.stat; font.weight: Font.Light }
-                                Text { text: "本次采集 / 张"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                            }
-                            Rectangle { implicitWidth: 1; Layout.preferredHeight: 44; color: Theme.hairline }
-                            ColumnLayout {
-                                Layout.fillWidth: true; spacing: 0
-                                Text { objectName: "savedPoseCount"; text: root.controller.savedPoseCount; color: Theme.ink; font.family: Theme.mono; font.pixelSize: Theme.stat; font.weight: Font.Light }
-                                Text { text: "独立点位 / 个"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                            }
+                            visible: root.fivePointMode; Layout.fillWidth: true; spacing: 8
+                            CollectField { id: offsetX; objectName: "fivePointOffsetXInput"; text: "10"; placeholderText: "ΔX mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
+                            CollectField { id: offsetY; objectName: "fivePointOffsetYInput"; text: "10"; placeholderText: "ΔY mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
+                        }
+                        HmiText { visible: root.fivePointMode && !root.compact; text: "X / Y 偏移 · mm（0.1～50）"; font.pixelSize: Theme.meta }
+                        CollectButton {
+                            objectName: root.busy ? "stopButton" : root.fivePointMode ? "fivePointButton" : "captureButton"
+                            Layout.fillWidth: true; Layout.preferredHeight: 56
+                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.fivePointMode ? "开始五点采集" : "采集图片"
+                            primary: !root.busy; danger: root.busy
+                            enabled: root.busy || root.ready && (!root.fivePointMode || root.controller.robotConnected && offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1)
+                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.fivePointMode) root.controller.captureFivePoints(Number(offsetX.text), Number(offsetY.text)); else root.takePhoto() }
+                        }
+                        HmiText {
+                            objectName: "fivePointProgress"; Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 32 : 44
+                            text: root.controller.motionFault ? "停止尚未确认，操作保持锁定" : root.busy ? root.controller.fivePointProgress || "采集进行中，请稍候" : !root.controller.cameraOpened ? "连接相机后开始预览与采集" : !root.controller.previewActive ? "请先恢复预览" : root.fivePointMode ? "确认路径无障碍后开始五点采集" : "空格 / Ctrl+S 采集 · 多曝光融合"
+                            color: root.controller.motionFault ? Theme.danger : Theme.ink3; font.pixelSize: Theme.meta
                         }
                         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
+                        HmiText { visible: !root.compact; text: "TCP 工具"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }
+                        TcpSelector { id: tcpSelector; objectName: "tcpSelector"; controller: root.controller; Layout.fillWidth: true; enabled: !root.busy && root.controller.robotConnected && root.controller.tcpNames.length > 0 }
                         RowLayout {
-                            Layout.fillWidth: true
-                            Text { text: "归档目录"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                            Text { Layout.fillWidth: true; Layout.minimumWidth: 0; horizontalAlignment: Text.AlignRight; text: root.controller.outputDirectory.split("/").pop() + "/" + root.archiveDate + "/"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta; elide: Text.ElideLeft }
+                            Layout.fillWidth: true; spacing: 8
+                            CollectButton { objectName: "refreshTcpButton"; text: "刷新"; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.controller.robotConnected; onClicked: root.controller.refreshTcpTools() }
+                            CollectButton { objectName: "savePoseButton"; text: "保存 TCP"; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.savePose() }
                         }
+                        CollectButton { objectName: "manualPageButton"; text: "手动移动 TCP →"; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.page = "manual" }
+                        Item { Layout.fillHeight: true; Layout.minimumHeight: 0 }
+                        HmiText { Layout.fillWidth: true; text: root.busy ? "操作进行中，设备与工具编辑已锁定" : !root.controller.robotConnected ? "连接机器人后可使用 TCP" : !root.controller.selectedTcp ? "选择 TCP 后可保存或手动移动" : "工具：" + root.controller.selectedTcp; font.pixelSize: Theme.meta; color: Theme.ink3; maximumLineCount: 2; elide: Text.ElideRight }
+                        CollectButton { objectName: "previewButton"; small: root.compact; Layout.fillWidth: true; text: root.controller.previewActive ? "暂停预览" : "恢复预览"; quiet: true; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }
                     }
                 }
-                CollectCard {
-                    objectName: "recentPhotoCard"
-                    Layout.fillWidth: true; implicitHeight: recentPhoto.implicitHeight + Theme.padding * 2
-                    ColumnLayout {
-                        id: recentPhoto
-                        anchors.fill: parent; spacing: 8
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text { text: "最近图片"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.Medium }
-                            Item { Layout.fillWidth: true }
-                            Text { text: root.controller.lastCapturePath ? "已保存" : "暂无图片"; color: Theme.ink3; font.pixelSize: Theme.meta }
-                        }
-                        Rectangle {
-                            Layout.fillWidth: true
-                            Layout.preferredHeight: Math.max(80, Math.min((root.infoWidth - Theme.padding * 2) * 0.56, root.height - Theme.margin * 2 - 36 - controlDeck.contentHeight - 30 - Theme.gap * 3 - sessionCard.implicitHeight - Theme.gap * 2 - 96 - 106))
-                            radius: 6; color: Theme.sunken; border.width: 1; border.color: Theme.hairline; clip: true
-                            Image { objectName: "recentPhotoImage"; anchors.fill: parent; anchors.margins: 1; source: root.controller.lastCapturePath ? "file://" + root.controller.lastCapturePath : ""; fillMode: Image.PreserveAspectFit }
-                            Column {
-                                anchors.centerIn: parent; spacing: 8; visible: !root.controller.lastCapturePath
-                                CollectIcon { anchors.horizontalCenter: parent.horizontalCenter; name: "aperture"; ink: Theme.ink3; width: 22; height: 22 }
-                                Text { text: "保存后显示缩略图"; color: Theme.ink3; font.pixelSize: Theme.meta }
+                ColumnLayout {
+                    objectName: "mainRightColumn"; Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumWidth: 0; spacing: 12
+                    CollectCard {
+                        Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 120; padding: 0
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 0
+                            RowLayout {
+                                Layout.fillWidth: true; Layout.preferredHeight: 44; Layout.leftMargin: 16; Layout.rightMargin: 16
+                                HmiText { text: "相机预览"; color: Theme.ink; font.pixelSize: Theme.title; Layout.fillWidth: true }
+                                HmiText { text: "十字线仅预览，不写入图片"; font.pixelSize: Theme.meta }
                             }
-                        }
-                        Text { Layout.fillWidth: true; Layout.minimumWidth: 0; text: root.controller.lastCapturePath ? root.controller.lastCapturePath.split("/").pop() : "等待第一张图片"; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta; elide: Text.ElideMiddle }
-                        Rectangle {
-                            Layout.preferredHeight: 18; Layout.preferredWidth: tagText.implicitWidth + 14
-                            radius: Theme.radiusSmall; color: Theme.chip
-                            Text { id: tagText; anchors.centerIn: parent; text: "MERTENS · PNG"; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: 10 }
+                            Rectangle {
+                                objectName: "captureImageArea"; Layout.fillWidth: true; Layout.fillHeight: true; color: Theme.viewfinder; clip: true
+                                property int seenCount: root.seenCount
+                                Image { id: cameraImage; anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false; asynchronous: false; visible: root.hasFrame }
+                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: Theme.hairline }
+                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: Theme.hairline }
+                                Rectangle { anchors.centerIn: parent; width: 120; height: 3; color: Theme.danger; opacity: 0.8 }
+                                Rectangle { anchors.centerIn: parent; width: 3; height: 120; color: Theme.danger; opacity: 0.8 }
+                                HmiText { visible: !root.hasFrame; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 16; text: "等待画面 · 点击「连接相机」"; font.pixelSize: Theme.meta }
+                                Rectangle {
+                                    visible: root.hasFrame; x: 12; y: 12; height: 28; width: Math.min(parent.width - 24, frameLabel.implicitWidth + 24); radius: 14; color: Theme.chip
+                                    HmiText { id: frameLabel; objectName: "frameMetadata"; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; text: root.frameMetadata; font.pixelSize: Theme.meta; font.family: Theme.mono; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; wrapMode: Text.NoWrap }
+                                }
+                                Rectangle { id: flash; objectName: "shutterFlashOverlay"; anchors.fill: parent; color: Theme.white; opacity: 0 }
+                                SequentialAnimation { id: shutterFlash; objectName: "shutterFlashAnimation"; NumberAnimation { target: flash; property: "opacity"; from: 0.5; to: 0; duration: 240 } }
+                            }
+                            HmiText { Layout.fillWidth: true; Layout.margins: 12; text: "已保存 " + root.controller.savedImageCount + " 张 · TCP 点位 " + root.controller.savedPoseCount + (root.controller.previewActive ? " · 预览中" : " · 预览已暂停"); font.family: Theme.mono; font.pixelSize: Theme.meta }
                         }
                     }
-                }
-                CollectCard {
-                    objectName: "logCard"
-                    Layout.fillWidth: true; Layout.fillHeight: true; Layout.minimumHeight: 96
-                    ColumnLayout {
-                        anchors.fill: parent; spacing: 10
-                        RowLayout {
-                            Layout.fillWidth: true
-                            Text { text: "操作日志"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.Medium }
-                            Item { Layout.fillWidth: true }
-                            Text { text: activityLog.count + " 条"; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                        }
-                        ListView {
-                            id: operationLog; objectName: "operationLog"
-                            Layout.fillWidth: true; Layout.fillHeight: true
-                            clip: true; spacing: 8; boundsBehavior: Flickable.StopAtBounds; model: activityLog
-                            ScrollBar.vertical: ScrollBar { width: 3; policy: ScrollBar.AsNeeded; contentItem: Rectangle { radius: 1.5; color: Theme.line; opacity: parent.active ? 1 : 0.5 } }
-                            delegate: Row {
-                                width: operationLog.width - 6; spacing: 6
-                                Text { width: 58; text: stamp; color: Theme.ink3; font.family: Theme.mono; font.pixelSize: Theme.meta }
-                                Text { width: Math.max(1, parent.width - 64); text: message; color: failed ? Theme.danger : index === activityLog.count - 1 ? Theme.ink : Theme.ink2; font.pixelSize: Theme.meta; wrapMode: Text.Wrap; lineHeight: 1.3 }
+                    CollectCard { objectName: "livePoseCard"; Layout.fillWidth: true; Layout.preferredHeight: livePose.implicitHeight + 24; padding: 12; LivePose { id: livePose; width: parent.width; controller: root.controller } }
+                    CollectCard {
+                        objectName: "logCard"; Layout.fillWidth: true; Layout.preferredHeight: root.height < 740 ? 104 : 150; padding: 12
+                        ColumnLayout {
+                            anchors.fill: parent; spacing: 4
+                            RowLayout { Layout.fillWidth: true; HmiText { text: "运行日志"; color: Theme.ink; Layout.fillWidth: true } HmiText { text: "最近 " + root.logLines.length + " / 1000 行 · 可选择复制"; font.pixelSize: Theme.meta } }
+                            ScrollView {
+                                id: logScroll; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
+                                TextArea { id: logText; objectName: "operationLog"; text: root.logLines.join("\n"); readOnly: true; selectByMouse: true; wrapMode: TextEdit.WrapAnywhere; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: Theme.meta; background: null; padding: 0 }
                             }
                         }
                     }
                 }
             }
         }
-
-        Rectangle {
-            Layout.fillWidth: true; implicitHeight: 30; color: "transparent"
-            Rectangle { anchors.top: parent.top; width: parent.width; height: 1; color: Theme.hairline }
-            RowLayout {
-                anchors.fill: parent; anchors.topMargin: 1; spacing: 14
-                RowLayout {
-                    spacing: 6
-                    Rectangle { width: 6; height: 6; radius: 3; color: root.controller.cameraOpened ? Theme.ok : Theme.ink3 }
-                    Text { text: root.controller.cameraOpened ? "相机已连接" : "相机未连接"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                }
-                RowLayout {
-                    spacing: 6
-                    Rectangle { width: 6; height: 6; radius: 3; color: root.controller.robotConnected ? Theme.ok : Theme.ink3 }
-                    Text { text: root.controller.robotConnected ? "机器人已连接" : "机器人未连接"; color: Theme.ink2; font.pixelSize: Theme.meta }
-                }
-                RowLayout {
-                    spacing: 5
-                    Repeater {
-                        model: ["Space", "S", "Ctrl+S"]
-                        Row {
-                            spacing: 5
-                            Rectangle {
-                                height: 18; width: keyText.implicitWidth + 12; radius: Theme.radiusSmall; color: Theme.raised; border.width: 1; border.color: Theme.line
-                                Text { id: keyText; anchors.centerIn: parent; text: modelData; color: Theme.ink2; font.family: Theme.mono; font.pixelSize: 10 }
-                            }
-                            Text { visible: index < 2; text: "/"; color: Theme.ink3; font.pixelSize: Theme.meta; anchors.verticalCenter: parent.verticalCenter }
-                        }
-                    }
-                    Text { text: "拍照保存"; color: Theme.ink2; font.pixelSize: Theme.meta; Layout.leftMargin: 3 }
-                }
-                Text { Layout.fillWidth: true; Layout.minimumWidth: 0; horizontalAlignment: Text.AlignRight; text: root.controller.statusMessage; color: Theme.ink2; font.pixelSize: Theme.meta; elide: Text.ElideMiddle }
-            }
+    }
+    SettingsPage { id: settings; objectName: "settingsPage"; anchors.fill: parent; visible: root.page === "settings"; controller: root.controller; locked: root.busy; onLeave: root.page = "main" }
+    ManualMovePage { id: manual; objectName: "manualPage"; anchors.fill: parent; visible: root.page === "manual"; controller: root.controller; locked: root.busy; onLeave: root.page = "main" }
+    Dialog {
+        id: poseDialog; objectName: "savePoseDialog"; anchors.centerIn: parent; width: Math.min(520, root.width - 32); modal: true; title: "保存 TCP 坐标"; closePolicy: Popup.CloseOnEscape
+        header: HmiText { objectName: "poseDialogTitle"; text: poseDialog.title; color: Theme.ink; font.pixelSize: Theme.appTitle; padding: 20 }
+        onClosed: root.poseEditorOpen = false
+        background: Rectangle { color: Theme.surface; border.color: Theme.hairline; radius: Theme.radiusCard }
+        contentItem: ColumnLayout {
+            spacing: 16
+            HmiText { text: "当前工具：" + root.controller.selectedTcp; Layout.fillWidth: true; color: Theme.ink }
+            HmiText { text: "点位名称 · 留空使用时间戳"; Layout.fillWidth: true }
+            CollectField { id: pointName; objectName: "pointNameInput"; mono: false; Layout.fillWidth: true; enabled: root.tcpReady && !root.busy; onAccepted: root.confirmPose(); Keys.onEscapePressed: { poseDialog.close(); event.accepted = true } }
+            HmiText { Layout.fillWidth: true; text: root.controller.statusMessage; font.pixelSize: Theme.meta }
+            RowLayout { Item { Layout.fillWidth: true } CollectButton { text: "返回"; quiet: true; onClicked: poseDialog.close() } CollectButton { objectName: "confirmPoseButton"; text: "保存点位"; primary: true; enabled: root.tcpReady && !root.busy; onClicked: root.confirmPose() } }
         }
     }
 }

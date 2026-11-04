@@ -27,9 +27,12 @@ struct LineMotionWait {
     int settlingMs = 1200;
     int timeoutMs = 30000;
 };
+// Invoked synchronously on the motion worker. The caller can sample telemetry
+// without making concurrent SDK calls on the same handle. Exceptions stop motion.
+using MotionTick = std::function<void()>;
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait = {});
+    const std::atomic<bool>& cancelled, LineMotionWait wait = {}, MotionTick tick = {});
 void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait = {});
+    const std::atomic<bool>& cancelled, LineMotionWait wait = {}, MotionTick tick = {});
 
 } // namespace collection

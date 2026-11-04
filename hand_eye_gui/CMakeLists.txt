@@ -17,10 +17,13 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/DiagnosticLogger.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionController.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionActions.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CollectionSettings.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/CollectionRobot.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionCapture.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/FivePointCapture.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionPoseRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RobotTcp.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/ManualTcpMotion.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionImageRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CameraImageProvider.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/config_resolver.cpp
@@ -40,7 +43,6 @@ set(QRC_FILE
 
 # Shared helpers still required by collection.
 set(GUI_CORE_SRCS
-    ${CMAKE_SOURCE_DIR}/utils/robot_util.cpp
     ${CMAKE_SOURCE_DIR}/utils/calib_transform.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_undistortion.cpp
     ${CMAKE_SOURCE_DIR}/utils/collection_utils.cpp
@@ -116,7 +118,9 @@ target_compile_definitions(collection_controller PUBLIC
 )
 
 if(BUILD_TESTS)
-    add_executable(test_collection_controller ${CMAKE_SOURCE_DIR}/tests/test_collection_controller.cpp)
+    add_executable(test_collection_controller
+        ${CMAKE_SOURCE_DIR}/tests/test_collection_controller.cpp
+        ${CMAKE_SOURCE_DIR}/tests/test_collection_settings.cpp)
     target_link_libraries(test_collection_controller collection_controller)
     add_test(NAME collection_controller_motion_lock COMMAND test_collection_controller)
 endif()

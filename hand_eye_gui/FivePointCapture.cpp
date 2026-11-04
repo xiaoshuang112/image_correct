@@ -129,7 +129,7 @@ void checkFivePointReachability(RobotHandle handle, const FivePointTargets& targ
 }
 
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait) {
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick) {
     using Clock = std::chrono::steady_clock;
     if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs)
         throw std::runtime_error("机器人等待参数无效");
@@ -144,7 +144,11 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
         FlangePose zero{}, actual{};
         check(cr_get_AssignTCP_Pose(handle, zero.data(), actual.data()), "读取实际法兰位姿失败");
         checkFinite(actual);
+        if (tick) tick();
+        checkCancelled(cancelled);
         const auto now = Clock::now();
+        if (now - started >= std::chrono::milliseconds(wait.timeoutMs))
+            throw std::runtime_error("机器人到位或稳定等待超时");
         if (!moving && mode != SDK_Moving && flangeAtTarget(actual, target)) {
             if (!stable) stableSince = now;
             stable = true;
@@ -158,7 +162,7 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
 }
 
 void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait) {
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick) {
     checkCancelled(cancelled);
     const auto initial = readStationaryFlange(handle);
     checkFinite(target);
@@ -189,9 +193,14 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
          {"z", QString::number(target[2], 'f', 3)}, {"speed_mm_s", "10"}});
     try {
         check(cr_move_line(handle, command, FALSE), "直线运动指令失败");
-        waitForStableFlange(handle, target, cancelled, wait);
+        waitForStableFlange(handle, target, cancelled, wait, tick);
     } catch (const std::exception& error) {
         stopAndRethrow(handle, error);
+    } catch (...) {
+        const auto result = cr_stop(handle);
+        if (result != sucess)
+            throw std::runtime_error("五点采图运动异常；停止指令失败，请在示教器确认机器人状态");
+        throw;
     }
 }
 } // namespace collection

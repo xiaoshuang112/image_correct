@@ -6,6 +6,12 @@
 #include <QStringList>
 #include <QImage>
 #include <QTimer>
+#include <QVariantList>
+#include <QVariantMap>
+#include <QElapsedTimer>
+#include <functional>
+#include <mutex>
+#include <chrono>
 #include <thread>
 #include <atomic>
 #include <memory>
@@ -23,10 +29,10 @@ class CollectionController : public QObject
     Q_OBJECT
 
     // ---- QML 可绑定属性 ----
-    Q_PROPERTY(QString robotIp        READ robotIp        WRITE setRobotIp        NOTIFY robotIpChanged)
-    Q_PROPERTY(QString cameraIp       READ cameraIp       WRITE setCameraIp       NOTIFY cameraIpChanged)
-    Q_PROPERTY(int     previewWidth   READ previewWidth   WRITE setPreviewWidth   NOTIFY previewWidthChanged)
-    Q_PROPERTY(int     previewHeight  READ previewHeight  WRITE setPreviewHeight  NOTIFY previewHeightChanged)
+    Q_PROPERTY(QString robotIp        READ robotIp         NOTIFY robotIpChanged)
+    Q_PROPERTY(QString cameraIp       READ cameraIp        NOTIFY cameraIpChanged)
+    Q_PROPERTY(int     previewWidth   READ previewWidth    NOTIFY previewWidthChanged)
+    Q_PROPERTY(int     previewHeight  READ previewHeight   NOTIFY previewHeightChanged)
     Q_PROPERTY(int     cameraExposureUs READ cameraExposureUs NOTIFY cameraExposureUsChanged)
     Q_PROPERTY(int     cameraActualExposureUs READ cameraActualExposureUs NOTIFY cameraActualExposureUsChanged)
     // 相机后端与实际设备信息（只读审计，打开相机后刷新）
@@ -46,7 +52,8 @@ class CollectionController : public QObject
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
     Q_PROPERTY(bool motionFault READ motionFault NOTIFY collectionChanged)
     Q_PROPERTY(QString outputDirectory READ outputDirectory CONSTANT)
-    Q_PROPERTY(QString exposureList READ exposureList WRITE setExposureList NOTIFY collectionChanged)
+    Q_PROPERTY(QString handEyePath READ handEyePath NOTIFY collectionChanged)
+    Q_PROPERTY(QString exposureList READ exposureList NOTIFY collectionChanged)
     Q_PROPERTY(QString lastCapturePath READ lastCapturePath NOTIFY collectionChanged)
     Q_PROPERTY(int savedImageCount READ savedImageCount NOTIFY collectionChanged)
     Q_PROPERTY(int savedPoseCount READ savedPoseCount NOTIFY collectionChanged)
@@ -56,6 +63,13 @@ class CollectionController : public QObject
     Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString fivePointProgress READ fivePointProgress NOTIFY collectionChanged)
+    Q_PROPERTY(QVariantList tcpPoseValues READ tcpPoseValues NOTIFY tcpPoseChanged)
+    Q_PROPERTY(bool tcpPoseValid READ tcpPoseValid NOTIFY tcpPoseChanged)
+    Q_PROPERTY(QString tcpPoseStatus READ tcpPoseStatus NOTIFY tcpPoseChanged)
+    Q_PROPERTY(QString tcpPoseTimestamp READ tcpPoseTimestamp NOTIFY tcpPoseChanged)
+    Q_PROPERTY(QString tcpPoseTool READ tcpPoseTool NOTIFY tcpPoseChanged)
+    Q_PROPERTY(bool manualMoveActive READ manualMoveActive NOTIFY collectionChanged)
+    Q_PROPERTY(QString manualMoveProgress READ manualMoveProgress NOTIFY collectionChanged)
 
 public:
     explicit CollectionController(QObject* parent = nullptr);
@@ -66,6 +80,7 @@ public:
     bool collectionBusy() const { return m_collectionBusy; }
     bool motionFault() const { return m_motionFault; }
     QString outputDirectory() const { return m_outputDirectory; }
+    QString handEyePath() const { return m_handEyePath; }
     QString exposureList() const { return m_exposureList; }
     QString lastCapturePath() const { return m_lastCapturePath; }
     int savedImageCount() const { return m_savedImageCount; }
@@ -80,8 +95,18 @@ public:
     QString selectedTcp() const { return m_selectedTcp; }
     QString fivePointProgress() const { return m_fivePointProgress; }
     void setSelectedTcp(const QString& name);
-    void setExposureList(const QString& value);
     Q_INVOKABLE void openCollectionFolder();
+    Q_INVOKABLE void openDiagnosticFolder();
+    Q_INVOKABLE QString applySettings(const QVariantMap& values);
+    Q_INVOKABLE QVariantMap parseTcpTarget(const QString& text) const;
+    Q_INVOKABLE void moveTcpTo(const QString& text);
+    QVariantList tcpPoseValues() const { return m_tcpPoseValues; }
+    bool tcpPoseValid() const { return m_tcpPoseValid; }
+    QString tcpPoseStatus() const { return m_tcpPoseStatus; }
+    QString tcpPoseTimestamp() const { return m_tcpPoseTimestamp; }
+    QString tcpPoseTool() const { return m_tcpPoseTool; }
+    bool manualMoveActive() const { return m_manualMoveActive; }
+    QString manualMoveProgress() const { return m_manualMoveProgress; }
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }
@@ -104,10 +129,6 @@ public:
     QString logText() const         { return m_logText; }
     QString diagnosticLogPath() const;
 
-    void setRobotIp(const QString& v);
-    void setCameraIp(const QString& v);
-    void setPreviewWidth(int v);
-    void setPreviewHeight(int v);
 
 public slots:
     /// 连接 / 断开机器人
@@ -122,11 +143,8 @@ public slots:
     void startPreview();
     void stopPreview();
 
-    /// 热更新相机曝光，并将设备回读值持久化到 config.yaml。
-    void adjustCameraExposure(int exposureUs);
     void capturePhoto();
     void captureFivePoints(double xMm, double yMm);
-    void levelCamera();
     void cancelCollectionOperation();
 
 signals:
@@ -145,13 +163,13 @@ signals:
     void frameUpdated();
     void collectionChanged();
     void tcpToolsChanged();
+    void tcpPoseChanged();
 
 private:
     friend struct CollectionControllerTestAccess;
+    friend struct CollectionSettingsTestAccess;
     void initializeCollection();
     void loadCollectionUndistortion();
-    void persistCollectionString(const std::string& key, const QString& value);
-    void persistCollectionInteger(const std::string& key, int value);
     void beginCollectionOperation();
     void startCapture(bool fivePoints, double xMm = 0, double yMm = 0);
     void recordCapture(const QString& path);
@@ -168,7 +186,30 @@ private:
 
     // ---- 内部辅助 ----
     void setStatus(const QString& msg);
-    bool checkAndRestoreRobotHand();
+    struct RobotSession {
+        explicit RobotSession(RobotHandle value) : handle(value) {}
+        std::unique_lock<std::mutex> acquire(const std::atomic<bool>& cancelled) {
+            std::unique_lock<std::mutex> lock(mutex, std::defer_lock);
+            while (!cancelled && !closing) {
+                if (lock.try_lock()) {
+                    if (cancelled || closing) lock.unlock();
+                    return lock;
+                }
+                std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            }
+            return lock;
+        }
+        std::mutex mutex;
+        const RobotHandle handle;
+        std::atomic<bool> closing{false};
+        std::atomic<bool> telemetryInFlight{false};
+    };
+    std::shared_ptr<RobotSession> robotSession();
+    void pollTcpPose();
+    void invalidateTcpPose(const QString& status);
+    void applyTcpSample(const std::shared_ptr<RobotSession>& session, quint64 generation,
+        const QString& tool, const QVariantList& values, const QString& error, qint64 timestamp);
+    std::function<void()> tcpSamplingCallback(const std::shared_ptr<RobotSession>& session);
 
     /// 将 cv::Mat (BGR) 转为 QImage (RGB)，线程安全发送到 ImageProvider
     void publishFrame(const cv::Mat& bgr);
@@ -177,8 +218,6 @@ private:
     void appendLog(const QString& line);
     void flushPendingLogs();
 
-    static bool robotMotionCancellationRequested();
-    static CollectionController* s_instance;
 
     // ==================== 数据成员 ====================
 
@@ -204,8 +243,22 @@ private:
 
     // 状态
     bool     m_robotConnected = false;
+    bool m_robotDisconnecting = false;
     QStringList m_tcpNames;
     QString m_selectedTcp;
+    std::shared_ptr<RobotSession> m_robotSession;
+    std::shared_ptr<QObject> m_robotDelivery;
+    QTimer* m_tcpPoseTimer = nullptr;
+    quint64 m_tcpPoseGeneration = 0;
+    QVariantList m_tcpPoseValues;
+    bool m_tcpPoseValid = false;
+    QString m_tcpPoseStatus = "机器人未连接";
+    QString m_tcpPoseTimestamp;
+    QString m_tcpPoseTool;
+    QString m_tcpPoseLastFailure;
+    QElapsedTimer m_tcpPoseAge;
+    bool m_manualMoveActive = false;
+    QString m_manualMoveProgress;
     bool     m_cameraOpened   = false;
     bool     m_previewActive  = false;
     QString  m_statusMessage  = "就绪";
@@ -215,6 +268,7 @@ private:
 
     // 硬件句柄
     RobotHandle m_robotHandle = 0;
+    std::atomic<RobotHandle> m_pendingRobotHandle{0};
     std::shared_ptr<AICamera> m_camera;
 
     // 预览
