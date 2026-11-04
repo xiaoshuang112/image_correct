@@ -34,5 +34,6 @@ QtObject {
     readonly property int margin: 16
     readonly property int gap: 16
     readonly property int padding: 20
-    readonly property int pageContentWidth: 1120
+    readonly property int pageContentWidth: 1440
+    readonly property int pageCardMinHeight: 560
 }

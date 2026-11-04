@@ -12,7 +12,8 @@ Item {
     readonly property bool canMove: !locked && controller.robotConnected && controller.selectedTcp !== "" && parsed.valid
     Timer {
         id: measure; interval: 0
-        onTriggered: pair.height = Math.max(targetContent.implicitHeight, liveContent.implicitHeight) + 40
+        onTriggered: pair.height = Math.max(targetContent.implicitHeight + 40, liveContent.implicitHeight + 40,
+            Math.min(Theme.pageCardMinHeight, scroll.availableHeight - 32))
     }
     ColumnLayout {
         anchors.fill: parent; spacing: 0
@@ -27,6 +28,7 @@ Item {
         }
         ScrollView {
             id: scroll; Layout.fillWidth: true; Layout.fillHeight: true; clip: true; contentWidth: availableWidth
+            onAvailableHeightChanged: measure.restart()
             ScrollBar.horizontal.policy: ScrollBar.AlwaysOff
             Item {
                 width: scroll.availableWidth; implicitHeight: Math.max(scroll.availableHeight, pair.height + 32)

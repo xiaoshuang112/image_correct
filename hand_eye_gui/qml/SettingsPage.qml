@@ -69,7 +69,8 @@ Item {
     ListModel { id: exposureSlots }
     Timer {
         id: measure; interval: 0
-        onTriggered: pair.height = Math.max(leftContent.implicitHeight, rightContent.implicitHeight) + 40
+        onTriggered: pair.height = Math.max(leftContent.implicitHeight + 40, rightContent.implicitHeight + 40,
+            Math.min(Theme.pageCardMinHeight, scroll.availableHeight - 32))
     }
     ColumnLayout {
         anchors.fill: parent; spacing: 0
@@ -96,6 +97,7 @@ Item {
         }
         ScrollView {
             id: scroll
+            onAvailableHeightChanged: measure.restart()
             objectName: "settingsScroll"
             Layout.fillWidth: true; Layout.fillHeight: true
             clip: true; contentWidth: availableWidth
