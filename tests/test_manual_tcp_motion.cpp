@@ -140,7 +140,7 @@ int main(int argc, char** argv) {
                 "manual move failed to confirm actual selected TCP and stationary state");
         require(collection::flangeAtTarget(robot.ikPose, converted), "IK preflight used TCP instead of flange");
         // Far translations and arbitrary orientations are intentionally allowed.
-        require(robot.actual == target, "manual move inherited five-point distance/orientation restriction");
+        require(robot.actual == target, "manual move inherited nine-point distance/orientation restriction");
         robot.reset(); robot.offset[2] = 250;
         move();
         require(robot.command.tcpOffset[2] == 250, "cached tool offset sent to motion");

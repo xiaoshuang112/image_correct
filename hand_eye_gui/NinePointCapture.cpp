@@ -1,4 +1,4 @@
-#include "FivePointCapture.hpp"
+#include "NinePointCapture.hpp"
 #include "DiagnosticLogger.hpp"
 #include "utils/calib_transform.hpp"
 #include <algorithm>
@@ -15,11 +15,43 @@ void check(CRresult result, const char* operation) {
         throw std::runtime_error(std::string(operation) + "（错误码 " + std::to_string(result) + "）");
 }
 void checkCancelled(const std::atomic<bool>& cancelled) {
-    if (cancelled.load()) throw std::runtime_error("五点采图已停止");
+    if (cancelled.load()) throw std::runtime_error("九点采图已停止");
 }
 void checkFinite(const FlangePose& pose) {
     if (!std::all_of(pose.begin(), pose.end(), [](double v) { return std::isfinite(v); }))
         throw std::runtime_error("机器人位姿包含无效数值");
+}
+FlangePose withEulerYawOffset(const FlangePose& origin, double degrees) {
+    if (degrees == 0) return origin;
+    const double radians = degrees * CV_PI / 180.0;
+    const double c = std::cos(radians), s = std::sin(radians);
+    auto transform = calib_transform::axisAnglePoseToTransform(origin.data());
+    // ZYX Euler R = Rz(yaw) Ry(pitch) Rx(roll). Pre-multiplying Rz(delta)
+    // changes Euler yaw only, without extracting singular Euler angles or
+    // rotating the XYZ translation about the base origin.
+    const cv::Mat rotation = (cv::Mat_<double>(3, 3) << c, -s, 0, s, c, 0, 0, 0, 1) *
+        transform(cv::Rect(0, 0, 3, 3));
+    rotation.copyTo(transform(cv::Rect(0, 0, 3, 3)));
+    FlangePose result = origin;
+    calib_transform::transformToAxisAnglePose(transform, result.data());
+    std::copy_n(origin.begin(), 3, result.begin());
+    checkFinite(result);
+    return result;
+}
+void checkGridPose(const FlangePose& origin, const FlangePose& pose) {
+    checkFinite(origin);
+    checkFinite(pose);
+    if (std::abs(pose[2] - origin[2]) > 0.05 ||
+        std::hypot(pose[0] - origin[0], pose[1] - origin[1]) > maximumNinePointOffsetMm + 0.05)
+        throw std::runtime_error("九点目标须保持基准 Z 高度，距基准不超过 50 mm");
+    const auto base = calib_transform::axisAnglePoseToTransform(origin.data());
+    const auto actual = calib_transform::axisAnglePoseToTransform(pose.data());
+    const cv::Mat relative = actual(cv::Rect(0, 0, 3, 3)) * base(cv::Rect(0, 0, 3, 3)).t();
+    const double yaw = std::atan2(relative.at<double>(1, 0), relative.at<double>(0, 0)) * 180 / CV_PI;
+    auto expected = withEulerYawOffset(origin, yaw);
+    std::copy_n(pose.begin(), 3, expected.begin());
+    if (std::abs(yaw) > 20.2 || !flangeAtTarget(pose, expected))
+        throw std::runtime_error("九点采图仅允许欧拉 Rz 相对基准变化 ±20°，Rx/Ry 保持不变");
 }
 RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
     RobotModes mode{};
@@ -30,7 +62,7 @@ RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
 }
 void stopAndRethrow(RobotHandle handle, const std::exception& error) {
     const auto result = cr_stop(handle);
-    APP_LOG_EVENT_ERROR("robot.motion", "five_point_stop", "requested",
+    APP_LOG_EVENT_ERROR("robot.motion", "nine_point_stop", "requested",
         {{"reason", QString::fromUtf8(error.what())}, {"stop_result", QString::number(result)}});
     if (result != sucess)
         throw std::runtime_error(std::string(error.what()) + "；停止指令失败（错误码 " +
@@ -39,31 +71,34 @@ void stopAndRethrow(RobotHandle handle, const std::exception& error) {
 }
 }
 
-FivePointTargets fivePointTargets(const FlangePose& origin, double xMm, double yMm) {
+NinePointTargets ninePointTargets(const FlangePose& origin, double xMm, double yMm) {
     checkFinite(origin);
     for (double offset : {xMm, yMm})
-        if (!std::isfinite(offset) || offset < 0.1 || offset > maximumFivePointOffsetMm)
+        if (!std::isfinite(offset) || offset < 0.1 || offset > maximumNinePointOffsetMm)
             throw std::runtime_error("X/Y 偏移须为 0.1～50 mm");
-    FivePointTargets points{origin, origin, origin, origin, origin};
-    points[1][0] += xMm;
-    points[2][0] -= xMm;
-    points[3][1] += yMm;
-    points[4][1] -= yMm;
+    if (std::hypot(xMm, yMm) > maximumNinePointOffsetMm)
+        throw std::runtime_error("对角点距基准不得超过 50 mm，请减小 X/Y 偏移");
+    NinePointTargets points{};
+    for (int point = 0; point < static_cast<int>(points.size()); ++point) {
+        points[point] = withEulerYawOffset(origin, ninePointYawOffsets[point]);
+        points[point][0] += (point % 3 - 1) * xMm;
+        points[point][1] += (1 - point / 3) * yMm;
+        checkFinite(points[point]);
+    }
     return points;
 }
 
-void runFivePointCapture(const FivePointTargets& targets,
+void runNinePointCapture(const NinePointTargets& targets,
     const std::function<void(const FlangePose&, int)>& move,
     const std::function<void(int)>& capture, const std::atomic<bool>& cancelled) {
     checkCancelled(cancelled);
-    capture(0);
-    for (int point = 1; point < 5; ++point) {
+    for (int point = 0; point < static_cast<int>(targets.size()); ++point) {
         checkCancelled(cancelled);
-        move(targets[point], point);
+        if (point != 4) move(targets[point], point);
         checkCancelled(cancelled);
         capture(point);
         checkCancelled(cancelled);
-        move(targets[0], 0);
+        if (point != 4) move(targets[4], 4);
     }
     checkCancelled(cancelled);
 }
@@ -110,20 +145,20 @@ void confirmRobotStopped(RobotHandle handle) {
     throw std::runtime_error("尚未确认机器人已停止");
 }
 
-void checkFivePointReachability(RobotHandle handle, const FivePointTargets& targets) {
+void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targets) {
     FlangePose reference{};
     check(cr_get_jointActualPos(handle, reference.data()), "读取基准关节角失败");
     checkFinite(reference);
     for (auto pose : targets) {
         FlangePose joints{};
         checkFinite(pose);
-        check(cr_kineInverse(handle, pose.data(), reference.data(), joints.data()), "五点目标逆解失败");
+        check(cr_kineInverse(handle, pose.data(), reference.data(), joints.data()), "九点目标逆解失败");
         checkFinite(joints);
         for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
             double delta = joints[axis] - reference[axis];
             if (axis == 5) delta = std::remainder(delta, 360.0);
             if (std::abs(delta) > 30)
-                throw std::runtime_error("五点目标关节变化超过 30°，请调整基准位置或减小偏移");
+                throw std::runtime_error("九点目标关节变化超过 30°，请调整基准位置或减小偏移");
         }
     }
 }
@@ -161,21 +196,18 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
     throw std::runtime_error("机器人到位或稳定等待超时");
 }
 
-void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
+void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
     const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
     checkCancelled(cancelled);
     if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     const auto initial = readStationaryFlange(handle);
-    checkFinite(target);
+    checkGridPose(origin, initial);
+    checkGridPose(origin, target);
     double distance = 0;
     for (int axis = 0; axis < 3; ++axis) distance += std::pow(target[axis] - initial[axis], 2);
     distance = std::sqrt(distance);
-    if (distance > maximumFivePointOffsetMm + 0.2)
+    if (distance > maximumNinePointOffsetMm + 0.2)
         throw std::runtime_error("单段直线运动超过 50 mm，未下发运动");
-    auto positionOnly = initial;
-    std::copy(target.begin(), target.begin() + 3, positionOnly.begin());
-    if (!flangeAtTarget(positionOnly, target))
-        throw std::runtime_error("五点采图不允许改变机器人姿态");
     PointControlPara command{};
     check(cr_get_jointActualPos(handle, command.jointpos), "读取参考关节角失败");
     if (!std::all_of(command.jointpos, command.jointpos + ROB_AXIS_NUM, [](double v) { return std::isfinite(v); }))
@@ -189,9 +221,11 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
     std::fill_n(command.speed, ROB_AXIS_NUM, speedMmS); // mm/s
     std::fill_n(command.acc, ROB_AXIS_NUM, 20.0);   // mm/s²
     checkCancelled(cancelled);
-    APP_LOG_EVENT_INFO("robot.motion", "five_point_line", "start",
+    APP_LOG_EVENT_INFO("robot.motion", "nine_point_line", "start",
         {{"x", QString::number(target[0], 'f', 3)}, {"y", QString::number(target[1], 'f', 3)},
-         {"z", QString::number(target[2], 'f', 3)}, {"speed_mm_s", QString::number(speedMmS)}});
+         {"z", QString::number(target[2], 'f', 3)}, {"rx", QString::number(target[3], 'f', 6)},
+         {"ry", QString::number(target[4], 'f', 6)}, {"rz", QString::number(target[5], 'f', 6)},
+         {"speed_mm_s", QString::number(speedMmS)}});
     try {
         check(cr_move_line(handle, command, FALSE), "直线运动指令失败");
         waitForStableFlange(handle, target, cancelled, wait, tick);
@@ -200,7 +234,7 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& target,
     } catch (...) {
         const auto result = cr_stop(handle);
         if (result != sucess)
-            throw std::runtime_error("五点采图运动异常；停止指令失败，请在示教器确认机器人状态");
+            throw std::runtime_error("九点采图运动异常；停止指令失败，请在示教器确认机器人状态");
         throw;
     }
 }

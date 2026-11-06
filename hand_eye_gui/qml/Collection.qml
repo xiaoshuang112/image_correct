@@ -10,14 +10,15 @@ ApplicationWindow {
     color: Theme.bg; font.family: Theme.sans; font.pixelSize: Theme.body
     property var controller: collectionController
     property string page: "main"
-    property bool fivePointMode: false
+    property bool ninePointMode: false
     property bool poseEditorOpen: false
     readonly property bool busy: controller.collectionBusy || controller.manualMoveActive || controller.motionFault
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
     readonly property bool compact: width < 1100 || height < 740
     readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
+    readonly property bool gridOffsetValid: offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1 && Math.sqrt(Math.pow(Number(offsetX.text), 2) + Math.pow(Number(offsetY.text), 2)) <= 50
     readonly property bool editing: activeFocusItem !== null && (activeFocusItem.cursorPosition !== undefined || activeFocusItem.hasOwnProperty("currentIndex"))
-    readonly property bool shortcutReady: page === "main" && ready && !fivePointMode && !editing && !poseEditorOpen && !tcpSelector.activeFocus && !tcpSelector.popup.visible
+    readonly property bool shortcutReady: page === "main" && ready && !ninePointMode && !editing && !poseEditorOpen && !tcpSelector.activeFocus && !tcpSelector.popup.visible
     property var logLines: []
     property string frameMetadata: ""
     property bool hasFrame: false
@@ -116,30 +117,49 @@ ApplicationWindow {
                 CollectCard {
                     objectName: "mainControls"; Layout.preferredWidth: root.compact ? 248 : 300; Layout.fillHeight: true; padding: root.compact ? 12 : 20
                     ColumnLayout {
-                        anchors.fill: parent; spacing: root.compact ? 8 : 12
+                        anchors.fill: parent; spacing: root.compact ? 6 : 12
                         HmiText { visible: !root.compact; text: "采集模式"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 4
-                            CollectButton { objectName: "singleModeButton"; text: "单次"; selected: !root.fivePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.fivePointMode = false }
-                            CollectButton { objectName: "fivePointModeButton"; text: "五点"; selected: root.fivePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.fivePointMode = true }
+                            CollectButton { objectName: "singleModeButton"; text: "单次"; small: root.compact; selected: !root.ninePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.ninePointMode = false }
+                            CollectButton { objectName: "ninePointModeButton"; text: "九点"; small: root.compact; selected: root.ninePointMode; Layout.fillWidth: true; enabled: !root.busy; onClicked: root.ninePointMode = true }
                         }
                         RowLayout {
-                            visible: root.fivePointMode; Layout.fillWidth: true; spacing: 8
-                            CollectField { id: offsetX; objectName: "fivePointOffsetXInput"; text: "10"; placeholderText: "ΔX mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
-                            CollectField { id: offsetY; objectName: "fivePointOffsetYInput"; text: "10"; placeholderText: "ΔY mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
+                            visible: root.ninePointMode; Layout.fillWidth: true; spacing: 8
+                            CollectField { id: offsetX; objectName: "ninePointOffsetXInput"; text: "10"; placeholderText: "ΔX mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
+                            CollectField { id: offsetY; objectName: "ninePointOffsetYInput"; text: "10"; placeholderText: "ΔY mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.busy; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } }
                         }
-                        HmiText { visible: root.fivePointMode && !root.compact; text: "X / Y 偏移 · mm（0.1～50）"; font.pixelSize: Theme.meta }
+                        HmiText { visible: root.ninePointMode && !root.compact; text: "X / Y 偏移 · mm（0.1～50）"; font.pixelSize: Theme.meta }
+                        GridLayout {
+                            objectName: "ninePointPlan"; visible: root.ninePointMode; Layout.fillWidth: true
+                            columns: 3; columnSpacing: 4; rowSpacing: 4
+                            Repeater {
+                                model: root.controller.ninePointYawOffsets
+                                Rectangle {
+                                    Layout.fillWidth: true; implicitHeight: root.compact ? 20 : 26; radius: Theme.radiusSmall
+                                    color: index === 4 ? Theme.accentSoft : Theme.raised
+                                    border.color: index === 4 ? Theme.accentLine : Theme.hairline
+                                    HmiText {
+                                        objectName: "ninePointAngle" + index; anchors.centerIn: parent; font.pixelSize: Theme.meta
+                                        color: index === 4 ? Theme.accent : Theme.ink2
+                                        text: (index + 1) + " · " + (modelData > 0 ? "+" : "") + modelData + "°"
+                                    }
+                                }
+                            }
+                        }
+                        HmiText { visible: root.ninePointMode && !root.compact; text: "欧拉 Rz 相对基准 · ⑤为基准位"; font.pixelSize: Theme.meta }
+                        HmiText { objectName: "ninePointOffsetError"; visible: root.ninePointMode && !root.gridOffsetValid; Layout.fillWidth: true; text: "偏移须为 0.1～50 mm，对角距基准 ≤50 mm"; color: Theme.warning; font.pixelSize: Theme.meta }
                         CollectButton {
-                            objectName: root.busy ? "stopButton" : root.fivePointMode ? "fivePointButton" : "captureButton"
+                            objectName: root.busy ? "stopButton" : root.ninePointMode ? "ninePointButton" : "captureButton"
                             Layout.fillWidth: true; Layout.preferredHeight: 56
-                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.fivePointMode ? "开始五点采集" : "采集图片"
+                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.ninePointMode ? "开始九点采集" : "采集图片"
                             primary: !root.busy; danger: root.busy
-                            enabled: root.busy || root.ready && (!root.fivePointMode || root.controller.robotConnected && offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1)
-                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.fivePointMode) root.controller.captureFivePoints(Number(offsetX.text), Number(offsetY.text)); else root.takePhoto() }
+                            enabled: root.busy || root.ready && (!root.ninePointMode || root.controller.robotConnected && root.gridOffsetValid)
+                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text)); else root.takePhoto() }
                         }
                         HmiText {
-                            objectName: "fivePointProgress"; Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 32 : 44
-                            text: root.controller.motionFault ? "停止尚未确认，操作保持锁定" : root.busy ? root.controller.fivePointProgress || "采集进行中，请稍候" : !root.controller.cameraOpened ? "连接相机后开始预览与采集" : !root.controller.previewActive ? "请先恢复预览" : root.fivePointMode ? "确认路径无障碍后开始五点采集" : "空格 / Ctrl+S 采集 · 多曝光融合"
+                            objectName: "ninePointProgress"; Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 32 : 44
+                            text: root.controller.motionFault ? "停止尚未确认，操作保持锁定" : root.busy ? root.controller.ninePointProgress || "采集进行中，请稍候" : !root.controller.cameraOpened ? "连接相机后开始预览与采集" : !root.controller.previewActive ? "请先恢复预览" : root.ninePointMode ? "确认路径无障碍后开始九点采集" : "空格 / Ctrl+S 采集 · 多曝光融合"
                             color: root.controller.motionFault ? Theme.danger : Theme.ink3; font.pixelSize: Theme.meta
                         }
                         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
@@ -147,10 +167,10 @@ ApplicationWindow {
                         TcpSelector { id: tcpSelector; objectName: "tcpSelector"; controller: root.controller; Layout.fillWidth: true; enabled: !root.busy && root.controller.robotConnected && root.controller.tcpNames.length > 0 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 8
-                            CollectButton { objectName: "refreshTcpButton"; text: "刷新"; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.controller.robotConnected; onClicked: root.controller.refreshTcpTools() }
-                            CollectButton { objectName: "savePoseButton"; text: "保存 TCP"; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.savePose() }
+                            CollectButton { objectName: "refreshTcpButton"; text: "刷新"; small: root.compact; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.controller.robotConnected; onClicked: root.controller.refreshTcpTools() }
+                            CollectButton { objectName: "savePoseButton"; text: "保存 TCP"; small: root.compact; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.savePose() }
                         }
-                        CollectButton { objectName: "manualPageButton"; text: "手动移动 TCP →"; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.page = "manual" }
+                        CollectButton { objectName: "manualPageButton"; text: "手动移动 TCP →"; small: root.compact; quiet: true; Layout.fillWidth: true; enabled: !root.busy && root.tcpReady; onClicked: root.page = "manual" }
                         Item { Layout.fillHeight: true; Layout.minimumHeight: 0 }
                         HmiText { Layout.fillWidth: true; text: root.busy ? "操作进行中，设备与工具编辑已锁定" : !root.controller.robotConnected ? "连接机器人后可使用 TCP" : !root.controller.selectedTcp ? "选择 TCP 后可保存或手动移动" : "工具：" + root.controller.selectedTcp; font.pixelSize: Theme.meta; color: Theme.ink3; maximumLineCount: 2; elide: Text.ElideRight }
                         CollectButton { objectName: "previewButton"; small: root.compact; Layout.fillWidth: true; text: root.controller.previewActive ? "暂停预览" : "恢复预览"; quiet: true; enabled: root.controller.cameraOpened && !root.busy; onClicked: root.controller.previewActive ? root.controller.stopPreview() : root.controller.startPreview() }

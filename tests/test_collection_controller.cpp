@@ -1,8 +1,12 @@
 #include "hand_eye_gui/CollectionController.hpp"
 #include "hand_eye_gui/CameraImageProvider.hpp"
+#include "hand_eye_gui/NinePointCapture.hpp"
 #include <QApplication>
 #include <QFileDialog>
 #include <QFile>
+#include <QDirIterator>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
 #include <algorithm>
@@ -315,24 +319,24 @@ int main(int argc, char** argv) {
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());
-            controller.captureFivePoints(10, 10);
+            controller.captureNinePoints(10, 10);
             waitFor([&] { return controller.motionFault(); });
-            require(controller.collectionBusy() && robot.moving && controller.savedImageCount() == 1,
+            require(controller.collectionBusy() && robot.moving && controller.savedImageCount() == 0,
                     "stop failure unlocked controller or continued collecting");
             const auto lines = robot.lines.load();
             controller.disconnectRobot(); controller.closeCamera(); controller.connectRobot();
-            controller.capturePhoto(); controller.captureFivePoints(10, 10); controller.moveTcpTo("100,200,300,180,0,0");
+            controller.capturePhoto(); controller.captureNinePoints(10, 10); controller.moveTcpTo("100,200,300,180,0,0");
             require(controller.robotConnected() && controller.cameraOpened() && robot.destroys == 0 &&
                     robot.lines == lines && robot.unexpected == 0, "fault lock allowed device teardown or new operation");
             const auto stops = robot.stops.load();
             controller.cancelCollectionOperation();
             controller.cancelCollectionOperation();
-            waitFor([&] { return controller.fivePointProgress().contains("操作已锁定") && robot.stops > stops; });
+            waitFor([&] { return controller.ninePointProgress().contains("操作已锁定") && robot.stops > stops; });
             require(controller.collectionBusy() && controller.motionFault() && robot.stops == stops + 1,
                     "failed retry unlocked controller or sent duplicate stop");
             robot.moving = false; robot.statusFails = true;
             controller.cancelCollectionOperation();
-            waitFor([&] { return controller.fivePointProgress().contains("无法确认机器人运动状态"); });
+            waitFor([&] { return controller.ninePointProgress().contains("无法确认机器人运动状态"); });
             require(controller.collectionBusy() && controller.motionFault(), "unknown status unlocked controller");
             robot.statusFails = false;
             controller.cancelCollectionOperation();
@@ -347,7 +351,7 @@ int main(int argc, char** argv) {
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());
-            controller.captureFivePoints(10, 10);
+            controller.captureNinePoints(10, 10);
             waitFor([&] { return controller.motionFault(); });
             require(controller.collectionBusy() && robot.moving, "successful stop return unlocked a moving robot");
             // Even direct destruction must not destroy an unconfirmed robot handle.
@@ -356,15 +360,47 @@ int main(int argc, char** argv) {
         robot.reset(); robot.stopWorks = true; robot.stopCode = sucess; robot.failLine = false;
         {
             CollectionController controller;
-            CollectionControllerTestAccess::prepare(controller, temp.path());
-            controller.captureFivePoints(0.1, 0.1);
-            waitFor([&] { return !controller.collectionBusy(); }, 18000);
-            require(!controller.motionFault() && controller.savedImageCount() == 5 && robot.lines == 8 &&
+            const QString batchOutput = temp.path() + "/nine-point";
+            CollectionControllerTestAccess::prepare(controller, batchOutput);
+            controller.captureNinePoints(0.1, 0.1);
+            waitFor([&] { return !controller.collectionBusy(); }, 40000);
+            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 16 &&
                     robot.pose == std::array<double, 6>{100,200,300,180,0,0}, "normal small-offset batch did not finish and unlock");
-            require(robot.lastSpeed == controller.robotSpeedMmS(), "five-point controller did not pass configured speed");
+            require(robot.lastSpeed == controller.robotSpeedMmS(), "nine-point controller did not pass configured speed");
+            QStringList records;
+            QDirIterator files(batchOutput, {"capture_*_fused.json"}, QDir::Files, QDirIterator::Subdirectories);
+            while (files.hasNext()) records << files.next();
+            records.sort();
+            require(records.size() == 9, "batch did not save exactly nine per-image pose JSON files");
+            const auto expected = collection::ninePointTargets({100,200,300,180,0,0}, 0.1, 0.1);
+            for (int point = 0; point < 9; ++point) {
+                QFile file(records[point]);
+                require(file.open(QIODevice::ReadOnly), "saved batch pose cannot be read");
+                const auto object = QJsonDocument::fromJson(file.readAll()).object();
+                collection::FlangePose actual{};
+                int axis = 0;
+                for (const char* key : {"x", "y", "z", "rx", "ry", "rz"}) {
+                    require(object.value(key).isDouble(), "saved batch pose has missing coordinates");
+                    actual[axis++] = object.value(key).toDouble();
+                }
+                require(collection::flangeAtTarget(actual, expected[point]), "saved pose does not match ordered grid position/Euler rotation");
+            }
         }
         waitFor([&] { return robot.destroys == 1; });
         require(robot.destroys == 1 && robot.unexpected == 0, "normal cleanup failed or real SDK path was reached");
+        robot.reset(); robot.stopWorks = true; robot.stopCode = sucess; robot.failLine = false;
+        {
+            const QString blockedOutput = temp.path() + "/blocked-output";
+            QFile blocked(blockedOutput);
+            require(blocked.open(QIODevice::WriteOnly), "could not prepare blocked output directory");
+            blocked.close();
+            CollectionController controller;
+            CollectionControllerTestAccess::prepare(controller, blockedOutput);
+            controller.captureNinePoints(10, 10);
+            waitFor([&] { return !controller.collectionBusy(); });
+            require(!controller.motionFault() && controller.savedImageCount() == 0 && robot.lines == 1 &&
+                    controller.statusMessage().contains("已保存 0/9"), "failed image save advanced or returned the robot");
+        }
         robot.reset();
         {
             CollectionController controller;

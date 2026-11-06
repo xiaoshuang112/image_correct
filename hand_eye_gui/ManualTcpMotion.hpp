@@ -1,6 +1,6 @@
 #pragma once
 
-#include "FivePointCapture.hpp"
+#include "NinePointCapture.hpp"
 #include "RobotTcp.hpp"
 
 namespace collection {

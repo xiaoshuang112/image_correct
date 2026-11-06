@@ -71,7 +71,8 @@ class CollectionController : public QObject
     Q_PROPERTY(QString undistortionStatus READ undistortionStatus NOTIFY collectionChanged)
     Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
-    Q_PROPERTY(QString fivePointProgress READ fivePointProgress NOTIFY collectionChanged)
+    Q_PROPERTY(QString ninePointProgress READ ninePointProgress NOTIFY collectionChanged)
+    Q_PROPERTY(QVariantList ninePointYawOffsets READ ninePointYawOffsets CONSTANT)
     Q_PROPERTY(QVariantList tcpPoseValues READ tcpPoseValues NOTIFY tcpPoseChanged)
     Q_PROPERTY(bool tcpPoseValid READ tcpPoseValid NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseStatus READ tcpPoseStatus NOTIFY tcpPoseChanged)
@@ -104,7 +105,8 @@ public:
     Q_INVOKABLE void refreshTcpTools();
     QStringList tcpNames() const { return m_tcpNames; }
     QString selectedTcp() const { return m_selectedTcp; }
-    QString fivePointProgress() const { return m_fivePointProgress; }
+    QString ninePointProgress() const { return m_ninePointProgress; }
+    QVariantList ninePointYawOffsets() const;
     void setSelectedTcp(const QString& name);
     Q_INVOKABLE void openCollectionFolder();
     Q_INVOKABLE void openDiagnosticFolder();
@@ -162,7 +164,7 @@ public slots:
     void stopPreview();
 
     void capturePhoto();
-    void captureFivePoints(double xMm, double yMm);
+    void captureNinePoints(double xMm, double yMm);
     void cancelCollectionOperation();
 
 signals:
@@ -193,7 +195,7 @@ private:
     void initializeCollection();
     void loadCollectionUndistortion();
     void beginCollectionOperation();
-    void startCapture(bool fivePoints, double xMm = 0, double yMm = 0);
+    void startCapture(bool ninePoints, double xMm = 0, double yMm = 0);
     void recordCapture(const QString& path);
     void confirmMotionStopped();
     void retryRobotStop();
@@ -330,7 +332,7 @@ private:
     std::shared_ptr<const collection::UndistortionCalibration> m_undistortionCalibration;
     std::shared_ptr<const collection::UndistortionMaps> m_undistortionMaps;
     QString m_lastCapturePath;
-    QString m_fivePointProgress;
+    QString m_ninePointProgress;
     int m_savedImageCount = 0;
     int m_savedPoseCount = 0;
     std::thread m_collectionThread;

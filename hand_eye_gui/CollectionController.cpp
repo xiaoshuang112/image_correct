@@ -1,6 +1,6 @@
 #include "CollectionController.hpp"
 #include "CameraImageProvider.hpp"
-#include "FivePointCapture.hpp"
+#include "NinePointCapture.hpp"
 #include "utils/collection_undistortion.hpp"
 #include "DiagnosticLogger.hpp"
 #include "config_resolver.hpp"

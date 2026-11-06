@@ -186,7 +186,7 @@ Item {
                                     validator: IntValidator { bottom: 1; top: 1000 }
                                     onTextChanged: page.robotSpeed = text
                                 }
-                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s。用于手动 TCP 移动与五点采图，保存后对下一次移动生效。"; font.pixelSize: Theme.meta }
+                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s。用于手动 TCP 移动与九点采图，保存后对下一次移动生效。"; font.pixelSize: Theme.meta }
                                 HmiText { Layout.fillWidth: true; text: "TCP 工具列表与实时位姿在主页面查看。移动前请确认所选工具和目标坐标。"; font.pixelSize: Theme.meta }
                             }
                             ColumnLayout {

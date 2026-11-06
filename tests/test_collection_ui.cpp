@@ -99,11 +99,12 @@ SharedCollectionState {
     property bool poseFailure: false
     property var tcpNames: []
     property string selectedTcp: ""
-    property string fivePointProgress: ""
+    property string ninePointProgress: ""
+    readonly property var ninePointYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
     property bool motionFault: false
-    property int fivePointCalls: 0
-    property real lastFivePointX: 0
-    property real lastFivePointY: 0
+    property int ninePointCalls: 0
+    property real lastNinePointX: 0
+    property real lastNinePointY: 0
     property string currentTcp: "探针A"
     property bool tcpListFailure: false
     property string robotIp: "192.168.66.14"
@@ -192,10 +193,10 @@ SharedCollectionState {
         settingsFinished(error)
     }
     function openDiagnosticFolder() { diagnosticsOpened = true }
-    function captureFivePoints(x, y) {
-        fivePointCalls++; lastFivePointX = x; lastFivePointY = y
+    function captureNinePoints(x, y) {
+        ninePointCalls++; lastNinePointX = x; lastNinePointY = y
         collectionBusy = true
-        fivePointProgress = "第 1/5 点 · 基准位 · 正在采集及保存"
+        ninePointProgress = "第 1/9 点 · X− / Y+ · 正在采集及保存"
     }
     function cancelCollectionOperation() { if (!motionFault) { collectionBusy = false; manualMoveActive = false } }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
@@ -441,11 +442,19 @@ SharedCollectionState {
         controller->setProperty("motionFault", false); QTest::qWait(10);
         require(item("manualBackButton")->isEnabled(), "safe stop did not unlock page");
         click(item("manualBackButton"));
-        click(item("fivePointModeButton"));
-        setText("fivePointOffsetXInput", "7.5"); setText("fivePointOffsetYInput", "12.5");
-        click(item("fivePointButton"));
-        require(controller->property("lastFivePointX").toDouble() == 7.5 && controller->property("lastFivePointY").toDouble() == 12.5, "five-point offsets not passed");
-        require(!item("openCameraButton")->isEnabled() && !item("connectRobotButton")->isEnabled() && item("stopButton")->isEnabled(), "five-point operation left connections enabled");
+        click(item("ninePointModeButton"));
+        const QStringList angles{"0", "+15", "−15", "−20", "0", "+20", "+15", "−15", "0"};
+        for (int point = 0; point < 9; ++point) {
+            auto label = text(("ninePointAngle" + std::to_string(point)).c_str());
+            label.replace('-', QChar(0x2212));
+            require(label == QString::number(point + 1) + " · " + angles[point] + "°", "nine-point angle diagram differs from requested order");
+        }
+        setText("ninePointOffsetXInput", "40"); setText("ninePointOffsetYInput", "40");
+        require(!item("ninePointButton")->isEnabled() && item("ninePointOffsetError")->isVisible(), "unsafe diagonal offset allowed");
+        setText("ninePointOffsetXInput", "7.5"); setText("ninePointOffsetYInput", "12.5");
+        click(item("ninePointButton"));
+        require(controller->property("lastNinePointX").toDouble() == 7.5 && controller->property("lastNinePointY").toDouble() == 12.5, "nine-point offsets not passed");
+        require(!item("openCameraButton")->isEnabled() && !item("connectRobotButton")->isEnabled() && item("stopButton")->isEnabled(), "nine-point operation left connections enabled");
         controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); QTest::qWait(10);
         require(text("stopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "main fault did not preserve stop/connection lock");
         controller->setProperty("motionFault", false); QTest::qWait(10);
@@ -453,12 +462,12 @@ SharedCollectionState {
         for (const QSize size : {QSize(1280,850), QSize(1024,740), QSize(760,600)}) {
             window->resize(size); QTest::qWait(80);
             const QRectF viewport(0,0,size.width(),size.height());
-            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "fivePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard", "copyPoseButton", "poseCoordinates"}) {
+            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard", "copyPoseButton", "poseCoordinates"}) {
                 if (!viewport.contains(bounds(item(name)))) std::cerr << name << " outside viewport at " << size.width() << "x" << size.height() << '\n';
                 require(viewport.contains(bounds(item(name))), "main action clipped at supported size");
             }
             require(qAbs(bounds(item("mainControls")).bottom() - bounds(item("mainRightColumn")).bottom()) < 1, "main columns are not bottom aligned");
-            require(!bounds(item("fivePointButton")).intersects(bounds(item("tcpSelector"))), "primary action overlaps TCP selector");
+            require(!bounds(item("ninePointButton")).intersects(bounds(item("tcpSelector"))), "primary action overlaps TCP selector");
             click(item("settingsButton"));
             for (int tab = 0; tab < 3; ++tab) {
                 click(item(("settingsTab" + std::to_string(tab)).c_str()));

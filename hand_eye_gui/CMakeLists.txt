@@ -20,7 +20,7 @@ set(GUI_SRCS
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionSettings.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionRobot.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionCapture.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/FivePointCapture.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/NinePointCapture.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/CollectionPoseRecord.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/RobotTcp.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/ManualTcpMotion.cpp
