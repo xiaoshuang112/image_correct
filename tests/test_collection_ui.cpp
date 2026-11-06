@@ -100,11 +100,12 @@ SharedCollectionState {
     property var tcpNames: []
     property string selectedTcp: ""
     property string ninePointProgress: ""
-    readonly property var ninePointYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
+    readonly property var ninePointDefaultYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
     property bool motionFault: false
     property int ninePointCalls: 0
     property real lastNinePointX: 0
     property real lastNinePointY: 0
+    property var lastNinePointAngles: []
     property string currentTcp: "探针A"
     property bool tcpListFailure: false
     property string robotIp: "192.168.66.14"
@@ -193,7 +194,8 @@ SharedCollectionState {
         settingsFinished(error)
     }
     function openDiagnosticFolder() { diagnosticsOpened = true }
-    function captureNinePoints(x, y) {
+    function captureNinePoints(x, y, angles) {
+        lastNinePointAngles = angles.slice()
         ninePointCalls++; lastNinePointX = x; lastNinePointY = y
         collectionBusy = true
         ninePointProgress = "第 1/9 点 · X− / Y+ · 正在采集及保存"
@@ -443,23 +445,40 @@ SharedCollectionState {
         require(item("manualBackButton")->isEnabled(), "safe stop did not unlock page");
         click(item("manualBackButton"));
         click(item("ninePointModeButton"));
-        const QStringList angles{"0", "+15", "−15", "−20", "0", "+20", "+15", "−15", "0"};
+        const QStringList defaults{"0", "+15", "-15", "-20", "0", "+20", "+15", "-15", "0"};
+        const QStringList angles{"1.25", "2.5", "-3.75", "-10", "0.1", "10", "7.5", "-15", "0.01"};
         for (int point = 0; point < 9; ++point) {
-            auto label = text(("ninePointAngle" + std::to_string(point)).c_str());
-            label.replace('-', QChar(0x2212));
-            require(label == QString::number(point + 1) + " · " + angles[point] + "°", "nine-point angle diagram differs from requested order");
+            const auto name = "ninePointAngle" + std::to_string(point);
+            require(text(name.c_str()) == defaults[point], "nine-point default angle differs from requested order");
+            for (const QString& invalid : {QString(), QString("21"), QString("nan"), QString("0.001")}) {
+                setText(name.c_str(), invalid);
+                require(!item("ninePointButton")->isEnabled(), "invalid angle did not prevent collection");
+            }
+            setText(name.c_str(), angles[point]);
         }
+        click(item("singleModeButton")); click(item("ninePointModeButton"));
+        for (int point = 0; point < 9; ++point)
+            require(text(("ninePointAngle" + std::to_string(point)).c_str()) == angles[point], "mode change discarded edited angles");
+        item("ninePointAngle0")->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Return); QTest::qWait(10);
+        require(controller->property("ninePointCalls").toInt() == 0, "editing angles triggered robot collection");
         setText("ninePointOffsetXInput", "40"); setText("ninePointOffsetYInput", "40");
         require(!item("ninePointButton")->isEnabled() && item("ninePointOffsetError")->isVisible(), "unsafe diagonal offset allowed");
         setText("ninePointOffsetXInput", "7.5"); setText("ninePointOffsetYInput", "12.5");
         click(item("ninePointButton"));
         require(controller->property("lastNinePointX").toDouble() == 7.5 && controller->property("lastNinePointY").toDouble() == 12.5, "nine-point offsets not passed");
+        const auto submitted = controller->property("lastNinePointAngles").toList();
+        require(submitted.size() == 9, "not all nine edited angles were submitted");
+        for (int point = 0; point < 9; ++point) {
+            require(submitted[point].toDouble() == angles[point].toDouble(), "collector used defaults instead of edited angles");
+            require(!item(("ninePointAngle" + std::to_string(point)).c_str())->isEnabled(), "angle editor remained enabled during capture");
+        }
         require(!item("openCameraButton")->isEnabled() && !item("connectRobotButton")->isEnabled() && item("stopButton")->isEnabled(), "nine-point operation left connections enabled");
         controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); QTest::qWait(10);
         require(text("stopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "main fault did not preserve stop/connection lock");
         controller->setProperty("motionFault", false); QTest::qWait(10);
 
-        for (const QSize size : {QSize(1280,850), QSize(1024,740), QSize(760,600)}) {
+        for (const QSize size : {QSize(1280,850), QSize(1280,800), QSize(1024,740), QSize(760,600)}) {
             window->resize(size); QTest::qWait(80);
             const QRectF viewport(0,0,size.width(),size.height());
             for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard", "copyPoseButton", "poseCoordinates"}) {
@@ -468,6 +487,8 @@ SharedCollectionState {
             }
             require(qAbs(bounds(item("mainControls")).bottom() - bounds(item("mainRightColumn")).bottom()) < 1, "main columns are not bottom aligned");
             require(!bounds(item("ninePointButton")).intersects(bounds(item("tcpSelector"))), "primary action overlaps TCP selector");
+            require(bounds(item("previewButton")).bottom() <= bounds(item("mainControls")).bottom() -
+                    item("mainControls")->property("padding").toReal() + 1, "angle editors pushed controls into card padding");
             click(item("settingsButton"));
             for (int tab = 0; tab < 3; ++tab) {
                 click(item(("settingsTab" + std::to_string(tab)).c_str()));
@@ -507,6 +528,8 @@ SharedCollectionState {
         window->show(); QTest::qWait(20);
         require(controller->property("previewVisible").toBool(), "shown window did not restore preview visibility");
         if (argc > 1) {
+            for (int point = 0; point < 9; ++point)
+                setText(("ninePointAngle" + std::to_string(point)).c_str(), defaults[point]);
             controller->setProperty("statusMessage", "就绪 · 预览中，等待采集");
             controller->setProperty("manualMoveProgress", "已安全停止 · 可编辑新的目标");
             window->resize(1280,850); QTest::qWait(100);

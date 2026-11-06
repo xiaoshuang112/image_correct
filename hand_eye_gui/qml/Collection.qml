@@ -11,10 +11,11 @@ ApplicationWindow {
     property var controller: collectionController
     property string page: "main"
     property bool ninePointMode: false
+    property bool gridAnglesValid: false
     property bool poseEditorOpen: false
     readonly property bool busy: controller.collectionBusy || controller.manualMoveActive || controller.motionFault
     readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
-    readonly property bool compact: width < 1100 || height < 740
+    readonly property bool compact: width < 1100 || height < (ninePointMode ? 840 : 740)
     readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
     readonly property bool gridOffsetValid: offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1 && Math.sqrt(Math.pow(Number(offsetX.text), 2) + Math.pow(Number(offsetY.text), 2)) <= 50
     readonly property bool editing: activeFocusItem !== null && (activeFocusItem.cursorPosition !== undefined || activeFocusItem.hasOwnProperty("currentIndex"))
@@ -26,6 +27,16 @@ ApplicationWindow {
     property int shutterSerial: 0
     property bool historyReady: false
     function takePhoto() { if (ready && page === "main") controller.capturePhoto() }
+    function ninePointAngles() {
+        if (!angleInputs || angleInputs.count !== 9) return []
+        var values = []
+        for (var i = 0; i < 9; ++i) {
+            var field = angleInputs.itemAt(i)
+            if (!field || !field.acceptableInput) return []
+            values.push(Number(field.text))
+        }
+        return values
+    }
     function scrollLogToEnd() {
         Qt.callLater(function() {
             logText.cursorPosition = logText.length
@@ -117,7 +128,7 @@ ApplicationWindow {
                 CollectCard {
                     objectName: "mainControls"; Layout.preferredWidth: root.compact ? 248 : 300; Layout.fillHeight: true; padding: root.compact ? 12 : 20
                     ColumnLayout {
-                        anchors.fill: parent; spacing: root.compact ? 6 : 12
+                        anchors.fill: parent; spacing: root.compact ? 6 : root.ninePointMode ? 10 : 12
                         HmiText { visible: !root.compact; text: "采集模式"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 4
@@ -134,32 +145,41 @@ ApplicationWindow {
                             objectName: "ninePointPlan"; visible: root.ninePointMode; Layout.fillWidth: true
                             columns: 3; columnSpacing: 4; rowSpacing: 4
                             Repeater {
-                                model: root.controller.ninePointYawOffsets
-                                Rectangle {
-                                    Layout.fillWidth: true; implicitHeight: root.compact ? 20 : 26; radius: Theme.radiusSmall
-                                    color: index === 4 ? Theme.accentSoft : Theme.raised
-                                    border.color: index === 4 ? Theme.accentLine : Theme.hairline
-                                    HmiText {
-                                        objectName: "ninePointAngle" + index; anchors.centerIn: parent; font.pixelSize: Theme.meta
-                                        color: index === 4 ? Theme.accent : Theme.ink2
-                                        text: (index + 1) + " · " + (modelData > 0 ? "+" : "") + modelData + "°"
+                                id: angleInputs; model: root.controller.ninePointDefaultYawOffsets
+                                onItemAdded: root.gridAnglesValid = root.ninePointAngles().length === 9
+                                onItemRemoved: root.gridAnglesValid = root.ninePointAngles().length === 9
+                                CollectField {
+                                    id: angleField; objectName: "ninePointAngle" + index
+                                    Layout.fillWidth: true; Layout.minimumWidth: 0; implicitHeight: root.compact ? 28 : 32
+                                    text: (modelData > 0 ? "+" : "") + modelData; enabled: !root.busy
+                                    leftPadding: 16; rightPadding: 12; font.pixelSize: root.compact ? Theme.meta : Theme.body
+                                    horizontalAlignment: TextInput.AlignHCenter; selectByMouse: true
+                                    invalid: !acceptableInput
+                                    validator: DoubleValidator { bottom: -20; top: 20; decimals: 2; notation: DoubleValidator.StandardNotation; locale: "C" }
+                                    onTextChanged: root.gridAnglesValid = root.ninePointAngles().length === 9
+                                    onAcceptableInputChanged: root.gridAnglesValid = root.ninePointAngles().length === 9
+                                    background: Rectangle {
+                                        radius: Theme.radiusSmall; color: index === 4 ? Theme.accentSoft : Theme.bg
+                                        border.color: angleField.invalid ? Theme.danger : angleField.activeFocus ? Theme.accent : index === 4 ? Theme.accentLine : Theme.hairline
                                     }
+                                    HmiText { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: index + 1; font.pixelSize: Theme.meta; color: Theme.ink3 }
+                                    HmiText { anchors.right: parent.right; anchors.rightMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: "°"; font.pixelSize: Theme.meta; color: Theme.ink3 }
                                 }
                             }
                         }
-                        HmiText { visible: root.ninePointMode && !root.compact; text: "欧拉 Rz 相对基准 · ⑤为基准位"; font.pixelSize: Theme.meta }
+                        HmiText { visible: root.ninePointMode && !root.compact; text: "Rz 可编辑 · 相对基准（±20°）"; font.pixelSize: Theme.meta }
                         HmiText { objectName: "ninePointOffsetError"; visible: root.ninePointMode && !root.gridOffsetValid; Layout.fillWidth: true; text: "偏移须为 0.1～50 mm，对角距基准 ≤50 mm"; color: Theme.warning; font.pixelSize: Theme.meta }
                         CollectButton {
                             objectName: root.busy ? "stopButton" : root.ninePointMode ? "ninePointButton" : "captureButton"
                             Layout.fillWidth: true; Layout.preferredHeight: 56
                             text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.ninePointMode ? "开始九点采集" : "采集图片"
                             primary: !root.busy; danger: root.busy
-                            enabled: root.busy || root.ready && (!root.ninePointMode || root.controller.robotConnected && root.gridOffsetValid)
-                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text)); else root.takePhoto() }
+                            enabled: root.busy || root.ready && (!root.ninePointMode || root.controller.robotConnected && root.gridOffsetValid && root.gridAnglesValid)
+                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text), root.ninePointAngles()); else root.takePhoto() }
                         }
                         HmiText {
                             objectName: "ninePointProgress"; Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 32 : 44
-                            text: root.controller.motionFault ? "停止尚未确认，操作保持锁定" : root.busy ? root.controller.ninePointProgress || "采集进行中，请稍候" : !root.controller.cameraOpened ? "连接相机后开始预览与采集" : !root.controller.previewActive ? "请先恢复预览" : root.ninePointMode ? "确认路径无障碍后开始九点采集" : "空格 / Ctrl+S 采集 · 多曝光融合"
+                            text: root.controller.motionFault ? "停止尚未确认，操作保持锁定" : root.busy ? root.controller.ninePointProgress || "采集进行中，请稍候" : root.ninePointMode && !root.gridAnglesValid ? "请填写九个有效角度（−20°～+20°）" : !root.controller.cameraOpened ? "连接相机后开始预览与采集" : !root.controller.previewActive ? "请先恢复预览" : root.ninePointMode ? "确认路径无障碍后开始九点采集" : "空格 / Ctrl+S 采集 · 多曝光融合"
                             color: root.controller.motionFault ? Theme.danger : Theme.ink3; font.pixelSize: Theme.meta
                         }
                         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }

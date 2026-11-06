@@ -319,13 +319,13 @@ int main(int argc, char** argv) {
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());
-            controller.captureNinePoints(10, 10);
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
             waitFor([&] { return controller.motionFault(); });
             require(controller.collectionBusy() && robot.moving && controller.savedImageCount() == 0,
                     "stop failure unlocked controller or continued collecting");
             const auto lines = robot.lines.load();
             controller.disconnectRobot(); controller.closeCamera(); controller.connectRobot();
-            controller.capturePhoto(); controller.captureNinePoints(10, 10); controller.moveTcpTo("100,200,300,180,0,0");
+            controller.capturePhoto(); controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets()); controller.moveTcpTo("100,200,300,180,0,0");
             require(controller.robotConnected() && controller.cameraOpened() && robot.destroys == 0 &&
                     robot.lines == lines && robot.unexpected == 0, "fault lock allowed device teardown or new operation");
             const auto stops = robot.stops.load();
@@ -351,7 +351,7 @@ int main(int argc, char** argv) {
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());
-            controller.captureNinePoints(10, 10);
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
             waitFor([&] { return controller.motionFault(); });
             require(controller.collectionBusy() && robot.moving, "successful stop return unlocked a moving robot");
             // Even direct destruction must not destroy an unconfirmed robot handle.
@@ -362,9 +362,23 @@ int main(int argc, char** argv) {
             CollectionController controller;
             const QString batchOutput = temp.path() + "/nine-point";
             CollectionControllerTestAccess::prepare(controller, batchOutput);
-            controller.captureNinePoints(0.1, 0.1);
+            for (QVariant invalid : {QVariant(), QVariant(true), QVariant("bad"), QVariant(20.01),
+                                     QVariant(0.001), QVariant(std::numeric_limits<double>::quiet_NaN()),
+                                     QVariant(std::numeric_limits<double>::infinity())}) {
+                auto angles = controller.ninePointDefaultYawOffsets(); angles[4] = invalid;
+                controller.captureNinePoints(0.1, 0.1, angles);
+                require(!controller.collectionBusy() && robot.lines == 0, "invalid angle started robot collection");
+            }
+            auto incompleteAngles = controller.ninePointDefaultYawOffsets(); incompleteAngles.removeLast();
+            controller.captureNinePoints(0.1, 0.1, incompleteAngles);
+            require(!controller.collectionBusy() && robot.lines == 0, "incomplete angle list started collection");
+            const collection::NinePointAngles yaw{1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01};
+            QVariantList angles;
+            for (double value : yaw) angles << value;
+            controller.captureNinePoints(0.1, 0.1, angles);
+            angles[0] = -18; // The running worker must retain its immutable snapshot.
             waitFor([&] { return !controller.collectionBusy(); }, 40000);
-            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 16 &&
+            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 18 &&
                     robot.pose == std::array<double, 6>{100,200,300,180,0,0}, "normal small-offset batch did not finish and unlock");
             require(robot.lastSpeed == controller.robotSpeedMmS(), "nine-point controller did not pass configured speed");
             QStringList records;
@@ -372,7 +386,7 @@ int main(int argc, char** argv) {
             while (files.hasNext()) records << files.next();
             records.sort();
             require(records.size() == 9, "batch did not save exactly nine per-image pose JSON files");
-            const auto expected = collection::ninePointTargets({100,200,300,180,0,0}, 0.1, 0.1);
+            const auto expected = collection::ninePointTargets({100,200,300,180,0,0}, 0.1, 0.1, yaw);
             for (int point = 0; point < 9; ++point) {
                 QFile file(records[point]);
                 require(file.open(QIODevice::ReadOnly), "saved batch pose cannot be read");
@@ -383,7 +397,7 @@ int main(int argc, char** argv) {
                     require(object.value(key).isDouble(), "saved batch pose has missing coordinates");
                     actual[axis++] = object.value(key).toDouble();
                 }
-                require(collection::flangeAtTarget(actual, expected[point]), "saved pose does not match ordered grid position/Euler rotation");
+                require(collection::flangeAtTarget(actual, expected[point], 0.0025), "saved pose does not match ordered grid position/Euler rotation");
             }
         }
         waitFor([&] { return robot.destroys == 1; });
@@ -396,7 +410,7 @@ int main(int argc, char** argv) {
             blocked.close();
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, blockedOutput);
-            controller.captureNinePoints(10, 10);
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
             waitFor([&] { return !controller.collectionBusy(); });
             require(!controller.motionFault() && controller.savedImageCount() == 0 && robot.lines == 1 &&
                     controller.statusMessage().contains("已保存 0/9"), "failed image save advanced or returned the robot");

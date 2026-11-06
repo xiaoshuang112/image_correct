@@ -133,6 +133,20 @@ int main() {
             rejects([&] { collection::ninePointTargets(origin, bad, 10); });
             rejects([&] { collection::ninePointTargets(origin, 10, bad); });
         }
+        const collection::NinePointAngles customAngles{1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01};
+        const auto custom = collection::ninePointTargets(origin, 10, 12.5, customAngles);
+        require(custom[4] != origin && custom[4][0] == origin[0] && custom[4][1] == origin[1],
+                "center angle was ignored or moved the center position");
+        for (int point = 0; point < 9; ++point) {
+            const auto actual = calib_transform::axisAnglePoseToTransform(custom[point].data());
+            require(cv::norm(actual(cv::Rect(0,0,3,3)) - eulerRotation(180, 0, customAngles[point])) < 1e-7,
+                    "custom point used a default or accumulated angle");
+            for (double invalid : {-20.01, 20.01, 0.001, -0.001,
+                                   std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()}) {
+                auto badAngles = customAngles; badAngles[point] = invalid;
+                rejects([&] { collection::ninePointTargets(origin, 10, 10, badAngles); });
+            }
+        }
         collection::ninePointTargets(origin, 30, 40);
         rejects([&] { collection::ninePointTargets(origin, 40, 40); });
         rejects([&] { collection::ninePointTargets(origin, 0.1, 50); });
@@ -157,14 +171,32 @@ int main() {
             require(current == targets[point], "capture ran at wrong position");
             saving = true; events.push_back("save" + std::to_string(point)); saving = false;
         };
-        collection::runNinePointCapture(targets, move, capture, cancelled);
-        require(events == std::vector<std::string>{"move0", "save0", "move4", "move1", "save1", "move4", "move2", "save2",
-                "move4", "move3", "save3", "move4", "save4", "move5", "save5", "move4",
-                "move6", "save6", "move4", "move7", "save7", "move4", "move8", "save8", "move4"}, "route or save/move order incorrect");
+        collection::runNinePointCapture(origin, targets, move, capture, cancelled);
+        require(events == std::vector<std::string>{"move0", "save0", "move-1", "move1", "save1", "move-1", "move2", "save2",
+                "move-1", "move3", "save3", "move-1", "save4", "move5", "save5", "move-1",
+                "move6", "save6", "move-1", "move7", "save7", "move-1", "move8", "save8", "move-1"}, "route or save/move order incorrect");
         require(current == origin, "normal completion did not return to origin");
+        int customCaptures = 0, customReturns = 0;
+        collection::runNinePointCapture(origin, custom,
+            [&](const FlangePose& pose, int index) {
+                if (index == -1) {
+                    require(pose == origin, "return used the rotated center instead of the original baseline");
+                    ++customReturns;
+                }
+                current = pose;
+            }, [&](int point) {
+                require(current == custom[point], "custom capture ran at the wrong point or angle");
+                ++customCaptures;
+            }, cancelled);
+        require(customCaptures == 9 && customReturns == 9 && current == origin,
+                "custom center was skipped or the original baseline was not restored");
+        rejects([&] { collection::runNinePointCapture(origin, custom, move, [&](int point) {
+            if (point == 4) throw std::runtime_error("center save failed");
+        }, cancelled); });
+        require(current == custom[4], "moved after a rotated center save failure");
         for (int failed = 0; failed < 9; ++failed) {
             events.clear(); current = origin;
-            rejects([&] { collection::runNinePointCapture(targets, move, [&](int point) {
+            rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
                 capture(point);
                 if (point == failed) throw std::runtime_error("save failed");
             }, cancelled); });
@@ -173,17 +205,17 @@ int main() {
         }
         events.clear();
         current = origin;
-        rejects([&] { collection::runNinePointCapture(targets, move, [&](int point) {
+        rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
             capture(point); if (point == 2) throw std::runtime_error("disk full");
         }, cancelled); });
         require(events.back() == "save2" && current == targets[2], "moved after save failure");
         events.clear(); current = origin;
-        rejects([&] { collection::runNinePointCapture(targets, move, [&](int point) {
+        rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
             capture(point); cancelled = true;
         }, cancelled); });
         require(events == std::vector<std::string>{"move0", "save0"}, "cancel still issued motion");
         events.clear(); cancelled = false;
-        rejects([&] { collection::runNinePointCapture(targets, [&](const FlangePose&, int) {
+        rejects([&] { collection::runNinePointCapture(origin, targets, [&](const FlangePose&, int) {
             events.push_back("failed_move"); throw std::runtime_error("motion failed");
         }, capture, cancelled); });
         require(events == std::vector<std::string>{"failed_move"}, "capture or return followed failed move");
@@ -291,6 +323,14 @@ int main() {
         auto upright = origin; upright[3] = 0; robot.actual = upright;
         rejects([&] { collection::moveFlangeLinear(1, upright, excessiveYaw, robot.cancelled); });
         require(robot.sends == 0, "excessive Euler yaw sent");
+        collection::NinePointAngles smallAngles{}; smallAngles[4] = 0.1;
+        const auto smallRotation = collection::ninePointTargets(upright, 10, 10, smallAngles)[4];
+        robot.reset(); robot.actual = upright; robot.neverReach = true;
+        rejects([&] { collection::moveFlangeLinear(1, upright, smallRotation, robot.cancelled, {0, 100, 0.025}); });
+        require(robot.stops == 1 && robot.actual == upright, "0.1 degree center succeeded without rotating");
+        robot.reset(); robot.actual = upright;
+        collection::moveFlangeLinear(1, upright, smallRotation, robot.cancelled, {0, 300, 0.025});
+        require(collection::flangeAtTarget(robot.actual, smallRotation, 0.025), "valid small center rotation rejected");
         // Every rotated leg and its return must pass the same motion guards.
         for (int point = 0; point < 9; ++point) {
             if (point == 4) continue;

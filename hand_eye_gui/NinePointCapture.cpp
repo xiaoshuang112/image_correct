@@ -50,7 +50,7 @@ void checkGridPose(const FlangePose& origin, const FlangePose& pose) {
     const double yaw = std::atan2(relative.at<double>(1, 0), relative.at<double>(0, 0)) * 180 / CV_PI;
     auto expected = withEulerYawOffset(origin, yaw);
     std::copy_n(pose.begin(), 3, expected.begin());
-    if (std::abs(yaw) > 20.2 || !flangeAtTarget(pose, expected))
+    if (std::abs(yaw) > maximumNinePointYawDegrees + 0.2 || !flangeAtTarget(pose, expected))
         throw std::runtime_error("九点采图仅允许欧拉 Rz 相对基准变化 ±20°，Rx/Ry 保持不变");
 }
 RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
@@ -71,16 +71,21 @@ void stopAndRethrow(RobotHandle handle, const std::exception& error) {
 }
 }
 
-NinePointTargets ninePointTargets(const FlangePose& origin, double xMm, double yMm) {
+NinePointTargets ninePointTargets(const FlangePose& origin, double xMm, double yMm,
+    const NinePointAngles& yawOffsets) {
     checkFinite(origin);
     for (double offset : {xMm, yMm})
         if (!std::isfinite(offset) || offset < 0.1 || offset > maximumNinePointOffsetMm)
             throw std::runtime_error("X/Y 偏移须为 0.1～50 mm");
     if (std::hypot(xMm, yMm) > maximumNinePointOffsetMm)
         throw std::runtime_error("对角点距基准不得超过 50 mm，请减小 X/Y 偏移");
+    for (double angle : yawOffsets)
+        if (!std::isfinite(angle) || std::abs(angle) > maximumNinePointYawDegrees ||
+            (angle != 0 && std::abs(angle) < 0.01))
+            throw std::runtime_error("九个 Rz 角度须为 −20°～+20° 的有效数值，非零角度至少 0.01°");
     NinePointTargets points{};
     for (int point = 0; point < static_cast<int>(points.size()); ++point) {
-        points[point] = withEulerYawOffset(origin, ninePointYawOffsets[point]);
+        points[point] = withEulerYawOffset(origin, yawOffsets[point]);
         points[point][0] += (point % 3 - 1) * xMm;
         points[point][1] += (1 - point / 3) * yMm;
         checkFinite(points[point]);
@@ -88,17 +93,18 @@ NinePointTargets ninePointTargets(const FlangePose& origin, double xMm, double y
     return points;
 }
 
-void runNinePointCapture(const NinePointTargets& targets,
+void runNinePointCapture(const FlangePose& origin, const NinePointTargets& targets,
     const std::function<void(const FlangePose&, int)>& move,
     const std::function<void(int)>& capture, const std::atomic<bool>& cancelled) {
     checkCancelled(cancelled);
     for (int point = 0; point < static_cast<int>(targets.size()); ++point) {
         checkCancelled(cancelled);
-        if (point != 4) move(targets[point], point);
+        const bool displaced = targets[point] != origin;
+        if (displaced) move(targets[point], point);
         checkCancelled(cancelled);
         capture(point);
         checkCancelled(cancelled);
-        if (point != 4) move(targets[4], 4);
+        if (displaced) move(origin, -1);
     }
     checkCancelled(cancelled);
 }
@@ -114,7 +120,7 @@ FlangePose readStationaryFlange(RobotHandle handle) {
     return pose;
 }
 
-bool flangeAtTarget(const FlangePose& actual, const FlangePose& target) {
+bool flangeAtTarget(const FlangePose& actual, const FlangePose& target, double angleToleranceDeg) {
     checkFinite(actual);
     checkFinite(target);
     double distanceSquared = 0;
@@ -125,7 +131,7 @@ bool flangeAtTarget(const FlangePose& actual, const FlangePose& target) {
     const cv::Mat rotation = a(cv::Rect(0, 0, 3, 3)).t() * b(cv::Rect(0, 0, 3, 3));
     const double angle = std::acos(std::clamp((cv::trace(rotation)[0] - 1) / 2, -1.0, 1.0)) * 180 / CV_PI;
     constexpr double positionToleranceMm = 0.05;
-    return distanceSquared <= positionToleranceMm * positionToleranceMm + 1e-12 && angle <= 0.2;
+    return distanceSquared <= positionToleranceMm * positionToleranceMm + 1e-12 && angle <= angleToleranceDeg;
 }
 
 void confirmRobotStopped(RobotHandle handle) {
@@ -166,7 +172,8 @@ void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targ
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
     const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick) {
     using Clock = std::chrono::steady_clock;
-    if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs)
+    if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs ||
+        !std::isfinite(wait.angleToleranceDeg) || wait.angleToleranceDeg <= 0 || wait.angleToleranceDeg > 0.2)
         throw std::runtime_error("机器人等待参数无效");
     const auto started = Clock::now();
     auto stableSince = started;
@@ -184,7 +191,7 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
         const auto now = Clock::now();
         if (now - started >= std::chrono::milliseconds(wait.timeoutMs))
             throw std::runtime_error("机器人到位或稳定等待超时");
-        if (!moving && mode != SDK_Moving && flangeAtTarget(actual, target)) {
+        if (!moving && mode != SDK_Moving && flangeAtTarget(actual, target, wait.angleToleranceDeg)) {
             if (!stable) stableSince = now;
             stable = true;
             if (now - stableSince >= std::chrono::milliseconds(wait.settlingMs)) return;

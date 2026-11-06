@@ -72,7 +72,7 @@ class CollectionController : public QObject
     Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString ninePointProgress READ ninePointProgress NOTIFY collectionChanged)
-    Q_PROPERTY(QVariantList ninePointYawOffsets READ ninePointYawOffsets CONSTANT)
+    Q_PROPERTY(QVariantList ninePointDefaultYawOffsets READ ninePointDefaultYawOffsets CONSTANT)
     Q_PROPERTY(QVariantList tcpPoseValues READ tcpPoseValues NOTIFY tcpPoseChanged)
     Q_PROPERTY(bool tcpPoseValid READ tcpPoseValid NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseStatus READ tcpPoseStatus NOTIFY tcpPoseChanged)
@@ -106,7 +106,7 @@ public:
     QStringList tcpNames() const { return m_tcpNames; }
     QString selectedTcp() const { return m_selectedTcp; }
     QString ninePointProgress() const { return m_ninePointProgress; }
-    QVariantList ninePointYawOffsets() const;
+    QVariantList ninePointDefaultYawOffsets() const;
     void setSelectedTcp(const QString& name);
     Q_INVOKABLE void openCollectionFolder();
     Q_INVOKABLE void openDiagnosticFolder();
@@ -164,7 +164,7 @@ public slots:
     void stopPreview();
 
     void capturePhoto();
-    void captureNinePoints(double xMm, double yMm);
+    void captureNinePoints(double xMm, double yMm, const QVariantList& yawValues);
     void cancelCollectionOperation();
 
 signals:
@@ -195,7 +195,7 @@ private:
     void initializeCollection();
     void loadCollectionUndistortion();
     void beginCollectionOperation();
-    void startCapture(bool ninePoints, double xMm = 0, double yMm = 0);
+    void startCapture(bool ninePoints, double xMm = 0, double yMm = 0, const QVariantList& yawValues = {});
     void recordCapture(const QString& path);
     void confirmMotionStopped();
     void retryRobotStop();

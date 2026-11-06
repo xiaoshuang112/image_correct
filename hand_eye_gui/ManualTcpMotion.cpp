@@ -71,7 +71,7 @@ void waitSelected(RobotHandle handle, const QString& name, const FlangePose& off
         const auto now = Clock::now();
         if (now - started >= std::chrono::milliseconds(wait.timeoutMs))
             throw std::runtime_error("所选 TCP 到位或稳定等待超时");
-        if (!moving && mode != SDK_Moving && flangeAtTarget(actual.pose, target)) {
+        if (!moving && mode != SDK_Moving && flangeAtTarget(actual.pose, target, wait.angleToleranceDeg)) {
             if (!stable) stableSince = now;
             stable = true;
             if (now - stableSince >= std::chrono::milliseconds(wait.settlingMs)) return;
@@ -98,7 +98,8 @@ void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const Flange
     cancellation(cancelled);
     if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     finite(target);
-    if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs)
+    if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs ||
+        !std::isfinite(wait.angleToleranceDeg) || wait.angleToleranceDeg <= 0 || wait.angleToleranceDeg > 0.2)
         throw std::runtime_error("机器人等待参数无效");
     stationary(handle);
     const auto selected = readTcpPose(handle, name);
