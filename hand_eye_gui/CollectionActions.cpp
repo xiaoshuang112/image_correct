@@ -167,7 +167,7 @@ void CollectionController::retryRobotStop() {
             }
             QString message;
             try {
-                const auto result = cr_stop(m_robotHandle);
+                const auto result = cr_moveControl(m_robotHandle, DecStop);
                 confirmMotionStopped();
                 message = result == sucess ? "已确认机器人停止，操作已解锁"
                     : QString("停止指令返回错误码 %1，但已独立确认机器人停止，操作已解锁").arg(result);

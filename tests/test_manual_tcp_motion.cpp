@@ -142,7 +142,11 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
     robot.commands.push_back(command);
     return robot.lineCode;
 }
-extern "C" CRresult cr_stop(RobotHandle) { ++robot.stops; return robot.stopCode; }
+extern "C" CRresult cr_moveControl(RobotHandle, MoveType type) {
+    require(type == DecStop, "SDK motion must use deceleration stop");
+    ++robot.stops;
+    return robot.stopCode;
+}
 
 int main(int argc, char** argv) {
     QCoreApplication app(argc, argv);
@@ -286,6 +290,64 @@ int main(int argc, char** argv) {
         require(robot.sends == 1 && robot.stops == 1 && robot.command.pose[0] == 101 &&
                 robot.command.pose[1] == 200 && robot.command.pose[2] == 300,
                 "release failed to stop a single bounded selected-TCP segment");
+        // Translation must not use the 0.005-degree angular-jog arrival test:
+        // a small orientation residual used to abort after the first X step.
+        for (double residual : {-0.2, -0.006, 0.006, 0.19, 0.2}) {
+            robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100;
+            robot.arrivalAngleError = residual;
+            collection::TeachJogRequest translation;
+            translation.direction = -1; translation.speeds.linearMmS = 100;
+            collection::TeachJogLease press;
+            const auto reason = rejects([&] {
+                collection::jogSelectedTcp(1, "selected-probe", translation, press, robot.cancelled, [&] {
+                    press.heartbeat();
+                    if (robot.sends >= 3) press.release();
+                });
+            });
+            require(robot.sends == 3 && robot.stops == 1 && robot.command.pose[0] == 97 &&
+                    reason.find("意外变化") == std::string::npos,
+                    "translation jog rejected an allowed orientation residual");
+            for (const auto& command : robot.commands)
+                require(command.pose[3] == 0 && command.pose[4] == 0 && command.pose[5] == 0,
+                        "translation jog accumulated orientation residual in its targets");
+        }
+        for (double residual : {-0.201, 0.201}) {
+            robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = residual;
+            collection::TeachJogLease excessiveAngle;
+            const auto jogDeviation = rejects([&] {
+                collection::jogSelectedTcp(1, "selected-probe", jog, excessiveAngle, robot.cancelled,
+                    [&] { excessiveAngle.heartbeat(); });
+            });
+            require(robot.sends == 1 && robot.stops == 1 && jogDeviation.find("意外变化") != std::string::npos,
+                    "translation jog ignored excessive orientation deviation");
+        }
+        robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = 0.19;
+        collection::TeachJogLease cancelledTranslation;
+        rejects([&] {
+            collection::jogSelectedTcp(1, "selected-probe", jog, cancelledTranslation, robot.cancelled, [&] {
+                cancelledTranslation.heartbeat();
+                if (robot.sends >= 2) robot.cancelled = true;
+            });
+        });
+        require(robot.sends == 2 && robot.stops == 1,
+                "translation jog ignored cancellation with an allowed orientation residual");
+        for (bool rotating : {false, true}) {
+            robot.reset(); robot.strictTarget = false;
+            collection::TeachJogRequest precision;
+            precision.component = rotating ? 3 : 0;
+            robot.expectedSpeed = rotating ? 1 : 10;
+            if (rotating) robot.arrivalAngleError = 0.006;
+            else robot.arrivalPositionError = collection::positionToleranceMm + 0.001;
+            collection::TeachJogLease press;
+            rejects([&] {
+                collection::jogSelectedTcp(1, "selected-probe", precision, press, robot.cancelled, [&] {
+                    press.heartbeat();
+                    if (robot.polls >= 4) press.release();
+                });
+            });
+            require(robot.sends == 1 && robot.stops == 1,
+                    "jog advanced before satisfying position or angular arrival precision");
+        }
         robot.reset(); robot.strictTarget = false; robot.neverReach = true;
         collection::TeachJogLease noMovement;
         rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, noMovement, robot.cancelled); });

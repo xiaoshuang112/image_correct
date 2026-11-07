@@ -1,5 +1,7 @@
 #include "TeachMotion.hpp"
+#include "DiagnosticLogger.hpp"
 #include "utils/calib_transform.hpp"
+#include <QStringList>
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -183,9 +185,23 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
         if (actual.offset != origin.offset) throw std::runtime_error("所选 TCP 工具偏移已变化，请重新开始示教");
         // Reject an external move rather than turn a nominal small segment into
         // a distant target. Pose tolerances are the shared completion tolerances.
-        if (distance(actual.pose, target, 0) > linearTravel + positionToleranceMm + 1e-9 ||
-            orientationDistance(actual.pose, target) > angularTravel + angleDeviationTolerance + 1e-9)
+        const double positionError = distance(actual.pose, target, 0);
+        const double angleError = orientationDistance(actual.pose, target);
+        if (positionError > linearTravel + positionToleranceMm + 1e-9 ||
+            angleError > angularTravel + angleDeviationTolerance + 1e-9) {
+            auto poseText = [](const FlangePose& pose) {
+                QStringList values;
+                for (double value : pose) values << QString::number(value, 'g', 17);
+                return values.join(',');
+            };
+            APP_LOG_EVENT_ERROR("robot.motion", "teach_guard", "deviation",
+                {{"tcp", name}, {"actual", poseText(actual.pose)}, {"target", poseText(target)},
+                 {"position_error_mm", QString::number(positionError, 'g', 17)},
+                 {"position_limit_mm", QString::number(linearTravel + positionToleranceMm, 'g', 17)},
+                 {"angle_error_deg", QString::number(angleError, 'g', 17)},
+                 {"angle_limit_deg", QString::number(angularTravel + angleDeviationTolerance, 'g', 17)}});
             throw std::runtime_error("TCP 位置或姿态发生意外变化，请停止后重新开始示教");
+        }
     };
     moveSelectedTcpLinear(handle, name, target, cancelled, wait, tick,
         angularTravel > 1e-9 ? std::min(speeds.linearMmS, rotatingSdkSpeedMmS) : speeds.linearMmS, guard);
@@ -276,7 +292,11 @@ void jogSelectedTcp(RobotHandle handle, const QString& name, const TeachJogReque
         const auto began = std::chrono::steady_clock::now();
         auto next = rotating ? continuousVector(teachJogTarget(displayed, request.orientation, request.component, step), before) : before;
         if (!rotating) next[request.component] += step;
-        segment(handle, name, origin, before, next, request.speeds, cancelled, &lease, {0, 3000, 0.005}, tick);
+        LineMotionWait wait{0, 3000};
+        // Translation holds orientation using the same tolerance as target
+        // moves. Only angular jogging needs the tighter small-step precision.
+        if (rotating) wait.angleToleranceDeg = 0.005;
+        segment(handle, name, origin, before, next, request.speeds, cancelled, &lease, wait, tick);
         const auto due = began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(
             std::chrono::duration<double>(std::abs(step) / speed));
         paceUntil(due, cancelled, &lease, tick);

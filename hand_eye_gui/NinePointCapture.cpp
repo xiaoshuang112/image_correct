@@ -61,7 +61,7 @@ RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
     return mode;
 }
 void stopAndRethrow(RobotHandle handle, const std::exception& error) {
-    const auto result = cr_stop(handle);
+    const auto result = cr_moveControl(handle, DecStop);
     APP_LOG_EVENT_ERROR("robot.motion", "nine_point_stop", "requested",
         {{"reason", QString::fromUtf8(error.what())}, {"stop_result", QString::number(result)}});
     if (result != sucess)
@@ -238,7 +238,7 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const Flange
     } catch (const std::exception& error) {
         stopAndRethrow(handle, error);
     } catch (...) {
-        const auto result = cr_stop(handle);
+        const auto result = cr_moveControl(handle, DecStop);
         if (result != sucess)
             throw std::runtime_error("九点采图运动异常；停止指令失败，请在示教器确认机器人状态");
         throw;

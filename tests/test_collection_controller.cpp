@@ -349,7 +349,8 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL) {
     robot.pose[0] -= command.tcpID < 0 ? command.tcpOffset[0] : 0;
     return sucess;
 }
-extern "C" CRresult cr_stop(RobotHandle) {
+extern "C" CRresult cr_moveControl(RobotHandle, MoveType type) {
+    require(type == DecStop, "SDK motion must use deceleration stop");
     ++robot.stops;
     if (robot.stopWorks) robot.moving = false;
     return robot.stopCode;
@@ -416,10 +417,12 @@ int main(int argc, char** argv) {
         {
             CollectionController controller;
             CollectionControllerTestAccess::prepare(controller, temp.path());
+            robot.stopCode = robotmode_error; // SDK v2.50d: current mode cannot perform the operation (17).
             controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
             waitFor([&] { return controller.motionFault(); });
             require(controller.collectionBusy() && robot.moving && controller.savedImageCount() == 0,
                     "stop failure unlocked controller or continued collecting");
+            require(controller.statusMessage().contains("错误码 17"), "stop mode error diagnostic was lost");
             const auto lines = robot.lines.load();
             controller.disconnectRobot(); controller.closeCamera(); controller.connectRobot();
             controller.capturePhoto(); controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets()); controller.moveTcpToDisplay("100,200,300,180,0,0", "axis");

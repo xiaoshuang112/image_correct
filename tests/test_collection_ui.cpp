@@ -346,6 +346,19 @@ SharedCollectionState {
         click(item("connectRobotButton"));
         require(item("captureButton")->isEnabled(), "camera connect did not start preview");
         require(controller->property("previewVisible").toBool(), "main page did not enable preview processing");
+        const auto normalStatusColor = item("globalStatus")->property("color").value<QColor>();
+        const auto previousStatus = controller->property("statusMessage");
+        controller->setProperty("motionFault", true);
+        const auto errorStatusColor = item("globalStatus")->property("color").value<QColor>();
+        controller->setProperty("motionFault", false);
+        require(errorStatusColor != normalStatusColor, "motion fault has no distinct status color");
+        for (const auto& message : {QStringLiteral("TCP 位置或姿态发生意外变化，请停止后重新开始示教"),
+                                   QStringLiteral("停止指令失败（错误码 17），请在示教器确认机器人状态")}) {
+            controller->setProperty("statusMessage", message);
+            require(item("globalStatus")->property("color").value<QColor>() == errorStatusColor,
+                    "motion error was displayed as a healthy status");
+        }
+        controller->setProperty("statusMessage", previousStatus);
         click(item("captureButton"));
         require(count() == 1, "capture action failed");
         window->contentItem()->forceActiveFocus();

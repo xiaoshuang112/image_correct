@@ -81,7 +81,11 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
     robot.command = command; robot.issued = true; ++robot.sends;
     return robot.lineCode;
 }
-extern "C" CRresult cr_stop(RobotHandle) { ++robot.stops; return robot.stopCode; }
+extern "C" CRresult cr_moveControl(RobotHandle, MoveType type) {
+    require(type == DecStop, "SDK motion must use deceleration stop");
+    ++robot.stops;
+    return robot.stopCode;
+}
 
 int main() {
     try {
@@ -251,6 +255,13 @@ int main() {
         rejects([&] { collection::moveFlangeLinear(1, origin, targets[1], robot.cancelled, {0, 300},
             [] { throw std::runtime_error("telemetry read failed"); }); });
         require(robot.stops == 1, "telemetry failure during motion did not stop");
+        robot.reset();
+        bool unknownException = false;
+        try {
+            collection::moveFlangeLinear(1, origin, targets[1], robot.cancelled, {0, 300}, [] { throw 42; });
+        } catch (int value) { unknownException = value == 42; }
+        require(unknownException && robot.sends == 1 && robot.stops == 1,
+                "unknown motion exception was lost or did not request deceleration stop");
         robot.reset(); int delayedTicks = 0;
         const auto timeoutError = rejects([&] {
             collection::waitForStableFlange(1, origin, robot.cancelled, {0, 30}, [&] {

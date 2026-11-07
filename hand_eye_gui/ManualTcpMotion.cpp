@@ -162,7 +162,8 @@ void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const Flange
             if (safetyCheck) safetyCheck();
         });
     } catch (const std::exception& error) {
-        const auto stop = cr_stop(handle);
+        // cr_stop stops Lua programs; SDK-dispatched moves use motion control.
+        const auto stop = cr_moveControl(handle, DecStop);
         APP_LOG_EVENT_ERROR("robot.motion", "manual_tcp_stop", "requested",
             {{"reason", QString::fromUtf8(error.what())}, {"stop_result", QString::number(stop)}});
         if (stop != sucess)
@@ -170,7 +171,7 @@ void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const Flange
                 std::to_string(stop) + "），请在示教器确认机器人状态");
         throw;
     } catch (...) {
-        const auto stop = cr_stop(handle);
+        const auto stop = cr_moveControl(handle, DecStop);
         if (stop != sucess)
             throw std::runtime_error("TCP 运动异常；停止指令失败，请在示教器确认机器人状态");
         throw;

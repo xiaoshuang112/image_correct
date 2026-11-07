@@ -146,7 +146,7 @@ qulonglong CollectionController::beginTcpJog(int component, int direction, const
             collection::jogSelectedTcp(handle, tool, request, *lease, m_cancelRequested, tick);
             // A released lease between segments still requires a stop request
             // and independently observed stationary state before unlocking.
-            const auto result = cr_stop(handle);
+            const auto result = cr_moveControl(handle, DecStop);
             if (result != sucess)
                 throw std::runtime_error(QString("停止指令失败（错误码 %1），正在独立确认停止状态").arg(result).toStdString());
         }, QString("长按微调 %1%2").arg(axis, direction > 0 ? "+" : "−"));
@@ -201,7 +201,7 @@ void CollectionController::startManualMotion(
                 if (failed) {
                     // Cancellation may arrive during pacing, between completed
                     // segments, outside the linear move's own stop handler.
-                    const auto result = cr_stop(session->handle);
+                    const auto result = cr_moveControl(session->handle, DecStop);
                     if (result != sucess) message += QString("；停止指令失败（错误码 %1）").arg(result);
                 }
                 try { confirmMotionStopped(); }

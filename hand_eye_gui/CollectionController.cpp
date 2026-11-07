@@ -75,7 +75,7 @@ CollectionController::~CollectionController()
     }
     if (m_robotConnected && m_robotStopUnconfirmed) {
         try {
-            const auto result = cr_stop(m_robotHandle);
+            const auto result = cr_moveControl(m_robotHandle, DecStop);
             APP_LOG_EVENT_WARNING("robot", "shutdown_stop", "requested", {{"result", QString::number(result)}});
             confirmMotionStopped();
         } catch (const std::exception& error) {
