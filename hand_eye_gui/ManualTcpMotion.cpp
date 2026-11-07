@@ -51,6 +51,28 @@ void checkJointLimits(RobotHandle handle, const FlangePose& current, const Flang
         }
     }
 }
+struct TcpTargetCheck {
+    TcpPose selected;
+    FlangePose reference;
+};
+TcpTargetCheck preflight(RobotHandle handle, const QString& name, const FlangePose& target,
+    const std::atomic<bool>& cancelled) {
+    cancellation(cancelled);
+    finite(target);
+    stationary(handle);
+    TcpTargetCheck result{readTcpPose(handle, name), {}};
+    auto flangeTarget = tcpTargetToFlange(target, result.selected.offset);
+    FlangePose targetJoints{};
+    result.reference.fill(std::numeric_limits<double>::quiet_NaN());
+    targetJoints.fill(std::numeric_limits<double>::quiet_NaN());
+    check(cr_get_jointActualPos(handle, result.reference.data()), "读取参考关节角失败");
+    finite(result.reference);
+    check(cr_kineInverse(handle, flangeTarget.data(), result.reference.data(), targetJoints.data()), "TCP 目标逆解失败");
+    finite(targetJoints);
+    checkJointLimits(handle, result.reference, targetJoints);
+    cancellation(cancelled);
+    return result;
+}
 void waitSelected(RobotHandle handle, const QString& name, const FlangePose& offset,
     const FlangePose& target, const std::atomic<bool>& cancelled, LineMotionWait wait,
     const MotionTick& tick) {
@@ -93,35 +115,32 @@ FlangePose tcpTargetToFlange(const FlangePose& target, const FlangePose& toolOff
     return result;
 }
 
+void checkSelectedTcpTarget(RobotHandle handle, const QString& name, const FlangePose& target,
+    const std::atomic<bool>& cancelled) {
+    preflight(handle, name, target, cancelled);
+}
+
 void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS,
+    MotionTick safetyCheck) {
     cancellation(cancelled);
+    if (safetyCheck) safetyCheck();
     if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     finite(target);
     if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs ||
         !std::isfinite(wait.angleToleranceDeg) || wait.angleToleranceDeg <= 0 || wait.angleToleranceDeg > 0.2)
         throw std::runtime_error("机器人等待参数无效");
-    stationary(handle);
-    const auto selected = readTcpPose(handle, name);
-    auto flangeTarget = tcpTargetToFlange(target, selected.offset);
-    FlangePose reference{}, targetJoints{};
-    reference.fill(std::numeric_limits<double>::quiet_NaN());
-    targetJoints.fill(std::numeric_limits<double>::quiet_NaN());
-    check(cr_get_jointActualPos(handle, reference.data()), "读取参考关节角失败");
-    finite(reference);
-    check(cr_kineInverse(handle, flangeTarget.data(), reference.data(), targetJoints.data()), "TCP 目标逆解失败");
-    finite(targetJoints);
-    checkJointLimits(handle, reference, targetJoints);
+    const auto checked = preflight(handle, name, target, cancelled);
     stationary(handle);
     // Refresh immediately before motion; configuration changes invalidate the IK.
     const auto fresh = readTcpPose(handle, name);
-    if (fresh.offset != selected.offset)
+    if (fresh.offset != checked.selected.offset)
         throw std::runtime_error("所选 TCP 工具偏移已变化，请重新确认目标");
-    if (!flangeAtTarget(fresh.pose, selected.pose))
+    if (!flangeAtTarget(fresh.pose, checked.selected.pose))
         throw std::runtime_error("机器人位置在运动准备期间发生变化，请重新确认目标");
     PointControlPara command{};
     std::copy(target.begin(), target.end(), command.pose);
-    std::copy(reference.begin(), reference.end(), command.jointpos);
+    std::copy(checked.reference.begin(), checked.reference.end(), command.jointpos);
     std::copy(fresh.offset.begin(), fresh.offset.end(), command.tcpOffset);
     // SDK v2.50c/d: negative ID explicitly selects tcpOffset, never active TCP.
     command.tcpID = -1;
@@ -132,11 +151,16 @@ void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const Flange
     std::fill_n(command.speed, ROB_AXIS_NUM, speedMmS);
     std::fill_n(command.acc, ROB_AXIS_NUM, 20.0);
     cancellation(cancelled);
+    if (safetyCheck) safetyCheck();
     APP_LOG_EVENT_INFO("robot.motion", "manual_tcp_line", "start",
         {{"tcp", name}, {"speed_mm_s", QString::number(speedMmS)}});
     try {
         check(cr_move_line(handle, command, FALSE), "TCP 直线运动指令失败");
-        waitSelected(handle, name, fresh.offset, target, cancelled, wait, tick);
+        waitSelected(handle, name, fresh.offset, target, cancelled, wait, [&] {
+            if (safetyCheck) safetyCheck();
+            if (tick) tick();
+            if (safetyCheck) safetyCheck();
+        });
     } catch (const std::exception& error) {
         const auto stop = cr_stop(handle);
         APP_LOG_EVENT_ERROR("robot.motion", "manual_tcp_stop", "requested",

@@ -359,12 +359,6 @@ DiagnosticLogger::DiagnosticLogger()
     return !selectedDirectory.isEmpty();
 }
 
-QString DiagnosticLogger::sessionId() const
-{
-    std::lock_guard<std::mutex> lock(m_mutex);
-    return m_sessionId;
-}
-
 bool DiagnosticLogger::openLogFileLocked(const QString& directory)
 {
     if (directory.isEmpty() || !QDir().mkpath(directory))
@@ -514,39 +508,6 @@ void DiagnosticLogger::log(Level level,
             }
         }
     }
-
-    std::function<void(const QString&)> sink;
-    {
-        std::lock_guard<std::mutex> lock(m_sinkMutex);
-        sink = m_uiSink;
-    }
-    if (sink && level != Level::Debug) {
-        const char* cat = category ? category : "";
-        if (std::strcmp(cat, "stdout") != 0)
-            sink(formatted + '\n');
-    }
-}
-
-void DiagnosticLogger::logEvent(Level level,
-                               const char* category,
-                               const QString& event,
-                               const QString& result,
-                               std::initializer_list<LogField> fields,
-                               const char* file,
-                               int line,
-                               const char* function)
-{
-    QString payload = QString("event=%1 result=%2")
-                          .arg(sanitizeFieldValue(event.isEmpty() ? QStringLiteral("-") : event))
-                          .arg(sanitizeFieldValue(result.isEmpty() ? QStringLiteral("unknown") : result));
-    for (const auto& field : fields) {
-        if (field.first.isEmpty())
-            continue;
-        payload += QString(" %1=%2")
-            .arg(sanitizeFieldValue(field.first))
-            .arg(sanitizeFieldValue(field.second));
-    }
-    log(level, category, payload, file, line, function);
 }
 
 void DiagnosticLogger::logEvent(Level level,
@@ -582,10 +543,4 @@ QString DiagnosticLogger::logFilePath() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_logFilePath;
-}
-
-void DiagnosticLogger::setUiSink(std::function<void(const QString&)> sink)
-{
-    std::lock_guard<std::mutex> lock(m_sinkMutex);
-    m_uiSink = std::move(sink);
 }

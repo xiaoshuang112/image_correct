@@ -122,6 +122,8 @@ void CollectionController::beginCollectionOperation() {
 void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
     if (!m_manualMoveProgress.isEmpty()) m_manualMoveProgress = message;
     m_manualMoveActive = false;
+    if (m_jogLease) m_jogLease->release();
+    m_jogLease.reset();
     m_motionFault = m_robotStopUnconfirmed.load();
     m_collectionBusy = m_motionFault;
     m_stopRetrying = false;
@@ -181,6 +183,7 @@ void CollectionController::retryRobotStop() {
 }
 
 void CollectionController::cancelCollectionOperation() {
+    if (m_jogLease) m_jogLease->release();
     if (m_settingsSaving) { setStatus("正在保存配置，请等待完成"); return; }
     if (m_coordinatesImporting) { setStatus("正在导入坐标，请等待完成"); return; }
     if (m_motionFault) { retryRobotStop(); return; }
@@ -200,6 +203,7 @@ void CollectionController::cancelCollectionOperation() {
 
 void CollectionController::recordCapture(const QString& path) {
     m_lastCapturePath = path;
+    m_lastCaptureTime = QDateTime::currentDateTime().toString("HH:mm:ss");
     ++m_savedImageCount;
     emit collectionChanged();
 }

@@ -9,6 +9,7 @@
 namespace collection {
 
 using FlangePose = std::array<double, ROB_AXIS_NUM>;
+constexpr double positionToleranceMm = 0.05;
 using NinePointAngles = std::array<double, 9>;
 inline constexpr NinePointAngles defaultNinePointYawOffsets{0, 15, -15, -20, 0, 20, 15, -15, 0};
 using NinePointTargets = std::array<FlangePose, defaultNinePointYawOffsets.size()>;

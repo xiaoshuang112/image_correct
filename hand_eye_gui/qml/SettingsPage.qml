@@ -179,14 +179,14 @@ Item {
                                 HmiText { text: "机器人 IP" }
                                 CollectField { objectName: "robotIpInput"; Layout.fillWidth: true; text: page.robotIp; enabled: !page.locked && !page.controller.robotConnected; onTextChanged: page.robotIp = text }
                                 HmiText { visible: page.controller.robotConnected; Layout.fillWidth: true; text: "机器人已连接，断开后可编辑 IP"; font.pixelSize: Theme.meta }
-                                HmiText { text: "移动速度 · mm/s"; Layout.topMargin: 8 }
+                                HmiText { text: "九点采集速度 · mm/s"; Layout.topMargin: 8 }
                                 CollectField {
                                     objectName: "robotSpeedInput"; Layout.fillWidth: true
                                     text: page.robotSpeed; enabled: !page.locked
                                     validator: IntValidator { bottom: 1; top: 1000 }
                                     onTextChanged: page.robotSpeed = text
                                 }
-                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s。用于手动 TCP 移动与九点采图，保存后对下一次移动生效。"; font.pixelSize: Theme.meta }
+                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s，仅用于九点自动采集。手动平移和角度速度在主页面分别设置。"; font.pixelSize: Theme.meta }
                                 HmiText { Layout.fillWidth: true; text: "TCP 工具列表与实时位姿在主页面查看。移动前请确认所选工具和目标坐标。"; font.pixelSize: Theme.meta }
                             }
                             ColumnLayout {
@@ -210,8 +210,8 @@ Item {
                                 visible: page.tab === 2; Layout.fillWidth: true; spacing: 16
                                 HmiText { text: "版本 " + appVersion + " · " + appGitCommit; font.family: Theme.mono; Layout.fillWidth: true }
                                 HmiText { Layout.fillWidth: true; text: "校正参数\n" + page.controller.handEyePath; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
-                                CollectButton { objectName: "diagnosticFolderButton"; text: "打开诊断目录"; onClicked: page.controller.openDiagnosticFolder() }
-                                HmiText { Layout.fillWidth: true; text: "运行日志保留在诊断目录；主页面显示最近 1000 行，可选择复制。"; font.pixelSize: Theme.meta }
+                                CollectButton { objectName: "diagnosticFolderButton"; text: "打开日志目录"; onClicked: page.controller.openDiagnosticFolder() }
+                                HmiText { Layout.fillWidth: true; text: "完整运行日志保留在诊断目录，主页面显示任务、进度与最近结果。"; font.pixelSize: Theme.meta }
                             }
                         }
                     }
