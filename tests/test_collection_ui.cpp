@@ -8,6 +8,7 @@
 #include <QQuickItem>
 #include <QQuickItemGrabResult>
 #include <QQuickWindow>
+#include <QPointer>
 #include <QtTest/QTest>
 #include <QtTest/QSignalSpy>
 #include <qqml.h>
@@ -15,7 +16,9 @@
 #include <functional>
 #include <memory>
 #include <limits>
+#include <mutex>
 #include <stdexcept>
+#include <vector>
 
 // Match the real controller's shared NOTIFY signal: unrelated/busy changes
 // notify savedImageCount even when its getter returns the same value.
@@ -44,6 +47,28 @@ private:
 };
 
 namespace {
+std::mutex layoutWarningMutex;
+QStringList layoutWarnings;
+QtMessageHandler previousMessageHandler = nullptr;
+void captureLayoutWarnings(QtMsgType type, const QMessageLogContext& context, const QString& message) {
+    if (message.contains("Binding loop", Qt::CaseInsensitive) ||
+        (message.contains("polish", Qt::CaseInsensitive) && message.contains("loop", Qt::CaseInsensitive)) ||
+        message.contains("recursive rearrange", Qt::CaseInsensitive)) {
+        std::lock_guard<std::mutex> lock(layoutWarningMutex);
+        layoutWarnings.append(message);
+    }
+    if (previousMessageHandler) previousMessageHandler(type, context, message);
+    else std::cerr << message.toStdString() << '\n';
+}
+class LayoutWarningCapture {
+public:
+    LayoutWarningCapture() { previousMessageHandler = qInstallMessageHandler(captureLayoutWarnings); }
+    ~LayoutWarningCapture() { qInstallMessageHandler(previousMessageHandler); }
+    QStringList warnings() const {
+        std::lock_guard<std::mutex> lock(layoutWarningMutex);
+        return layoutWarnings;
+    }
+};
 void require(bool condition, const char* message) {
     if (!condition) throw std::runtime_error(message);
 }
@@ -66,6 +91,7 @@ int main(int argc, char** argv) {
     QGuiApplication app(argc, argv);
     qmlRegisterType<SharedCollectionState>("CollectTest", 1, 0, "SharedCollectionState");
     try {
+        LayoutWarningCapture layoutWarningCapture;
         std::unique_ptr<QObject> controller;
         QQmlApplicationEngine engine;
         QQmlComponent mock(&engine);
@@ -419,6 +445,26 @@ SharedCollectionState {
         click(item("settingsTab1"));
         setText("previewExposureInput", "15000");
         require(controller->property("cameraExposureUs").toInt() == 33333 && settingsPage->property("dirty").toBool(), "draft changed backend before explicit save");
+        std::vector<std::pair<const char*, QPointer<QQuickItem>>> settingsControls;
+        for (const char* name : {"cameraIpInput", "robotIpInput", "robotSpeedInput", "resolutionWidthInput", "resolutionHeightInput",
+                                 "previewExposureInput", "exposureInput", "exposureInput2", "exposureInput3", "exposureInput4", "exposureInput5"})
+            settingsControls.emplace_back(name, item(name));
+        const auto exposureDraft = text("exposureInput");
+        const int settingsCallsBeforeTabs = controller->property("settingsCalls").toInt();
+        for (int cycle = 0; cycle < 3; ++cycle) {
+            for (int tab = 0; tab < 3; ++tab) {
+                click(item(("settingsTab" + std::to_string(tab)).c_str()));
+                require(settingsPage->property("tab").toInt() == tab, "settings tab did not change");
+                for (const auto& control : settingsControls)
+                    require(control.second && item(control.first) == control.second.data(), "settings tab recreated a draft control");
+                require(text("robotSpeedInput") == "1000" && text("previewExposureInput") == "15000" && text("exposureInput") == exposureDraft &&
+                        settingsPage->property("dirty").toBool(), "settings tab discarded draft values");
+                require(controller->property("robotSpeedMmS").toInt() == 10 && controller->property("cameraExposureUs").toInt() == 33333 &&
+                        controller->property("settingsCalls").toInt() == settingsCallsBeforeTabs, "settings tab applied draft configuration");
+                require(!controller->property("previewVisible").toBool() && controller->property("previewActive").toBool(), "settings tab resumed hidden preview");
+            }
+        }
+        click(item("settingsTab1"));
         item("previewExposureInput")->forceActiveFocus();
         const int beforeSettings = count();
         QTest::keyClick(window, Qt::Key_Return);
@@ -530,9 +576,58 @@ SharedCollectionState {
             if (argc > 1 && size == QSize(1280,850)) require(screenshot(argv[1]), "main screenshot failed");
             if (argc > 4 && size == QSize(760,600)) require(screenshot(argv[4]), "compact screenshot failed");
             click(item("settingsButton"));
+            auto* leftCard = item("settingsLeftCard");
+            auto* rightCard = item("settingsRightCard");
+            auto* cardPair = leftCard->parentItem();
+            require(cardPair && rightCard->parentItem() == cardPair, "settings cards do not share a container");
+            const qreal settledCardHeight = leftCard->height();
             for (int tab = 0; tab < 3; ++tab) {
+                auto firstFrameGeometry = std::make_shared<std::vector<QRectF>>();
+                const QPointer<QQuickItem> leftGuard(leftCard), rightGuard(rightCard);
+                const auto firstFrameConnection = QObject::connect(window, &QQuickWindow::frameSwapped, window,
+                    [firstFrameGeometry, leftGuard, rightGuard, bounds] {
+                        if (firstFrameGeometry->empty() && leftGuard && rightGuard) {
+                            firstFrameGeometry->push_back(bounds(leftGuard));
+                            firstFrameGeometry->push_back(bounds(rightGuard));
+                        }
+                    });
+                QSignalSpy firstFrame(window, &QQuickWindow::frameSwapped);
                 click(item(("settingsTab" + std::to_string(tab)).c_str()));
+                if (firstFrame.count() == 0) { window->update(); require(firstFrame.wait(2000), "settings tab did not render a frame"); }
+                QCoreApplication::processEvents();
+                QObject::disconnect(firstFrameConnection);
+                require(firstFrameGeometry->size() == 2, "settings first-frame geometry was not captured");
+                QSignalSpy settledFrame(window, &QQuickWindow::frameSwapped);
+                window->update();
+                require(settledFrame.wait(2000), "settings settled frame was not rendered");
+                require(firstFrameGeometry->at(0) == bounds(leftCard) && firstFrameGeometry->at(1) == bounds(rightCard),
+                        "settings cards changed geometry after their first rendered frame");
                 require(viewport.contains(bounds(item("saveSettingsButton"))) && viewport.contains(bounds(item("settingsFooter"))), "settings footer clipped");
+                require(qAbs(leftCard->height() - rightCard->height()) < 1 && qAbs(leftCard->y() - rightCard->y()) < 1,
+                        "settings cards are not equal height and aligned");
+                require(qAbs(leftCard->height() - settledCardHeight) < 1, "settings tab changed the shared card height");
+                const auto cards = bounds(leftCard).united(bounds(rightCard));
+                const auto content = bounds(cardPair->parentItem());
+                require(qAbs(cards.center().x() - content.center().x()) <= 1 && qAbs(cards.center().y() - content.center().y()) <= 1,
+                        "settings cards are not centered in their scrolling content");
+                require(bounds(leftCard).right() < bounds(rightCard).left(), "settings cards overlap");
+                for (auto* card : {leftCard, rightCard}) {
+                    const auto cardBounds = bounds(card).adjusted(-1, -1, 1, 1);
+                    std::function<void(QQuickItem*)> checkContent = [&](QQuickItem* parent) {
+                        for (auto* child : parent->childItems()) {
+                            if (!child->isVisible()) continue;
+                            if (child->width() > 0 && child->height() > 0) {
+                                if (!cardBounds.contains(bounds(child)))
+                                    std::cerr << "settings content " << child->objectName().toStdString() << " overflows card on tab " << tab
+                                              << " at " << size.width() << "x" << size.height() << '\n';
+                                require(cardBounds.contains(bounds(child)), "settings content overflows its card");
+                            }
+                            checkContent(child);
+                        }
+                    };
+                    checkContent(card);
+                }
+                require(!controller->property("previewVisible").toBool(), "settings layout change resumed hidden preview");
                 if (tab == 2) { click(item("diagnosticFolderButton")); require(controller->property("diagnosticsOpened").toBool(), "log directory unavailable"); }
             }
             if (argc > 2 && size == QSize(1280,850)) { click(item("settingsTab1")); require(screenshot(argv[2]), "settings screenshot failed"); }
@@ -541,6 +636,9 @@ SharedCollectionState {
         }
         window->hide(); QTest::qWait(20);
         require(!controller->property("previewVisible").toBool(), "hidden window still processes preview");
+        const auto layoutProblems = layoutWarningCapture.warnings();
+        for (const auto& warning : layoutProblems) std::cerr << "unexpected layout warning: " << warning.toStdString() << '\n';
+        require(layoutProblems.isEmpty(), "QML reported a binding or layout polish loop");
         std::cout << "Collection teaching leases, frozen targets, imports, angle modes, preview annotations, nine point preservation, settings and responsive layouts passed\n";
         return 0;
     } catch (const std::exception& error) {

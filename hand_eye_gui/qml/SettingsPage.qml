@@ -81,11 +81,6 @@ Item {
         ListElement { value: "" }
         ListElement { value: "" }
     }
-    Timer {
-        id: measure; interval: 0
-        onTriggered: pair.height = Math.max(leftContent.implicitHeight + 40, rightContent.implicitHeight + 40,
-            Math.min(Theme.pageCardMinHeight, scroll.availableHeight - 32))
-    }
     ColumnLayout {
         anchors.fill: parent; spacing: 0
         Rectangle {
@@ -111,7 +106,8 @@ Item {
         }
         ScrollView {
             id: scroll
-            onAvailableHeightChanged: measure.restart()
+            // The viewport size comes from the page, independently of the scrollable cards.
+            implicitHeight: 0
             objectName: "settingsScroll"
             Layout.fillWidth: true; Layout.fillHeight: true
             clip: true; contentWidth: availableWidth
@@ -124,78 +120,85 @@ Item {
                     width: Math.min(parent.width - 32, Theme.pageContentWidth)
                     x: Math.round((parent.width - width) / 2)
                     y: Math.round((parent.height - height) / 2)
-                    height: 400
-                    onWidthChanged: measure.restart()
+                    // Reserve the tallest tab so switching only changes the visible form.
+                    height: Math.max(leftContent.requiredHeight + Theme.padding * 2,
+                        rightContent.requiredHeight + Theme.padding * 2,
+                        Math.min(Theme.pageCardMinHeight, Math.max(0, scroll.availableHeight - 32)))
                     HmiPanel {
                         objectName: "settingsLeftCard"; width: (parent.width - 16) / 2; height: parent.height; x: 0
-                        ColumnLayout {
-                            id: leftContent; width: parent.width; height: implicitHeight; onImplicitHeightChanged: measure.restart(); spacing: 16
-                            HmiText { text: ["相机", "预览与校正", "数据存储"][page.tab]; color: Theme.ink; font.pixelSize: Theme.appTitle }
-                            ColumnLayout {
-                                visible: page.tab === 0; Layout.fillWidth: true; spacing: 8
+                        Column {
+                            id: leftContent; width: parent.width; spacing: 16
+                            readonly property real requiredHeight: leftHeading.implicitHeight + spacing
+                                + Math.max(cameraSettings.implicitHeight, imagingSettings.implicitHeight, storageSettings.implicitHeight)
+                            HmiText { id: leftHeading; text: ["相机", "预览与校正", "数据存储"][page.tab]; color: Theme.ink; font.pixelSize: Theme.appTitle }
+                            Column {
+                                id: cameraSettings; visible: page.tab === 0; width: parent.width; spacing: 8
                                 HmiText { text: "相机 IP" }
-                                CollectField { objectName: "cameraIpInput"; Layout.fillWidth: true; text: page.cameraIp; enabled: !page.locked && !page.controller.cameraOpened; onTextChanged: page.cameraIp = text }
-                                HmiText { visible: page.controller.cameraOpened; text: "相机已连接，断开后可编辑 IP 与分辨率"; font.pixelSize: Theme.meta }
-                                HmiText { text: "预览分辨率 · px"; Layout.topMargin: 8 }
+                                CollectField { objectName: "cameraIpInput"; width: parent.width; text: page.cameraIp; enabled: !page.locked && !page.controller.cameraOpened; onTextChanged: page.cameraIp = text }
+                                HmiText { visible: page.controller.cameraOpened; width: parent.width; text: "相机已连接，断开后可编辑 IP 与分辨率"; font.pixelSize: Theme.meta }
+                                HmiText { text: "预览分辨率 · px"; topPadding: 8 }
                                 RowLayout {
-                                    Layout.fillWidth: true; spacing: 8
+                                    width: parent.width; spacing: 8
                                     CollectField { objectName: "resolutionWidthInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.previewWidth; enabled: !page.locked && !page.controller.cameraOpened; onTextChanged: page.previewWidth = text }
                                     HmiText { text: "×" }
                                     CollectField { objectName: "resolutionHeightInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.previewHeight; enabled: !page.locked && !page.controller.cameraOpened; onTextChanged: page.previewHeight = text }
                                 }
-                                HmiText { Layout.fillWidth: true; text: "后端：" + page.controller.cameraBackend + " · " + page.controller.cameraModel; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "后端：" + page.controller.cameraBackend + " · " + page.controller.cameraModel; font.pixelSize: Theme.meta }
                             }
-                            ColumnLayout {
-                                visible: page.tab === 1; Layout.fillWidth: true; spacing: 8
+                            Column {
+                                id: imagingSettings; visible: page.tab === 1; width: parent.width; spacing: 8
                                 HmiText { text: "预览曝光 · μs" }
-                                CollectField { objectName: "previewExposureInput"; Layout.fillWidth: true; text: page.previewExposure; enabled: !page.locked; onTextChanged: page.previewExposure = text }
-                                HmiText { Layout.fillWidth: true; text: "预览曝光独立于融合序列；保存后生效。范围 1～10000000 μs。"; font.pixelSize: Theme.meta }
+                                CollectField { objectName: "previewExposureInput"; width: parent.width; text: page.previewExposure; enabled: !page.locked; onTextChanged: page.previewExposure = text }
+                                HmiText { width: parent.width; text: "预览曝光独立于融合序列；保存后生效。范围 1～10000000 μs。"; font.pixelSize: Theme.meta }
+                                Item { width: 1; height: 8 }
                                 CollectButton {
-                                    objectName: "undistortionButton"; Layout.fillWidth: true; Layout.topMargin: 16
+                                    objectName: "undistortionButton"; width: parent.width
                                     text: page.controller.undistortionEnabled ? "去畸变已启用" : "启用去畸变"
                                     enabled: !page.locked && page.controller.cameraOpened && (page.controller.undistortionReady || page.controller.undistortionEnabled)
                                     onClicked: page.controller.toggleUndistortion()
                                 }
-                                HmiText { objectName: "undistortionStatus"; Layout.fillWidth: true; text: page.controller.undistortionStatus; font.pixelSize: Theme.meta }
-                                HmiText { Layout.fillWidth: true; text: "校正开关即时生效于预览 / 拍照；曝光配置需要保存。"; font.pixelSize: Theme.meta }
+                                HmiText { objectName: "undistortionStatus"; width: parent.width; text: page.controller.undistortionStatus; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "校正开关即时生效于预览 / 拍照；曝光配置需要保存。"; font.pixelSize: Theme.meta }
                             }
-                            ColumnLayout {
-                                visible: page.tab === 2; Layout.fillWidth: true; spacing: 16
+                            Column {
+                                id: storageSettings; visible: page.tab === 2; width: parent.width; spacing: 16
                                 HmiText { text: "图片 " + page.controller.savedImageCount + "   TCP 点位 " + page.controller.savedPoseCount; color: Theme.ink; font.family: Theme.mono }
-                                HmiText { Layout.fillWidth: true; text: page.controller.outputDirectory; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                                HmiText { width: parent.width; text: page.controller.outputDirectory; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
                                 CollectButton { objectName: "collectionFolderButton"; text: "打开图片目录"; onClicked: page.controller.openCollectionFolder() }
-                                HmiText { Layout.fillWidth: true; text: page.controller.lastCapturePath || "尚未保存图片"; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
-                                HmiText { Layout.fillWidth: true; text: "保存仍保留现有原图、融合图、校正图及位姿数据。预览十字线不会写入图片。"; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: page.controller.lastCapturePath || "尚未保存图片"; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                                HmiText { width: parent.width; text: "保存仍保留现有原图、融合图、校正图及位姿数据。预览十字线不会写入图片。"; font.pixelSize: Theme.meta }
                             }
                         }
                     }
                     HmiPanel {
                         objectName: "settingsRightCard"; width: (parent.width - 16) / 2; height: parent.height; x: width + 16
-                        ColumnLayout {
-                            id: rightContent; width: parent.width; height: implicitHeight; onImplicitHeightChanged: measure.restart(); spacing: 16
-                            HmiText { text: ["机器人", "融合曝光序列", "诊断"][page.tab]; color: Theme.ink; font.pixelSize: Theme.appTitle }
-                            ColumnLayout {
-                                visible: page.tab === 0; Layout.fillWidth: true; spacing: 8
+                        Column {
+                            id: rightContent; width: parent.width; spacing: 16
+                            readonly property real requiredHeight: rightHeading.implicitHeight + spacing
+                                + Math.max(robotSettings.implicitHeight, fusionSettings.implicitHeight, diagnosticSettings.implicitHeight)
+                            HmiText { id: rightHeading; text: ["机器人", "融合曝光序列", "诊断"][page.tab]; color: Theme.ink; font.pixelSize: Theme.appTitle }
+                            Column {
+                                id: robotSettings; visible: page.tab === 0; width: parent.width; spacing: 8
                                 HmiText { text: "机器人 IP" }
-                                CollectField { objectName: "robotIpInput"; Layout.fillWidth: true; text: page.robotIp; enabled: !page.locked && !page.controller.robotConnected; onTextChanged: page.robotIp = text }
-                                HmiText { visible: page.controller.robotConnected; Layout.fillWidth: true; text: "机器人已连接，断开后可编辑 IP"; font.pixelSize: Theme.meta }
-                                HmiText { text: "九点采集速度 · mm/s"; Layout.topMargin: 8 }
+                                CollectField { objectName: "robotIpInput"; width: parent.width; text: page.robotIp; enabled: !page.locked && !page.controller.robotConnected; onTextChanged: page.robotIp = text }
+                                HmiText { visible: page.controller.robotConnected; width: parent.width; text: "机器人已连接，断开后可编辑 IP"; font.pixelSize: Theme.meta }
+                                HmiText { text: "九点采集速度 · mm/s"; topPadding: 8 }
                                 CollectField {
-                                    objectName: "robotSpeedInput"; Layout.fillWidth: true
+                                    objectName: "robotSpeedInput"; width: parent.width
                                     text: page.robotSpeed; enabled: !page.locked
                                     validator: IntValidator { bottom: 1; top: 1000 }
                                     onTextChanged: page.robotSpeed = text
                                 }
-                                HmiText { Layout.fillWidth: true; text: "范围 1～1000 mm/s，仅用于九点自动采集。手动平移和角度速度在主页面分别设置。"; font.pixelSize: Theme.meta }
-                                HmiText { Layout.fillWidth: true; text: "TCP 工具列表与实时位姿在主页面查看。移动前请确认所选工具和目标坐标。"; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "范围 1～1000 mm/s，仅用于九点自动采集。手动平移和角度速度在主页面分别设置。"; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "TCP 工具列表与实时位姿在主页面查看。移动前请确认所选工具和目标坐标。"; font.pixelSize: Theme.meta }
                             }
-                            ColumnLayout {
-                                visible: page.tab === 1; Layout.fillWidth: true; spacing: 8
-                                HmiText { Layout.fillWidth: true; text: "按输入顺序采集 2～5 档；留空的档位不参与融合。单位 μs。"; font.pixelSize: Theme.meta }
+                            Column {
+                                id: fusionSettings; visible: page.tab === 1; width: parent.width; spacing: 8
+                                HmiText { width: parent.width; text: "按输入顺序采集 2～5 档；留空的档位不参与融合。单位 μs。"; font.pixelSize: Theme.meta }
                                 Repeater {
                                     model: exposureSlots
                                     RowLayout {
-                                        Layout.fillWidth: true; spacing: 8
+                                        width: parent.width; spacing: 8
                                         HmiText { text: String(index + 1); font.family: Theme.mono; Layout.preferredWidth: 20 }
                                         CollectField {
                                             objectName: index === 0 ? "exposureInput" : "exposureInput" + (index + 1)
@@ -204,14 +207,14 @@ Item {
                                         }
                                     }
                                 }
-                                HmiText { objectName: "exposureError"; Layout.fillWidth: true; text: page.exposureError; color: Theme.danger; font.pixelSize: Theme.meta }
+                                HmiText { objectName: "exposureError"; width: parent.width; text: page.exposureError; color: Theme.danger; font.pixelSize: Theme.meta }
                             }
-                            ColumnLayout {
-                                visible: page.tab === 2; Layout.fillWidth: true; spacing: 16
-                                HmiText { text: "版本 " + appVersion + " · " + appGitCommit; font.family: Theme.mono; Layout.fillWidth: true }
-                                HmiText { Layout.fillWidth: true; text: "校正参数\n" + page.controller.handEyePath; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                            Column {
+                                id: diagnosticSettings; visible: page.tab === 2; width: parent.width; spacing: 16
+                                HmiText { text: "版本 " + appVersion + " · " + appGitCommit; font.family: Theme.mono; width: parent.width }
+                                HmiText { width: parent.width; text: "校正参数\n" + page.controller.handEyePath; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
                                 CollectButton { objectName: "diagnosticFolderButton"; text: "打开日志目录"; onClicked: page.controller.openDiagnosticFolder() }
-                                HmiText { Layout.fillWidth: true; text: "完整运行日志保留在诊断目录，主页面显示任务、进度与最近结果。"; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "完整运行日志保留在诊断目录，主页面显示任务、进度与最近结果。"; font.pixelSize: Theme.meta }
                             }
                         }
                     }
