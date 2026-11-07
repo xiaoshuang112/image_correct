@@ -8,7 +8,7 @@
 #include <initializer_list>
 #include <vector>
 #include <utility>
-#include <functional>
+#include <atomic>
 #include <memory>
 #include <mutex>
 
@@ -56,8 +56,6 @@ public:
 
     QString logFilePath() const;
 
-    // The sink is called outside the file mutex and may be invoked by any thread.
-    void setUiSink(std::function<void(const QString&)> sink);
 
 private:
     DiagnosticLogger();
@@ -74,7 +72,6 @@ private:
     static constexpr int kArchiveCount = 5;
 
     mutable std::mutex m_mutex;
-    std::mutex m_sinkMutex;
     bool m_initialized = false;
     bool m_previousSessionUnclean = false;
     int m_fd = -1;
@@ -84,7 +81,6 @@ private:
     qint64 m_startMonotonicMs = 0;
     QString m_logDirectory;
     QString m_logFilePath;
-    std::function<void(const QString&)> m_uiSink;
     std::unique_ptr<CapturingStreambuf> m_stdoutCapture;
     std::unique_ptr<CapturingStreambuf> m_stderrCapture;
 };

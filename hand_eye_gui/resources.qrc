@@ -4,10 +4,11 @@
         <file>qml/HmiText.qml</file>
         <file>qml/HmiPanel.qml</file>
         <file>qml/TcpSelector.qml</file>
-        <file>qml/PoseValues.qml</file>
-        <file>qml/LivePose.qml</file>
         <file>qml/SettingsPage.qml</file>
-        <file>qml/ManualMovePage.qml</file>
+        <file>qml/TcpTeachCard.qml</file>
+        <file>qml/DirectionSelector.qml</file>
+        <file>qml/CompactSelector.qml</file>
+        <file>qml/DirectionGizmo.qml</file>
 
         <file>qml/CollectIcon.qml</file>
         <file>qml/CollectButton.qml</file>

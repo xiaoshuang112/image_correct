@@ -94,8 +94,10 @@ FlangePose tcpTargetToFlange(const FlangePose& target, const FlangePose& toolOff
 }
 
 void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS,
+    MotionTick safetyCheck) {
     cancellation(cancelled);
+    if (safetyCheck) safetyCheck();
     if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     finite(target);
     if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs ||
@@ -132,11 +134,16 @@ void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const Flange
     std::fill_n(command.speed, ROB_AXIS_NUM, speedMmS);
     std::fill_n(command.acc, ROB_AXIS_NUM, 20.0);
     cancellation(cancelled);
+    if (safetyCheck) safetyCheck();
     APP_LOG_EVENT_INFO("robot.motion", "manual_tcp_line", "start",
         {{"tcp", name}, {"speed_mm_s", QString::number(speedMmS)}});
     try {
         check(cr_move_line(handle, command, FALSE), "TCP 直线运动指令失败");
-        waitSelected(handle, name, fresh.offset, target, cancelled, wait, tick);
+        waitSelected(handle, name, fresh.offset, target, cancelled, wait, [&] {
+            if (safetyCheck) safetyCheck();
+            if (tick) tick();
+            if (safetyCheck) safetyCheck();
+        });
     } catch (const std::exception& error) {
         const auto stop = cr_stop(handle);
         APP_LOG_EVENT_ERROR("robot.motion", "manual_tcp_stop", "requested",

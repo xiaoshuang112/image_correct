@@ -39,12 +39,6 @@ CollectionController::CollectionController(QObject* parent)
     connect(m_previewTimer, &QTimer::timeout,
             this, &CollectionController::onPreviewTick);
 
-    m_logFlushTimer = new QTimer(this);
-    m_logFlushTimer->setSingleShot(true);
-    m_logFlushTimer->setInterval(75);
-    connect(m_logFlushTimer, &QTimer::timeout,
-            this, &CollectionController::flushPendingLogs);
-
     APP_LOG_EVENT_INFO("controller",
                        "ui_controller",
                        "lifecycle",
@@ -67,6 +61,8 @@ CollectionController::~CollectionController()
     ++m_tcpPoseGeneration;
     if (m_robotSession) m_robotSession->closing = true;
     m_cancelRequested = true;
+    if (m_jogLease) m_jogLease->release();
+    finishTeachPreferences();
     if (m_collectionThread.joinable())
         m_collectionThread.join();
     // A connect worker may finish after the event loop stopped, before its UI
@@ -88,7 +84,6 @@ CollectionController::~CollectionController()
         }
     }
     m_collectionBusy = false;
-    flushPendingLogs();
 
     // 事件循环退出后，工作线程投递的完成事件可能还未执行。
     // 相机可直接释放；机器人停止仍未确认时，disconnectRobot 保留句柄。
@@ -97,7 +92,6 @@ CollectionController::~CollectionController()
     closeCamera();
     disconnectRobot();
 
-    DiagnosticLogger::instance().setUiSink({});
     APP_LOG_EVENT_INFO("controller",
                        "ui_controller",
                        "lifecycle",
@@ -112,11 +106,6 @@ CollectionController::~CollectionController()
 void CollectionController::init(CameraImageProvider* provider)
 {
     m_imageProvider = provider;
-    QPointer<CollectionController> guard(this);
-    DiagnosticLogger::instance().setUiSink([guard](const QString& line) {
-        if (guard)
-            guard->appendLog(line);
-    });
     APP_LOG_EVENT_INFO("controller",
                        "ui_controller",
                        "initialize",
@@ -124,6 +113,7 @@ void CollectionController::init(CameraImageProvider* provider)
                         {"image_provider", QString::number(reinterpret_cast<quintptr>(provider), 16)}});
     setupPaths();
     loadConfigYaml();
+    loadTeachPreferences();
     initializeCollection();
     setStatus("就绪 — 连接相机后可预览与拍照；" + m_undistortionStatus);
 }
@@ -506,7 +496,7 @@ void CollectionController::setPreviewDisplaySize(const QSize& size)
 void CollectionController::updatePreviewTimer()
 {
     // 页面隐藏只暂停预览处理，不改变用户的预览开关，也不影响采集线程。
-    if (m_previewVisible && m_previewActive && m_cameraOpened && !m_collectionBusy) {
+    if (m_previewVisible && m_previewActive && m_cameraOpened && (!m_collectionBusy || m_manualMoveActive)) {
         if (!m_previewTimer->isActive()) m_previewTimer->start();
     } else {
         m_previewTimer->stop();
@@ -515,7 +505,7 @@ void CollectionController::updatePreviewTimer()
 
 void CollectionController::onPreviewTick()
 {
-    if (!m_previewVisible || !m_previewActive || !m_camera || !m_cameraOpened || m_collectionBusy) return;
+    if (!m_previewVisible || !m_previewActive || !m_camera || !m_cameraOpened || (m_collectionBusy && !m_manualMoveActive)) return;
     try {
         if (m_previewFuture.valid()) {
             if (m_previewFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return;
@@ -550,7 +540,7 @@ void CollectionController::onPreviewTick()
                 }
             }
         }
-        if (!m_previewVisible || !m_previewActive || m_collectionBusy || !m_cameraOpened) return;
+        if (!m_previewVisible || !m_previewActive || (m_collectionBusy && !m_manualMoveActive) || !m_cameraOpened) return;
         const auto camera = m_camera;
         const auto maps = m_undistortionMaps;
         const auto displaySize = m_previewDisplaySize;
@@ -597,47 +587,6 @@ QImage CollectionController::makePreviewImage(const cv::Mat& bgr, const QSize& d
     }
     // Own the pixels before the worker's cv::Mat is released. Saved images keep full resolution.
     return QImage(pixels.data, pixels.cols, pixels.rows, static_cast<int>(pixels.step), format).copy();
-}
-
-void CollectionController::appendLog(const QString& line)
-{
-    if (QThread::currentThread() != thread()) {
-        QMetaObject::invokeMethod(this, [this, line]() {
-            appendLog(line);
-        }, Qt::QueuedConnection);
-        return;
-    }
-
-    m_pendingLogLines.append(line);
-    if (m_logFlushTimer && !m_logFlushTimer->isActive())
-        m_logFlushTimer->start();
-}
-
-void CollectionController::flushPendingLogs()
-{
-    if (QThread::currentThread() != thread()) {
-        QMetaObject::invokeMethod(this, [this]() {
-            flushPendingLogs();
-        }, Qt::QueuedConnection);
-        return;
-    }
-    if (m_pendingLogLines.isEmpty())
-        return;
-
-    m_logText += m_pendingLogLines.join(QString());
-    m_pendingLogLines.clear();
-
-    // 与界面一致，仅保留最近 1000 行，避免内存无限增长。
-    constexpr int kMaxUiLogLines = 1000;
-    int newlineCount = m_logText.count('\n');
-    while (newlineCount > kMaxUiLogLines) {
-        const int idx = m_logText.indexOf('\n');
-        if (idx < 0)
-            break;
-        m_logText = m_logText.mid(idx + 1);
-        --newlineCount;
-    }
-    emit logTextChanged();
 }
 
 // ===================================================================

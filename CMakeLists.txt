@@ -211,7 +211,7 @@ if(BUILD_TESTS)
             target_link_libraries(test_robot_tcp Qt5::Core)
             add_test(NAME robot_tcp COMMAND test_robot_tcp)
             add_executable(test_manual_tcp_motion tests/test_manual_tcp_motion.cpp
-                hand_eye_gui/ManualTcpMotion.cpp hand_eye_gui/RobotTcp.cpp
+                hand_eye_gui/ManualTcpMotion.cpp hand_eye_gui/TeachMotion.cpp hand_eye_gui/RobotTcp.cpp
                 hand_eye_gui/NinePointCapture.cpp utils/calib_transform.cpp)
             target_include_directories(test_manual_tcp_motion PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CGX_SDK_DIR}/include)
             target_link_libraries(test_manual_tcp_motion Qt5::Core ${OpenCV_LIBS})

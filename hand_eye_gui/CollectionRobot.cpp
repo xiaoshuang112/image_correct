@@ -193,7 +193,8 @@ void CollectionController::applyTcpSample(const std::shared_ptr<RobotSession>& s
     m_tcpPoseTimestamp = QDateTime::fromMSecsSinceEpoch(timestamp).toString("yyyy-MM-dd HH:mm:ss.zzz");
     m_tcpPoseTool = tool;
     m_tcpPoseAge.start();
-    if (m_manualMoveActive && !m_cancelRequested && m_manualMoveProgress != "TCP 移动 · 正在到位及稳定等待") {
+    m_tcpPoseDeliveryLagMs = std::max<qint64>(0, QDateTime::currentMSecsSinceEpoch() - timestamp);
+    if (m_manualMoveActive && !jogActive() && !m_cancelRequested && m_manualMoveProgress != "TCP 移动 · 正在到位及稳定等待") {
         m_manualMoveProgress = "TCP 移动 · 正在到位及稳定等待";
         emit collectionChanged();
     }
@@ -229,7 +230,7 @@ std::function<void()> CollectionController::tcpSamplingCallback(const std::share
 }
 
 void CollectionController::pollTcpPose() {
-    if (m_tcpPoseValid && m_tcpPoseAge.elapsed() > poseFreshnessMs)
+    if (m_tcpPoseValid && m_tcpPoseAge.elapsed() + m_tcpPoseDeliveryLagMs > poseFreshnessMs)
         invalidateTcpPose("TCP 位姿数据已过期，等待新数据");
     if (!m_robotConnected || m_selectedTcp.isEmpty() || m_collectionBusy) return;
     const auto session = robotSession();
@@ -257,51 +258,4 @@ QVariantMap CollectionController::parseTcpTarget(const QString& text) const {
     } catch (const std::exception& error) {
         return {{"valid", false}, {"error", QString::fromUtf8(error.what())}, {"values", values}};
     }
-}
-
-void CollectionController::moveTcpTo(const QString& text) {
-    if (m_collectionBusy) return;
-    collection::FlangePose target;
-    try { target = collection::parseTcpTarget(text); }
-    catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); return; }
-    if (!m_robotConnected) { setStatus("请先连接机器人再移动 TCP"); return; }
-    if (m_selectedTcp.isEmpty() || !m_tcpNames.contains(m_selectedTcp)) {
-        setStatus("请选择有效的 TCP 工具"); return;
-    }
-    const auto session = robotSession();
-    const auto tool = m_selectedTcp;
-    const int speed = m_robotSpeedMmS;
-    beginCollectionOperation();
-    const auto sample = tcpSamplingCallback(session);
-    m_manualMoveActive = true;
-    m_manualMoveProgress = "正在检查目标并移动所选 TCP：" + tool;
-    emit collectionChanged();
-    setStatus(m_manualMoveProgress);
-    try {
-        m_collectionThread = std::thread([this, session, tool, target, sample, speed] {
-            auto lock = session->acquire(m_cancelRequested);
-            if (!lock.owns_lock()) {
-                QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("TCP 移动已取消"); }, Qt::QueuedConnection);
-                return;
-            }
-            QString message;
-            if (m_cancelRequested) message = "TCP 移动已取消";
-            else {
-                // Conservative lock: any failed command/read must independently
-                // prove stationary before editing or teardown becomes available.
-                m_robotStopUnconfirmed = true;
-                try {
-                    collection::moveSelectedTcpLinear(session->handle, tool, target, m_cancelRequested, {1200, 180000}, sample, speed);
-                    message = "TCP 已到达目标，稳定等待完成";
-                } catch (const std::exception& error) { message = QString::fromUtf8(error.what()); }
-                catch (...) { message = "TCP 移动发生未知异常"; }
-                try { confirmMotionStopped(); }
-                catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
-            }
-            QMetaObject::invokeMethod(this, [this, message] {
-                m_manualMoveProgress = message;
-                finishCollectionOperation(message);
-            }, Qt::QueuedConnection);
-        });
-    } catch (const std::exception& error) { finishCollectionOperation(QString::fromUtf8(error.what())); }
 }

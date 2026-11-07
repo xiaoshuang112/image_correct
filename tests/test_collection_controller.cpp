@@ -9,6 +9,9 @@
 #include <QJsonObject>
 #include <QElapsedTimer>
 #include <QTemporaryDir>
+#include <QSettings>
+#include <QClipboard>
+#include <QDateTime>
 #include <algorithm>
 #include <array>
 #include <atomic>
@@ -93,6 +96,98 @@ public:
 
 // Inject devices only; exercise the real asynchronous controller and public API.
 struct CollectionControllerTestAccess {
+    static void verifyTeachPreferences() {
+        CollectionController controller;
+        require(controller.manualLinearSpeedMmS() == 10 && controller.manualAngularSpeedDegS() == 5 &&
+                controller.previewPositiveX() == "none", "teaching defaults inherited automatic motion speed or annotations");
+        controller.setManualSpeeds(0.1, 5);
+        controller.setManualSpeeds(10, std::numeric_limits<double>::quiet_NaN());
+        require(controller.manualLinearSpeedMmS() == 10 && controller.manualAngularSpeedDegS() == 5,
+                "invalid teaching speeds were accepted");
+        controller.setManualSpeeds(25, 7.5);
+        require(controller.robotSpeedMmS() == 10, "manual speeds changed nine-point speed");
+        for (const QString x : {"up", "right", "down", "left"}) {
+            for (const QString y : {"none", "up", "right", "down", "left"}) {
+                controller.setPreviewDirections(x, y);
+                const auto result = controller.previewPositiveY();
+                require(result != "none" && ((x == "up" || x == "down") != (result == "up" || result == "down")),
+                        "preview directions lost orthogonality");
+            }
+        }
+        controller.setPreviewDirections("none", "up");
+        require(controller.previewPositiveY() == "none", "unsetting X retained Y annotation");
+        controller.setPreviewDirections("right", "left");
+        controller.setOrientationMode("euler");
+        require(controller.orientationMode() == "euler" && controller.previewPositiveY() == "down", "teaching settings failed");
+        const auto converted = controller.convertTcpPose("1,2,3,179.3,14.8,-0.1", "axis", "euler");
+        require(converted["valid"].toBool() && converted["values"].toList().size() == 6, "native pose cannot convert to Euler");
+        QStringList parts;
+        for (auto value : converted["values"].toList()) parts << QString::number(value.toDouble(), 'g', 17);
+        const auto back = controller.convertTcpPose(parts.join(','), "euler", "axis");
+        collection::FlangePose actual{};
+        for (int i = 0; i < 6; ++i) actual[i] = back["values"].toList()[i].toDouble();
+        require(collection::flangeAtTarget(actual, {1,2,3,179.3,14.8,-0.1}, 0.00001), "format switch changed physical pose");
+        require(!controller.convertTcpPose("1,2,3,0,90,0", "euler", "axis")["valid"].toBool(), "singular Euler input accepted");
+        controller.finishTeachPreferences();
+        CollectionController reloaded;
+        reloaded.loadTeachPreferences();
+        require(reloaded.manualLinearSpeedMmS() == 25 && reloaded.manualAngularSpeedDegS() == 7.5 &&
+                reloaded.orientationMode() == "euler" && reloaded.previewPositiveX() == "right" &&
+                reloaded.previewPositiveY() == "down", "teaching preferences did not roundtrip");
+        require(robot.lines == 0 && robot.unexpected == 0, "format/preferences/annotations dispatched hardware work");
+    }
+    static void verifyTeaching(const QString& output) {
+        CollectionController controller;
+        prepare(controller, output);
+        tools(controller);
+        require(controller.beginTcpJog(0, 1, "axis") == 0, "jog accepted missing actual pose");
+        controller.setSelectedTcp("ToolA");
+        waitFor([&] { return controller.tcpPoseFresh(); });
+        controller.setOrientationMode("euler");
+        controller.copyCurrentTcpCoordinates("euler");
+        require(QApplication::clipboard()->text().split(',').size() == 6, "copy current pose failed");
+        auto session = controller.robotSession();
+        controller.applyTcpSample(session, controller.m_tcpPoseGeneration, "ToolA", controller.tcpPoseValues(),
+            {}, QDateTime::currentMSecsSinceEpoch() - 900);
+        std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        require(!controller.tcpPoseFresh() && controller.tcpDisplayPoseValues().isEmpty() &&
+                controller.beginTcpJog(0, 1, "axis") == 0, "queued old sample was granted an extra second of validity");
+        waitFor([&] { return controller.tcpPoseFresh(); });
+        const auto token = controller.beginTcpJog(0, 1, "axis");
+        require(token && controller.jogActive() && controller.collectionBusy() && controller.m_previewTimer->isActive(),
+                "teaching did not lock or unnecessarily paused camera preview");
+        require(controller.beginTcpJog(1, 1, "axis") == 0, "second press overlapped active jog");
+        controller.setManualSpeeds(1000, 100);
+        require(controller.manualLinearSpeedMmS() == 10, "speed changed during movement");
+        waitFor([&] { return robot.lines > 0; });
+        std::this_thread::sleep_for(std::chrono::milliseconds(300)); // Simulated GUI freeze: no renewals.
+        controller.renewTcpJog(token); // A late timer must not revive the expired press.
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(!controller.jogActive() && !controller.motionFault() && robot.stops > 0,
+                "expired lease failed to stop, confirm and unlock");
+        const auto lines = robot.lines.load();
+        controller.renewTcpJog(token);
+        require(robot.lines == lines, "finished press restarted from late heartbeat");
+        waitFor([&] { return controller.tcpPoseFresh(); });
+        const auto next = controller.beginTcpJog(1, -1, "axis");
+        require(next && next != token, "new gesture reused stale lease token");
+        controller.stopTcpJog(token);
+        require(!controller.m_cancelRequested, "old release stopped a newer gesture");
+        controller.stopTcpJog(next);
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(!controller.motionFault(), "release failed to confirm stopped");
+        waitFor([&] { return controller.tcpPoseFresh(); });
+        robot.failLine = true; robot.stopWorks = false;
+        require(controller.beginTcpJog(0, 1, "axis") != 0, "fault fixture jog did not start");
+        waitFor([&] { return controller.motionFault(); });
+        controller.disconnectRobot();
+        require(controller.collectionBusy() && robot.destroys == 0 && controller.beginTcpJog(0, 1, "axis") == 0,
+                "failed jog stop released fault lock");
+        robot.stopWorks = true;
+        controller.cancelCollectionOperation();
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(!controller.motionFault(), "stop retry failed to unlock teaching");
+    }
     static void verifyResponsivePreview(const QString& output) {
         CameraImageProvider provider;
         CollectionController controller;
@@ -301,6 +396,8 @@ int main(int argc, char** argv) {
         testCollectionSettings();
         QTemporaryDir temp;
         require(temp.isValid(), "temporary output directory failed");
+        QSettings::setPath(QSettings::IniFormat, QSettings::UserScope, temp.path());
+        CollectionControllerTestAccess::verifyTeachPreferences();
         CollectionControllerTestAccess::verifyCoordinateImport(temp.path());
         CollectionControllerTestAccess::verifyResponsivePreview(temp.path());
         CollectionControllerTestAccess::verifyPreviewVisibility(temp.path());
@@ -415,6 +512,7 @@ int main(int argc, char** argv) {
             require(!controller.motionFault() && controller.savedImageCount() == 0 && robot.lines == 1 &&
                     controller.statusMessage().contains("已保存 0/9"), "failed image save advanced or returned the robot");
         }
+        waitFor([&] { return robot.destroys == 1; });
         robot.reset();
         {
             CollectionController controller;
@@ -511,11 +609,14 @@ int main(int argc, char** argv) {
             controller.setSelectedTcp("ToolA");
             controller.moveTcpTo("120,200,300,180,0,0");
             waitFor([&] { return robot.lines > 0; });
-            require(robot.lastSpeed == controller.robotSpeedMmS(), "manual controller did not pass configured speed");
+            require(robot.lastSpeed == controller.manualLinearSpeedMmS(), "manual controller did not pass its independent configured speed");
             controller.cancelCollectionOperation();
             waitFor([&] { return !controller.collectionBusy(); });
             require(!controller.motionFault() && robot.stops > 0, "manual cancellation did not stop and verify stationary");
         }
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset(); robot.failLine = false; robot.stopWorks = true; robot.stopCode = sucess;
+        CollectionControllerTestAccess::verifyTeaching(temp.path());
         waitFor([&] { return robot.destroys == 1; });
         robot.reset();
         {

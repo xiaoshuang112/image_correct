@@ -6,6 +6,7 @@
 #include <QQmlContext>
 #include <QQuickImageProvider>
 #include <QQuickItem>
+#include <QQuickItemGrabResult>
 #include <QQuickWindow>
 #include <QtTest/QTest>
 #include <QtTest/QSignalSpy>
@@ -28,6 +29,7 @@ public:
     bool collectionBusy() const { return m_busy; }
     void setSavedImageCount(int value) { if (value != m_count) { m_count = value; emit collectionChanged(); } }
     void setCollectionBusy(bool value) { if (value != m_busy) { m_busy = value; emit collectionChanged(); } }
+    Q_INVOKABLE void copyText(const QString& value) { QGuiApplication::clipboard()->setText(value); }
     Q_INVOKABLE void beginCapture() { m_busy = true; emit collectionChanged(); }
     Q_INVOKABLE void finishCapture(bool saved) {
         m_busy = false;
@@ -94,11 +96,14 @@ SharedCollectionState {
     property string outputDirectory: "/tmp/collect-ui-check"
     property string exposureList: "5000,8500,14500,25000"
     property string lastCapturePath: ""
+    property string lastCaptureTime: ""
     property int savedPoseCount: 0
     property string pointName: ""
     property bool poseFailure: false
     property var tcpNames: []
     property string selectedTcp: ""
+    signal tcpToolsChanged()
+    onSelectedTcpChanged: tcpToolsChanged()
     property string ninePointProgress: ""
     readonly property var ninePointDefaultYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
     property bool motionFault: false
@@ -145,6 +150,36 @@ SharedCollectionState {
     property string tcpPoseStatus: "机器人未连接"
     property string tcpPoseTimestamp: "12:34:56.100"
     property string tcpPoseTool: ""
+    property bool tcpPoseFresh: true
+    property string orientationMode: "axis"
+    property bool teachAngularMotionAvailable: true
+    property string teachAngularMotionStatus: "角度示教可用"
+    readonly property var tcpDisplayPoseValues: tcpPoseValues.map(function(v,i) { return i >= 3 && orientationMode === "euler" ? v + 1 : v })
+    property real manualLinearSpeedMmS: 10
+    property real manualAngularSpeedDegS: 5
+    property bool jogActive: false
+    property int jogCalls: 0
+    property int jogStops: 0
+    property int jogHeartbeats: 0
+    property int activeLease: 0
+    property string previewPositiveX: "none"
+    property string previewPositiveY: "none"
+    function setManualSpeeds(linear, angular) { manualLinearSpeedMmS = linear; manualAngularSpeedDegS = angular }
+    function beginTcpJog(axis, sign, mode) { jogCalls++; activeLease = jogCalls; jogActive = true; return activeLease }
+    function renewTcpJog(token) { if (token === activeLease && jogActive) jogHeartbeats++ }
+    function stopTcpJog(token) { if (token === activeLease && jogActive) { jogStops++; jogActive = false } }
+    function convertTcpPose(text, from, to) {
+        var result = parseTcpTarget(text)
+        if (result.valid && from !== to) result.values = result.values.map(function(v,i) { return i < 3 ? v : v + (to === "euler" ? 1 : -1) })
+        return result
+    }
+    function moveTcpToDisplay(text, mode) { moveTcpTo(text) }
+    function copyCurrentTcpCoordinates(mode) { copyText(tcpDisplayPoseValues.map(function(v) { return Number(v).toFixed(2) }).join(",")) }
+    function setPreviewDirections(x,y) {
+        previewPositiveX = x
+        var allowed = x === "none" ? ["none"] : x === "left" || x === "right" ? ["up", "down"] : ["left", "right"]
+        previewPositiveY = allowed.indexOf(y) >= 0 ? y : allowed[0]
+    }
     property bool manualMoveActive: false
     property string manualMoveProgress: ""
     property int manualMoveCalls: 0
@@ -200,7 +235,7 @@ SharedCollectionState {
         collectionBusy = true
         ninePointProgress = "第 1/9 点 · X− / Y+ · 正在采集及保存"
     }
-    function cancelCollectionOperation() { if (!motionFault) { collectionBusy = false; manualMoveActive = false } }
+    function cancelCollectionOperation() { if (!motionFault) { collectionBusy = false; manualMoveActive = false; jogActive = false } }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
 }
 )QML", QUrl());
@@ -243,6 +278,13 @@ SharedCollectionState {
         auto setText = [&](const char* name, const QString& value) {
             item(name)->setProperty("text", value); QTest::qWait(20);
         };
+        auto screenshot = [&](const char* path) {
+            const auto result = window->contentItem()->grabToImage();
+            require(bool(result), "screenshot could not start");
+            QSignalSpy completed(result.data(), &QQuickItemGrabResult::ready);
+            if (result->image().isNull()) completed.wait(2000);
+            return result->image().save(QString::fromLocal8Bit(path));
+        };
         auto pageIs = [&](const char* value) { return window->property("page").toString() == value; };
         auto count = [&]() { return controller->property("savedImageCount").toInt(); };
         auto* imageArea = item("captureImageArea");
@@ -281,44 +323,72 @@ SharedCollectionState {
         window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Space); QTest::qWait(20);
         require(count() == 2, "main capture shortcut failed");
-        const QString liveCoordinates = "100.13,-20.00,300.00,0.00,179.50,0.00";
-        auto* mainPose = item("livePoseValues");
-        auto* mainCoordinates = findVisual(mainPose, "poseCoordinates");
-        auto* mainCopy = findVisual(mainPose, "copyPoseButton");
-        require(mainCoordinates && mainCopy && mainCoordinates->property("readOnly").toBool(), "missing read-only pose and copy action");
-        require(mainCoordinates->property("text").toString() == liveCoordinates && text("poseAxes") == "X,Y,Z,Rx,Ry,Rz", "live pose does not use ordered comma-separated values");
-        click(mainCopy);
-        require(QGuiApplication::clipboard()->text() == liveCoordinates && mainCopy->property("text").toString() == "已复制", "main pose copy did not write displayed coordinates to clipboard");
-        require(count() == 2 && controller->property("manualMoveCalls").toInt() == 0, "copy triggered capture or motion");
+        require(!findVisual(window->contentItem(), "manualPageButton") && !findVisual(window->contentItem(), "operationLog"), "duplicate page or full log remains");
+        auto* teach = item("tcpTeachCard");
+        require(text("tcpAxis0") == "100.13" && item("copyPoseButton")->isEnabled(), "actual pose unavailable");
+        click(item("copyPoseButton"));
+        require(QGuiApplication::clipboard()->text() == "100.13,-20.00,300.00,0.00,179.50,0.00", "current pose copy order changed");
+        controller->setProperty("tcpPoseFresh", false); QTest::qWait(10);
+        require(!item("jog0Plus")->isEnabled() && !item("copyPoseButton")->isEnabled() && text("tcpAxis0") == "—", "stale telemetry permits teaching");
+        controller->setProperty("tcpPoseFresh", true);
         controller->setProperty("selectedTcp", "探针B"); QTest::qWait(10);
-        require(mainCoordinates->property("text").toString() == "—" && !mainCopy->isEnabled() && text("livePoseStatus").contains("工具已切换"), "previous tool pose remained visible or copyable after selection");
+        require(!item("copyPoseButton")->isEnabled(), "previous tool remains copyable");
         controller->setProperty("tcpPoseTool", "探针B"); QTest::qWait(10);
-        require(mainCoordinates->property("text").toString() == liveCoordinates && mainCopy->isEnabled(), "new selected tool pose not shown or copyable");
-        controller->setProperty("tcpPoseValid", false); QTest::qWait(10);
-        require(mainCoordinates->property("text").toString() == "—" && !mainCopy->isEnabled(), "stale pose remained visible or copyable");
-        controller->setProperty("tcpPoseValid", true);
-        controller->setProperty("tcpPoseValues", QVariantList{100.125, -20.0, 300.0, 0.0, std::numeric_limits<double>::infinity(), 0.0});
-        QTest::qWait(10);
-        require(!mainCopy->isEnabled() && mainCoordinates->property("text").toString() == "—", "non-finite pose remained copyable");
-        controller->setProperty("tcpPoseValues", QVariantList{100.125, -20.0, 300.0, 0.0, 179.5, 0.0});
-        QTest::qWait(10);
+        auto editAxis = [&](int axis, const QString& value) {
+            auto* field = item(("tcpAxis" + std::to_string(axis)).c_str());
+            field->forceActiveFocus(); QTest::keyClick(window, Qt::Key_A, Qt::ControlModifier);
+            for (const auto ch : value) QTest::keyClick(window, ch.toLatin1()); QTest::qWait(20);
+        };
+        editAxis(0, "111.25");
+        const auto frozenTarget = teach->property("targetText").toString();
+        controller->setProperty("tcpPoseValues", QVariantList{101.0, -21.0, 301.0, 2.0, 178.5, 3.0}); QTest::qWait(20);
+        require(teach->property("targetDraft").toBool() && teach->property("targetText").toString() == frozenTarget && text("tcpAxis1").toDouble() == -20.0, "telemetry mutated frozen target");
+        invoke("tcpToolsChanged");
+        require(teach->property("targetDraft").toBool() && teach->property("targetText").toString() == frozenTarget, "same-tool refresh erased target draft");
+        require(item("actualPoseWhileEditing")->isVisible() && text("actualPoseWhileEditing").contains("101.00") && !item("jog0Plus")->isEnabled(), "draft does not isolate target and actual");
+        click(item("copyPoseButton"));
+        require(QGuiApplication::clipboard()->text().startsWith("101.00,-21.00,301.00"), "copy copied draft instead of actual");
+        require(QMetaObject::invokeMethod(teach, "changeMode", Q_ARG(QVariant, QVariant("euler"))), "cannot switch representation"); QTest::qWait(20);
+        require(controller->property("orientationMode").toString() == "euler" && text("tcpAxis3").toDouble() == 1.0 && controller->property("manualMoveCalls").toInt() == 0, "representation switch did not convert frozen target without motion");
+        item("tcpAxis0")->forceActiveFocus(); QTest::keyClick(window, Qt::Key_Return); QTest::keyClick(window, Qt::Key_Space);
+        require(controller->property("manualMoveCalls").toInt() == 0 && count() == 2, "target keyboard activated motion/capture");
+        click(item("useCurrentPoseButton"));
+        require(!teach->property("targetDraft").toBool() && text("tcpAxis0") == "101.00", "discard did not resume telemetry");
+        auto press = [&](QQuickItem* target) { QTest::mousePress(window, Qt::LeftButton, Qt::NoModifier, target->mapToScene(QPointF(target->width()/2,target->height()/2)).toPoint()); };
+        auto release = [&](QQuickItem* target) { QTest::mouseRelease(window, Qt::LeftButton, Qt::NoModifier, target->mapToScene(QPointF(target->width()/2,target->height()/2)).toPoint()); QTest::qWait(20); };
+        auto* jog = item("jog0Plus");
+        press(jog); QTest::qWait(120); release(jog);
+        require(controller->property("jogCalls").toInt() == 0, "short click started jog");
+        press(jog); QTest::qWait(380);
+        require(controller->property("jogCalls").toInt() == 1 && controller->property("jogHeartbeats").toInt() > 0, "hold did not acquire and renew motion lease");
+        release(jog);
+        require(!controller->property("jogActive").toBool() && controller->property("jogStops").toInt() == 1, "release did not stop jog");
+        press(jog); QTest::qWait(280); QTest::mouseMove(window, QPoint(1,1)); QTest::qWait(30); release(jog);
+        require(!controller->property("jogActive").toBool() && controller->property("jogStops").toInt() == 2, "pointer leave did not stop jog");
+        press(jog); QTest::qWait(280); window->hide(); QTest::qWait(30);
+        require(!controller->property("jogActive").toBool(), "hidden window did not stop jog");
+        window->show(); window->requestActivate(); require(QTest::qWaitForWindowActive(window), "window did not reactivate"); release(jog);
+        press(jog); QTest::qWait(280);
+        QQuickWindow otherWindow; otherWindow.show(); otherWindow.requestActivate();
+        require(QTest::qWaitForWindowActive(&otherWindow), "cannot test window blur"); QTest::qWait(30);
+        require(!controller->property("jogActive").toBool(), "window blur did not stop jog");
+        otherWindow.hide(); window->requestActivate(); require(QTest::qWaitForWindowActive(window), "main window did not reactivate after blur"); release(jog);
+        press(jog); QTest::qWait(280);
+        require(QMetaObject::invokeMethod(item("jogSurface0Plus"), "canceled"), "cannot cancel pointer gesture"); QTest::qWait(20);
+        require(!controller->property("jogActive").toBool(), "canceled pointer gesture did not stop jog"); release(jog);
+        press(jog); QTest::qWait(100); window->setProperty("page", "settings"); QTest::qWait(220); release(jog);
+        require(controller->property("jogCalls").toInt() == 5, "page change did not cancel pending hold");
+        window->setProperty("page", "main"); QTest::qWait(20);
+        controller->setProperty("teachAngularMotionAvailable", false); QTest::qWait(10);
+        require(!item("jog3Plus")->isEnabled() && item("jog0Plus")->isEnabled(), "unsupported angle capability not reflected");
+        controller->setProperty("teachAngularMotionAvailable", true);
+        require(QMetaObject::invokeMethod(controller.get(), "setPreviewDirections", Q_ARG(QVariant, QVariant("right")), Q_ARG(QVariant, QVariant("right"))), "direction update failed"); QTest::qWait(10);
+        require(item("previewDirectionY")->property("choices").toList().size() == 2 && controller->property("previewPositiveY").toString() == "up", "directions not perpendicular");
         invoke("frameUpdated");
-        const auto frameLabel = text("frameMetadata");
+        require(item("previewDirectionGizmo")->isVisible(), "preview direction gizmo missing");
         controller->setProperty("cameraExposureUs", 33333);
-        require(text("frameMetadata") == frameLabel, "old image relabelled by settings change");
-        controller->setProperty("cameraActualExposureUs", 33333);
-        invoke("frameUpdated");
-        require(text("frameMetadata").contains("33333"), "frame update did not snapshot metadata");
-        click(item("savePoseButton"));
-        require(window->property("poseEditorOpen").toBool(), "TCP naming dialog did not open");
-        setText("pointNameInput", "失败点位");
-        controller->setProperty("poseFailure", true);
-        click(item("confirmPoseButton"));
-        require(window->property("poseEditorOpen").toBool() && text("pointNameInput") == "失败点位", "failed TCP save discarded naming input");
-        controller->setProperty("poseFailure", false);
-        click(item("confirmPoseButton"));
-        require(!window->property("poseEditorOpen").toBool() && controller->property("savedPoseCount").toInt() == 1, "successful TCP save did not close dialog");
-
+        controller->setProperty("cameraActualExposureUs", 33333); invoke("frameUpdated");
+        require(text("frameMetadata").contains("33333"), "frame metadata not updated");
         click(item("settingsButton"));
         require(pageIs("settings"), "settings navigation failed");
         require(!controller->property("previewVisible").toBool() && controller->property("previewActive").toBool(), "settings did not suspend processing while preserving preview intent");
@@ -377,73 +447,24 @@ SharedCollectionState {
         require(pageIs("main"), "discard did not return to main");
         require(controller->property("previewVisible").toBool(), "returning to main did not resume preview processing");
 
-        click(item("manualPageButton"));
-        require(pageIs("manual"), "manual page entry failed");
-        const int beforeImportMoves = controller->property("manualMoveCalls").toInt();
-        setText("tcpTargetInput", "7,8,9,10,11,12");
         click(item("importCoordinatesButton"));
-        require(controller->property("coordinateDialogCalls").toInt() == 1 && text("tcpTargetInput") == "7,8,9,10,11,12",
-                "opening file chooser changed target before selection");
-        const QString importedCoordinates = "-122.22233831535885,-517.3887484334697,131.66895532412371,179.99967118142848,-0.012766000975997492,0.02149207938819223";
-        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, importedCoordinates),
-                Q_ARG(QString, "fixture-tool"), Q_ARG(QString, QString{})), "cannot deliver imported coordinates");
-        QTest::qWait(20);
-        require(text("tcpTargetInput") == importedCoordinates && text("coordinateImportFeedback").contains("fixture-tool") &&
-                controller->property("manualMoveCalls").toInt() == beforeImportMoves, "import changed precision, hid TCP metadata, or triggered motion");
-        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, QString{}),
-                Q_ARG(QString, QString{}), Q_ARG(QString, QString("坐标字段 rz 缺失"))), "cannot deliver import error");
-        require(text("tcpTargetInput") == importedCoordinates && text("coordinateImportFeedback").contains("rz"), "failed import erased target or hid error");
-        controller->setProperty("coordinatesImporting", true);
-        controller->setProperty("collectionBusy", true); QTest::qWait(20);
-        require(!item("importCoordinatesButton")->isEnabled() && !item("manualMoveButton")->isEnabled() &&
-                !item("tcpTargetInput")->isEnabled(), "import did not disable conflicting input/motion");
-        controller->setProperty("coordinatesImporting", false);
-        controller->setProperty("collectionBusy", false);
-        setText("tcpTargetInput", "");
-        require(text("manualSpeedLabel").contains("1000 mm/s"), "manual page did not display configured speed");
-        require(!controller->property("previewVisible").toBool(), "manual page still processes hidden preview");
-        auto* manualLive = item("manualLiveCard");
-        auto* manualCoordinates = findVisual(manualLive, "poseCoordinates");
-        auto* manualCopy = findVisual(manualLive, "copyPoseButton");
-        require(manualCoordinates && manualCopy && manualCoordinates->property("text").toString() == liveCoordinates, "manual page current pose format differs from main page");
-        QGuiApplication::clipboard()->setText("sentinel");
-        click(manualCopy);
-        require(QGuiApplication::clipboard()->text() == liveCoordinates, "manual page did not copy the current pose");
-        controller->setProperty("robotConnected", false); QTest::qWait(10);
-        require(!manualCopy->isEnabled() && manualCoordinates->property("text").toString() == "—", "disconnected pose remained copyable");
-        controller->setProperty("robotConnected", true); QTest::qWait(10);
-        auto* targetCopy = findVisual(item("parsedTargetValues"), "copyPoseButton");
-        require(targetCopy && !targetCopy->isEnabled(), "empty target remained copyable");
-        setText("tcpTargetInput", "100，20,300,0,180,0");
-        require(item("manualMoveButton")->isEnabled(), "valid Chinese comma target rejected");
-        click(targetCopy);
-        require(QGuiApplication::clipboard()->text() == "100.00,20.00,300.00,0.00,180.00,0.00", "target copy did not normalize six ordered values");
-        setText("tcpTargetInput", "100,20,300");
-        require(!targetCopy->isEnabled(), "invalid target remained copyable");
-        setText("tcpTargetInput", "100，20,300,0,180,0");
-        item("tcpTargetInput")->forceActiveFocus();
-        QTest::keyClick(window, Qt::Key_Return);
-        QTest::keyClick(window, Qt::Key_S, Qt::ControlModifier);
-        QTest::keyClick(window, Qt::Key_Space);
-        QTest::qWait(20);
-        require(controller->property("manualMoveCalls").toInt() == 0 && count() == beforeSettings, "manual input keyboard triggered motion or capture");
-        setText("tcpTargetInput", "100,20,300,0,180,0");
-        item("manualMoveButton")->forceActiveFocus();
-        QTest::keyClick(window, Qt::Key_Return); QTest::keyClick(window, Qt::Key_Space);
-        require(controller->property("manualMoveCalls").toInt() == 0, "keyboard activated manual motion button");
+        require(controller->property("coordinateDialogCalls").toInt() == 1, "JSON chooser missing from main");
+        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, QString("7,8,9,10,11,12")), Q_ARG(QString, QString("fixture-tool")), Q_ARG(QString, QString{})), "cannot import legacy coordinates"); QTest::qWait(20);
+        require(text("tcpAxis0").toDouble() == 7 && text("tcpAxis3").toDouble() == 11 && teach->property("feedback").toString().contains("fixture-tool"), "legacy axis import not converted into selected mode");
+        const QString preciseJson = "7.123456789012345,8,9,10.123456789012345,11,12";
+        require(QMetaObject::invokeMethod(controller.get(), "coordinatesImported", Q_ARG(QString, preciseJson), Q_ARG(QString, QString("fixture-tool")), Q_ARG(QString, QString{})), "cannot import precise coordinates"); QTest::qWait(20);
+        require(teach->property("targetText").toString().split(',').front() == "7.123456789012345", "JSON import rounded away source double precision");
+        setText("manualLinearSpeedInput", "12"); setText("manualAngularSpeedInput", "7.5");
+        item("manualMoveButton")->forceActiveFocus(); QTest::keyClick(window, Qt::Key_Return); QTest::keyClick(window, Qt::Key_Space);
+        require(controller->property("manualMoveCalls").toInt() == 0, "keyboard activated explicit target movement");
         click(item("manualMoveButton"));
-        require(controller->property("manualMoveCalls").toInt() == 1 && !item("tcpTargetInput")->isEnabled() && !item("manualBackButton")->isEnabled() && !item("manualTcpSelector")->isEnabled(), "manual move did not lock conflicting controls");
-        controller->setProperty("motionFault", true);
-        controller->setProperty("collectionBusy", false);
-        controller->setProperty("manualMoveActive", false);
-        QTest::qWait(10);
-        require(text("manualMoveButton") == "重试停止" && !item("manualBackButton")->isEnabled() && !item("tcpTargetInput")->isEnabled(), "fault alone released motion locks");
-        click(item("manualMoveButton"));
-        require(!item("manualBackButton")->isEnabled(), "failed stop released UI");
-        require(!window->close(), "window closed with unconfirmed stop");
-        controller->setProperty("motionFault", false); QTest::qWait(10);
-        require(item("manualBackButton")->isEnabled(), "safe stop did not unlock page");
-        click(item("manualBackButton"));
+        require(controller->property("manualLinearSpeedMmS").toDouble() == 12 && controller->property("manualAngularSpeedDegS").toDouble() == 7.5, "explicit target move did not commit visible manual speeds");
+        require(controller->property("manualMoveCalls").toInt() == 1 && !item("tcpAxis0")->isEnabled() && !item("tcpSelector")->isEnabled(), "manual move did not lock controls");
+        controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); controller->setProperty("manualMoveActive", false); QTest::qWait(20);
+        require(text("teachStopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "fault released teaching locks");
+        click(item("teachStopButton"));
+        require(!window->close(), "window closed before stop confirmed");
+        controller->setProperty("motionFault", false); QTest::qWait(20);
         click(item("ninePointModeButton"));
         const QStringList defaults{"0", "+15", "-15", "-20", "0", "+20", "+15", "-15", "0"};
         const QStringList angles{"1.25", "2.5", "-3.75", "-10", "0.1", "10", "7.5", "-15", "0.01"};
@@ -479,107 +500,39 @@ SharedCollectionState {
         controller->setProperty("motionFault", false); QTest::qWait(10);
 
         for (const QSize size : {QSize(1280,850), QSize(1280,800), QSize(1024,740), QSize(760,600)}) {
-            window->resize(size); QTest::qWait(80);
+            window->resize(size); QTest::qWait(100);
             const QRectF viewport(0,0,size.width(),size.height());
-            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "manualPageButton", "previewButton", "logCard", "livePoseCard", "copyPoseButton", "poseCoordinates"}) {
+            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "previewButton", "tcpTeachCard", "manualMoveButton", "tcpAxis0", "tcpAxis5", "previewDirectionX", "previewDirectionY", "operationBrief"}) {
                 if (!viewport.contains(bounds(item(name)))) std::cerr << name << " outside viewport at " << size.width() << "x" << size.height() << '\n';
-                require(viewport.contains(bounds(item(name))), "main action clipped at supported size");
+                require(viewport.contains(bounds(item(name))), "action clipped at supported size");
             }
-            require(qAbs(bounds(item("mainControls")).bottom() - bounds(item("mainRightColumn")).bottom()) < 1, "main columns are not bottom aligned");
-            require(!bounds(item("ninePointButton")).intersects(bounds(item("tcpSelector"))), "primary action overlaps TCP selector");
-            require(bounds(item("previewButton")).bottom() <= bounds(item("mainControls")).bottom() -
-                    item("mainControls")->property("padding").toReal() + 1, "angle editors pushed controls into card padding");
+            require(qAbs(bounds(item("mainControls")).bottom() - bounds(item("mainRightColumn")).bottom()) < 1, "main columns not bottom aligned");
+            require(bounds(item("captureImageArea")).height() >= 160, "preview too small");
+            require(!bounds(item("ninePointButton")).intersects(bounds(item("tcpSelector"))), "capture overlaps TCP selector");
+            require(item("tcpTeachCard")->height() <= 212, "teaching card exceeds compact four rows");
+            require(bounds(item("tcpAxis0")).width() >= 32 && bounds(item("tcpAxis0")).height() >= 40, "target field unreadable");
+            editAxis(0, "123.45");
+            require(viewport.contains(bounds(item("actualPoseWhileEditing"))), "actual pose during drafting is clipped");
+            require(bounds(item("actualPoseWhileEditing")).bottom() <= bounds(item("previewButton")).top() - 2, "draft actual pose overlaps preview button");
+            require(viewport.contains(bounds(item("previewButton"))), "draft pushed preview button outside viewport");
+            require(bounds(item("operationBrief")).bottom() <= bounds(item("previewButton")).top() - 2, "brief spills into bottom controls");
+            if (argc > 6 && size == QSize(760,600)) require(screenshot(argv[6]), "draft screenshot failed");
+            click(item("useCurrentPoseButton"));
+            if (argc > 1 && size == QSize(1280,850)) require(screenshot(argv[1]), "main screenshot failed");
+            if (argc > 4 && size == QSize(760,600)) require(screenshot(argv[4]), "compact screenshot failed");
             click(item("settingsButton"));
             for (int tab = 0; tab < 3; ++tab) {
                 click(item(("settingsTab" + std::to_string(tab)).c_str()));
-                const auto left = bounds(item("settingsLeftCard")), right = bounds(item("settingsRightCard"));
-                require(qAbs(left.height() - right.height()) < 1 && qAbs(left.bottom() - right.bottom()) < 1, "paired settings cards differ in height");
-                require(viewport.contains(bounds(item("saveSettingsButton"))) && viewport.contains(bounds(item("settingsFooter"))), "fixed settings footer clipped");
-                if (size.height() == 600 && tab == 1) {
-                    auto* flick = qvariant_cast<QQuickItem*>(item("settingsScroll")->property("contentItem"));
-                    require(flick, "settings scroll has no flickable content");
-                    const qreal maximumY = flick->property("contentHeight").toReal() - flick->height();
-                    require(maximumY > 0, "small settings content does not scroll");
-                    flick->setProperty("contentY", maximumY); QTest::qWait(20);
-                    require(bounds(item("exposureInput5")).bottom() <= bounds(item("settingsFooter")).top() + 1, "last exposure remains behind fixed footer after scrolling");
-                    flick->setProperty("contentY", 0);
-                }
+                require(viewport.contains(bounds(item("saveSettingsButton"))) && viewport.contains(bounds(item("settingsFooter"))), "settings footer clipped");
+                if (tab == 2) { click(item("diagnosticFolderButton")); require(controller->property("diagnosticsOpened").toBool(), "log directory unavailable"); }
             }
+            if (argc > 2 && size == QSize(1280,850)) { click(item("settingsTab1")); require(screenshot(argv[2]), "settings screenshot failed"); }
+            if (argc > 5 && size == QSize(760,600)) { click(item("settingsTab1")); require(screenshot(argv[5]), "compact settings screenshot failed"); }
             click(item("settingsBackButton"));
-            click(item("manualPageButton"));
-            require(viewport.contains(bounds(item("manualMoveButton"))) && qAbs(item("manualTargetCard")->height() - item("manualLiveCard")->height()) < 1, "manual footer clipped or card heights differ");
-            click(item("manualBackButton"));
         }
-        QStringList logLines;
-        for (int line = 0; line < 1005; ++line) logLines << QString("[12:00:00] real diagnostic line %1").arg(line);
-        controller->setProperty("logText", logLines.join('\n'));
-        QTest::qWait(20);
-        require(!text("operationLog").contains("line 4\n") && text("operationLog").contains("line 1004") &&
-                text("operationLog").split('\n').size() == 1000, "backend log was not trimmed to latest 1000 lines");
-        controller->setProperty("logText", "[12:00:00] 相机预览已启动\n[12:00:01] 当前 TCP：探针B\n[12:00:02] 等待操作");
-        click(item("settingsButton"));
-        const auto hiddenLog = text("operationLog");
-        controller->setProperty("logText", "[12:00:03] 子页面期间的诊断");
-        require(text("operationLog") == hiddenLog, "hidden log still rebuilt its text layout");
-        click(item("settingsBackButton"));
-        require(text("operationLog") == controller->property("logText").toString(), "returning to main lost deferred diagnostic lines");
         window->hide(); QTest::qWait(20);
         require(!controller->property("previewVisible").toBool(), "hidden window still processes preview");
-        window->show(); QTest::qWait(20);
-        require(controller->property("previewVisible").toBool(), "shown window did not restore preview visibility");
-        if (argc > 1) {
-            for (int point = 0; point < 9; ++point)
-                setText(("ninePointAngle" + std::to_string(point)).c_str(), defaults[point]);
-            controller->setProperty("statusMessage", "就绪 · 预览中，等待采集");
-            controller->setProperty("manualMoveProgress", "已安全停止 · 可编辑新的目标");
-            window->resize(1280,850); QTest::qWait(100);
-            require(window->grabWindow().save(QString::fromLocal8Bit(argv[1])), "main screenshot failed");
-            if (argc > 2) {
-                click(item("settingsButton")); click(item("settingsTab1")); QTest::qWait(100);
-                require(window->grabWindow().save(QString::fromLocal8Bit(argv[2])), "settings screenshot failed");
-                click(item("settingsBackButton"));
-            }
-            if (argc > 3) {
-                click(item("manualPageButton")); QTest::qWait(100);
-                require(window->grabWindow().save(QString::fromLocal8Bit(argv[3])), "manual screenshot failed");
-                click(item("manualBackButton"));
-            }
-            if (argc > 4) {
-                window->resize(760,600); QTest::qWait(100);
-                require(window->grabWindow().save(QString::fromLocal8Bit(argv[4])), "compact screenshot failed");
-                if (argc > 5) {
-                    click(item("settingsButton")); click(item("settingsTab1")); QTest::qWait(100);
-                    require(window->grabWindow().save(QString::fromLocal8Bit(argv[5])), "compact settings screenshot failed");
-                    click(item("settingsBackButton"));
-                }
-                if (argc > 6) {
-                    click(item("manualPageButton")); QTest::qWait(100);
-                    require(window->grabWindow().save(QString::fromLocal8Bit(argv[6])), "compact manual screenshot failed");
-                    click(item("manualBackButton"));
-                }
-            }
-        }
-        if (argc > 7) {
-            window->resize(1280,850); QTest::qWait(50);
-            click(item("savePoseButton")); setText("pointNameInput", "工位_A"); QTest::qWait(50);
-            require(window->grabWindow().save(QString::fromLocal8Bit(argv[7])), "TCP naming dialog screenshot failed");
-            QTest::keyClick(window, Qt::Key_Escape); QTest::qWait(250);
-            require(!window->property("poseEditorOpen").toBool(), "Escape did not close TCP naming dialog");
-        }
-        if (argc > 8) {
-            click(item("tcpSelector")); QTest::qWait(50);
-            require(window->grabWindow().save(QString::fromLocal8Bit(argv[8])), "TCP dropdown screenshot failed");
-        }
-        if (argc > 9) {
-            QTest::keyClick(window, Qt::Key_Escape); QTest::qWait(250);
-            click(item("settingsButton")); click(item("settingsTab0")); QTest::qWait(100);
-            require(window->grabWindow().save(QString::fromLocal8Bit(argv[9])), "device settings screenshot failed");
-            if (argc > 10) {
-                window->resize(760,600); QTest::qWait(100);
-                require(window->grabWindow().save(QString::fromLocal8Bit(argv[10])), "compact device settings screenshot failed");
-            }
-        }
-        std::cout << "Collection HMI navigation, draft persistence, pose validity, keyboard safety, motion faults, shutter and responsive layouts passed\n";
+        std::cout << "Collection teaching leases, frozen targets, imports, angle modes, preview annotations, nine point preservation, settings and responsive layouts passed\n";
         return 0;
     } catch (const std::exception& error) {
         std::cerr << error.what() << '\n';

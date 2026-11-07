@@ -1,4 +1,5 @@
 #include "hand_eye_gui/ManualTcpMotion.hpp"
+#include "hand_eye_gui/TeachMotion.hpp"
 #include "utils/calib_transform.hpp"
 #include <QCoreApplication>
 #include <algorithm>
@@ -9,6 +10,7 @@
 #include <limits>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace {
 using collection::FlangePose;
@@ -25,21 +27,26 @@ struct Robot {
     FlangePose offset{0, 0, 100, 0, 0, 0};
     FlangePose ikPose{}, ikJoints{};
     PointControlPara command{};
+    std::vector<PointControlPara> commands;
     double expectedSpeed = 10;
     std::atomic<bool> cancelled{false};
     bool issued = false, neverReach = false, alwaysMoving = false, fault = false;
     bool badPose = false, badJoint = false, badInverse = false, badLimit = false;
     bool wrongIdentity = false, changeBeforeSend = false, changeDuringMove = false;
+    bool strictTarget = true;
     double limit = 360;
     CRresult lineCode = sucess, stopCode = sucess, inverseCode = sucess, limitCode = sucess, poseCode = sucess;
     int sends = 0, stops = 0, polls = 0, lookups = 0, cancelOnPoll = 0, limitReads = 0;
+    int slowPoseLookup = 0;
     void reset() {
         actual = {100, 200, 300, 0, 0, 0}; offset = {0, 0, 100, 0, 0, 0};
         ikPose = {}; ikJoints = {}; command = {}; cancelled = false;
+        commands.clear(); slowPoseLookup = 0;
         expectedSpeed = 10;
         issued = neverReach = alwaysMoving = fault = false;
         badPose = badJoint = badInverse = badLimit = false;
         wrongIdentity = changeBeforeSend = changeDuringMove = false; limit = 360;
+        strictTarget = true;
         lineCode = stopCode = inverseCode = limitCode = poseCode = sucess;
         sends = stops = polls = lookups = cancelOnPoll = limitReads = 0;
     }
@@ -80,6 +87,8 @@ extern "C" CRresult cr_get_robotMoveStatus(RobotHandle, BOOL* moving) {
     return sucess;
 }
 extern "C" CRresult cr_get_AssignTCP_Pose(RobotHandle, double* offset, double* pose) {
+    if (robot.slowPoseLookup && robot.lookups >= robot.slowPoseLookup)
+        std::this_thread::sleep_for(std::chrono::milliseconds(270));
     require(std::equal(offset, offset + ROB_AXIS_NUM, robot.offset.begin()), "selected offset not used for telemetry");
     std::copy(robot.actual.begin(), robot.actual.end(), pose);
     if (robot.badPose) pose[2] = std::numeric_limits<double>::quiet_NaN();
@@ -108,7 +117,8 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
     require(!block, "SDK call blocked cancellation");
     require(command.tcpID < 0, "motion inherited active TCP");
     require(std::equal(robot.offset.begin(), robot.offset.end(), command.tcpOffset), "fresh selected offset missing from motion");
-    require(std::equal(target.begin(), target.end(), command.pose), "flange target substituted for TCP trajectory");
+    if (robot.strictTarget)
+        require(std::equal(target.begin(), target.end(), command.pose), "flange target substituted for TCP trajectory");
     require(command.coordinateType == baseCoordinate && command.pointTransType == pointTransStop &&
             command.pointTransRadius == 0 && command.motiontriggerMode == MovetriggerbyOnlyRpc,
             "invalid frame, blending, or deferred trigger");
@@ -116,6 +126,7 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
         require(command.speed[axis] == robot.expectedSpeed && command.acc[axis] == 20 && command.coordinatePose[axis] == 0,
                 "manual linear speed/frame changed");
     robot.command = command; robot.issued = true; ++robot.sends;
+    robot.commands.push_back(command);
     return robot.lineCode;
 }
 extern "C" CRresult cr_stop(RobotHandle) { ++robot.stops; return robot.stopCode; }
@@ -211,6 +222,109 @@ int main(int argc, char** argv) {
                 "manual stop failure concealed");
         robot.reset(); move({60, 400});
         require(robot.polls >= 5, "settling interval was not confirmed");
+        using collection::TeachOrientation;
+        // Each representation edits only its selected displayed component; XYZ
+        // is held at the selected TCP center, even for an offset/rotated tool.
+        const FlangePose euler{125, -45, 320, 25, -30, 40};
+        const auto vector = collection::tcpPoseFromDisplay(euler, TeachOrientation::EulerZYX);
+        const auto roundtrip = collection::tcpPoseForDisplay(vector, TeachOrientation::EulerZYX);
+        for (int axis = 0; axis < 6; ++axis)
+            require(std::abs(roundtrip[axis] - euler[axis]) < 1e-9, "ZYX Euler roundtrip failed");
+        for (int axis = 0; axis < 6; ++axis) {
+            const auto next = collection::teachJogTarget(euler, TeachOrientation::EulerZYX, axis, 0.5);
+            const auto displayed = collection::tcpPoseForDisplay(next, TeachOrientation::EulerZYX);
+            for (int i = 0; i < 6; ++i)
+                require(std::abs(displayed[i] - euler[i] - (i == axis ? 0.5 : 0)) < 1e-8,
+                    "Euler jog changed another component or TCP center");
+            const auto rv = collection::teachJogTarget(vector, TeachOrientation::RotationVector, axis, 0.5);
+            for (int i = 0; i < 6; ++i)
+                require(std::abs(rv[i] - vector[i] - (i == axis ? 0.5 : 0)) < 1e-9,
+                    "rotation-vector jog changed another component or TCP center");
+        }
+        auto singular = euler; singular[4] = 89;
+        rejects([&] { collection::tcpPoseFromDisplay(singular, TeachOrientation::EulerZYX); });
+        singular[4] = 88.9;
+        rejects([&] { collection::teachJogTarget(singular, TeachOrientation::EulerZYX, 4, .2); });
+        const FlangePose branch{0, 0, 0, 358.9, 0, 0};
+        rejects([&] { collection::teachJogTarget(branch, TeachOrientation::RotationVector, 3, .2); });
+        const FlangePose commonOrientation{0, 0, 0, 179.95, 0, 0};
+        const auto crossed = collection::teachJogTarget(commonOrientation, TeachOrientation::RotationVector, 3, .1);
+        require(crossed[3] > 180 && crossed[3] < 180.1, "normal 180-degree rotation branch was blocked");
+        rejects([&] { collection::teachJogTarget(vector, TeachOrientation::RotationVector, 6, .2); });
+        require(collection::validTeachSpeeds({10, 5}) && collection::validTeachSpeeds({1000, 180}) &&
+                !collection::validTeachSpeeds({1001, 5}) && !collection::validTeachSpeeds({10, 0}) &&
+                !collection::validTeachSpeeds({10, std::numeric_limits<double>::quiet_NaN()}),
+                "independent teaching speeds invalid");
+        collection::TeachJogRequest jog;
+        robot.reset(); robot.strictTarget = false;
+        collection::TeachJogLease released; released.release(); released.heartbeat();
+        collection::jogSelectedTcp(1, "selected-probe", jog, released, robot.cancelled);
+        require(robot.sends == 0 && !released.valid(), "released press was restarted by heartbeat");
+        collection::TeachJogLease expired;
+        std::this_thread::sleep_for(std::chrono::milliseconds(collection::TeachJogLease::expiryMs + 5));
+        collection::jogSelectedTcp(1, "selected-probe", jog, expired, robot.cancelled);
+        require(robot.sends == 0, "expired GUI heartbeat dispatched motion");
+        expired.heartbeat();
+        require(!expired.valid(), "late GUI heartbeat resurrected an expired press");
+        robot.reset(); robot.strictTarget = false;
+        collection::TeachJogLease held;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, held, robot.cancelled,
+            [&] { held.release(); }); });
+        require(robot.sends == 1 && robot.stops == 1 && robot.command.pose[0] == 101 &&
+                robot.command.pose[1] == 200 && robot.command.pose[2] == 300,
+                "release failed to stop a single bounded selected-TCP segment");
+        robot.reset(); robot.strictTarget = false; robot.neverReach = true;
+        collection::TeachJogLease noMovement;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, noMovement, robot.cancelled); });
+        require(robot.sends == 1 && robot.stops == 1, "idle robot away from jog target accepted repeated motion");
+        robot.reset(); robot.strictTarget = false; robot.changeBeforeSend = true;
+        collection::TeachJogLease toolChanged;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, toolChanged, robot.cancelled); });
+        require(robot.sends == 0, "changed tool accepted by a later jog segment");
+        robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = 5;
+        collection::TeachJogLease slowFinalRead;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, slowFinalRead, robot.cancelled); });
+        require(robot.sends == 0, "successful slow final read bypassed expired UI lease");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+        collection::TeachJogLease angular;
+        jog.component = 3;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, angular, robot.cancelled,
+            [&] { if (robot.polls >= 2) angular.release(); }); });
+        require(robot.sends == 1 && robot.stops == 1 && robot.command.pose[0] == 100 &&
+            robot.command.pose[1] == 200 && robot.command.pose[2] == 300 &&
+            std::abs(robot.command.pose[3] - .1) < 1e-9,
+            "rotation jog failed bounded angle and fixed TCP center");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1; robot.neverReach = true;
+        collection::TeachJogLease noRotation;
+        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, noRotation, robot.cancelled); });
+        require(robot.sends == 1 && robot.stops == 1, "angular tolerance swallowed an unmoved jog step");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+        auto angularTarget = robot.actual; angularTarget[3] = .2;
+        const auto angularBegan = std::chrono::steady_clock::now();
+        collection::moveSelectedTcpTarget(1, "selected-probe", angularTarget, {10, .5}, robot.cancelled, {0, 2000});
+        require(robot.sends == 2 && std::chrono::steady_clock::now() - angularBegan >= std::chrono::milliseconds(395) &&
+            collection::flangeAtTarget(robot.actual, angularTarget, .00001), "angular progression did not pace serial bounded targets");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+        robot.actual[3] = 179.95;
+        auto across = robot.actual; across[3] = 180.05;
+        collection::moveSelectedTcpTarget(1, "selected-probe", across, {10, 5}, robot.cancelled, {0, 2000}, {}, TeachOrientation::EulerZYX);
+        require(robot.sends <= 2 && robot.command.pose[3] > 180 && robot.command.pose[3] < 181,
+            "Euler roll crossing 180 degrees caused a rotation-vector jump");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+        const FlangePose multiStart{100, 200, 300, 10, 80, 30};
+        const FlangePose multiFinish{100, 200, 300, 10.2, 80, 29.8};
+        robot.actual = collection::tcpPoseFromDisplay(multiStart, TeachOrientation::EulerZYX);
+        auto previous = robot.actual;
+        const auto multiTarget = collection::tcpPoseFromDisplay(multiFinish, TeachOrientation::EulerZYX);
+        collection::moveSelectedTcpTarget(1, "selected-probe", multiTarget, {10, 5}, robot.cancelled,
+            {0, 2000}, {}, TeachOrientation::EulerZYX);
+        require(robot.sends >= 4, "multi-component Euler target was not divided conservatively");
+        for (const auto& command : robot.commands) {
+            FlangePose issued{}; std::copy_n(command.pose, 6, issued.begin());
+            require(collection::flangeAtTarget(issued, previous, .100001),
+                "multi-component step exceeded .1 degree or moved TCP center");
+            previous = issued;
+        }
         std::cout << "Manual selected-TCP trajectory, transform, preflight, stop and stationary checks passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

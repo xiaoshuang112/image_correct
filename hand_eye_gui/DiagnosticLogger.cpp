@@ -514,17 +514,6 @@ void DiagnosticLogger::log(Level level,
             }
         }
     }
-
-    std::function<void(const QString&)> sink;
-    {
-        std::lock_guard<std::mutex> lock(m_sinkMutex);
-        sink = m_uiSink;
-    }
-    if (sink && level != Level::Debug) {
-        const char* cat = category ? category : "";
-        if (std::strcmp(cat, "stdout") != 0)
-            sink(formatted + '\n');
-    }
 }
 
 void DiagnosticLogger::logEvent(Level level,
@@ -582,10 +571,4 @@ QString DiagnosticLogger::logFilePath() const
 {
     std::lock_guard<std::mutex> lock(m_mutex);
     return m_logFilePath;
-}
-
-void DiagnosticLogger::setUiSink(std::function<void(const QString&)> sink)
-{
-    std::lock_guard<std::mutex> lock(m_sinkMutex);
-    m_uiSink = std::move(sink);
 }

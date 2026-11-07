@@ -21,6 +21,7 @@
 
 #include "cameras/AICamera.hpp"
 #include "RobotMotionLimits.hpp"
+#include "TeachMotion.hpp"
 #include "robotapi.h"
 #include "basestruct.h"
 
@@ -54,7 +55,6 @@ class CollectionController : public QObject
     Q_PROPERTY(bool previewVisible READ previewVisible WRITE setPreviewVisible NOTIFY previewVisibleChanged)
     Q_PROPERTY(QSize previewDisplaySize READ previewDisplaySize WRITE setPreviewDisplaySize NOTIFY previewDisplaySizeChanged)
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
-    Q_PROPERTY(QString logText        READ logText        NOTIFY logTextChanged)
     Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
     Q_PROPERTY(bool settingsSaving READ settingsSaving NOTIFY collectionChanged)
@@ -80,6 +80,17 @@ class CollectionController : public QObject
     Q_PROPERTY(QString tcpPoseTool READ tcpPoseTool NOTIFY tcpPoseChanged)
     Q_PROPERTY(bool manualMoveActive READ manualMoveActive NOTIFY collectionChanged)
     Q_PROPERTY(QString manualMoveProgress READ manualMoveProgress NOTIFY collectionChanged)
+    Q_PROPERTY(QString orientationMode READ orientationMode WRITE setOrientationMode NOTIFY teachSettingsChanged)
+    Q_PROPERTY(QVariantList tcpDisplayPoseValues READ tcpDisplayPoseValues NOTIFY tcpPoseChanged)
+    Q_PROPERTY(bool tcpPoseFresh READ tcpPoseFresh NOTIFY tcpPoseChanged)
+    Q_PROPERTY(double manualLinearSpeedMmS READ manualLinearSpeedMmS NOTIFY teachSettingsChanged)
+    Q_PROPERTY(double manualAngularSpeedDegS READ manualAngularSpeedDegS NOTIFY teachSettingsChanged)
+    Q_PROPERTY(bool jogActive READ jogActive NOTIFY collectionChanged)
+    Q_PROPERTY(bool teachAngularMotionAvailable READ teachAngularMotionAvailable CONSTANT)
+    Q_PROPERTY(QString teachAngularMotionStatus READ teachAngularMotionStatus CONSTANT)
+    Q_PROPERTY(QString previewPositiveX READ previewPositiveX NOTIFY previewDirectionsChanged)
+    Q_PROPERTY(QString previewPositiveY READ previewPositiveY NOTIFY previewDirectionsChanged)
+    Q_PROPERTY(QString lastCaptureTime READ lastCaptureTime NOTIFY collectionChanged)
 
 public:
     explicit CollectionController(QObject* parent = nullptr);
@@ -117,11 +128,31 @@ public:
     Q_INVOKABLE void moveTcpTo(const QString& text);
     QVariantList tcpPoseValues() const { return m_tcpPoseValues; }
     bool tcpPoseValid() const { return m_tcpPoseValid; }
-    QString tcpPoseStatus() const { return m_tcpPoseStatus; }
+    QString tcpPoseStatus() const;
     QString tcpPoseTimestamp() const { return m_tcpPoseTimestamp; }
     QString tcpPoseTool() const { return m_tcpPoseTool; }
     bool manualMoveActive() const { return m_manualMoveActive; }
     QString manualMoveProgress() const { return m_manualMoveProgress; }
+    QString orientationMode() const { return m_orientationMode; }
+    void setOrientationMode(const QString& mode);
+    QVariantList tcpDisplayPoseValues() const;
+    bool tcpPoseFresh() const;
+    double manualLinearSpeedMmS() const { return m_teachSpeeds.linearMmS; }
+    double manualAngularSpeedDegS() const { return m_teachSpeeds.angularDegS; }
+    bool jogActive() const { return bool(m_jogLease); }
+    bool teachAngularMotionAvailable() const { return true; }
+    QString teachAngularMotionStatus() const { return "角度步进控制目标推进速率；单段实际角速度由机器人控制器规划"; }
+    QString previewPositiveX() const { return m_previewPositiveX; }
+    QString previewPositiveY() const { return m_previewPositiveY; }
+    QString lastCaptureTime() const { return m_lastCaptureTime; }
+    Q_INVOKABLE QVariantMap convertTcpPose(const QString& text, const QString& from, const QString& to) const;
+    Q_INVOKABLE void copyCurrentTcpCoordinates(const QString& mode);
+    Q_INVOKABLE void moveTcpToDisplay(const QString& text, const QString& mode);
+    Q_INVOKABLE qulonglong beginTcpJog(int component, int direction, const QString& mode);
+    Q_INVOKABLE void renewTcpJog(qulonglong token);
+    Q_INVOKABLE void stopTcpJog(qulonglong token);
+    Q_INVOKABLE void setManualSpeeds(double linear, double angular);
+    Q_INVOKABLE void setPreviewDirections(const QString& x, const QString& y);
 
     // ---- 属性访问器 ----
     QString robotIp() const         { return m_robotIp; }
@@ -146,7 +177,6 @@ public:
     QSize previewDisplaySize() const { return m_previewDisplaySize; }
     void setPreviewDisplaySize(const QSize& size);
     QString statusMessage() const   { return m_statusMessage; }
-    QString logText() const         { return m_logText; }
     QString diagnosticLogPath() const;
 
 
@@ -181,13 +211,14 @@ signals:
     void previewVisibleChanged();
     void previewDisplaySizeChanged();
     void statusMessageChanged();
-    void logTextChanged();
     void frameUpdated();
     void collectionChanged();
     void settingsFinished(const QString& error);
     void coordinatesImported(const QString& coordinates, const QString& tcpName, const QString& error);
     void tcpToolsChanged();
     void tcpPoseChanged();
+    void teachSettingsChanged();
+    void previewDirectionsChanged();
 
 private:
     friend struct CollectionControllerTestAccess;
@@ -203,6 +234,12 @@ private:
     // ---- 初始化 ----
     void setupPaths();
     void loadConfigYaml();
+    void loadTeachPreferences();
+    void scheduleTeachPreferences();
+    void flushTeachPreferences();
+    void finishTeachPreferences();
+    void startManualMotion(std::function<void(RobotHandle, const QString&, collection::MotionTick)> motion,
+        const QString& description);
     CameraConfig currentCameraConfig() const;
 
     // ---- 预览循环 ----
@@ -238,11 +275,6 @@ private:
 
     /// 后台生成适配显示尺寸、拥有像素内存的预览图像；不修改采集原图。
     static QImage makePreviewImage(const cv::Mat& bgr, const QSize& displaySize);
-
-    /// 追加日志（线程安全）；UI 侧批量刷新，避免每条触发完整重排
-    void appendLog(const QString& line);
-    void flushPendingLogs();
-
 
     // ==================== 数据成员 ====================
 
@@ -282,16 +314,23 @@ private:
     QString m_tcpPoseTool;
     QString m_tcpPoseLastFailure;
     QElapsedTimer m_tcpPoseAge;
+    qint64 m_tcpPoseDeliveryLagMs = 0;
     bool m_manualMoveActive = false;
     QString m_manualMoveProgress;
+    QString m_orientationMode = "axis";
+    collection::TeachSpeeds m_teachSpeeds;
+    QString m_previewPositiveX = "none", m_previewPositiveY = "none";
+    std::shared_ptr<collection::TeachJogLease> m_jogLease;
+    qulonglong m_jogToken = 0;
+    QString m_lastCaptureTime;
+    QTimer* m_teachPreferencesTimer = nullptr;
+    bool m_teachPreferencesDirty = false;
+    std::future<QString> m_teachPreferencesWrite;
     bool     m_cameraOpened   = false;
     int m_robotSpeedMmS = collection::defaultRobotSpeedMmS;
     bool     m_previewActive  = false;
     bool     m_previewVisible = true;
     QString  m_statusMessage  = "就绪";
-    QString  m_logText;
-    QStringList m_pendingLogLines;
-    QTimer*  m_logFlushTimer = nullptr;
 
     // 硬件句柄
     RobotHandle m_robotHandle = 0;

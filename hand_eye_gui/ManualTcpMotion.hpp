@@ -15,6 +15,6 @@ FlangePose tcpTargetToFlange(const FlangePose& target, const FlangePose& toolOff
 // the owner must independently confirmRobotStopped before unlocking operations.
 void moveSelectedTcpLinear(RobotHandle handle, const QString& name, const FlangePose& target,
     const std::atomic<bool>& cancelled, LineMotionWait wait = {1200, 180000}, MotionTick tick = {},
-    double speedMmS = defaultRobotSpeedMmS);
+    double speedMmS = defaultRobotSpeedMmS, MotionTick safetyCheck = {});
 
 } // namespace collection
