@@ -41,11 +41,13 @@ struct Robot {
     std::vector<FlangePose> inverseTargets;
     CRresult lineCode = sucess, stopCode = sucess, inverseCode = sucess, limitCode = sucess, poseCode = sucess;
     int sends = 0, stops = 0, polls = 0, lookups = 0, cancelOnPoll = 0, limitReads = 0;
-    int slowPoseLookup = 0;
+    int slowPoseLookup = 0, poseDelayMs = 270, limitDelayMs = 0, cancelOnLimitRead = 0;
+    std::function<void()> poseReadAction;
     void reset() {
         actual = {100, 200, 300, 0, 0, 0}; offset = {0, 0, 100, 0, 0, 0};
         ikPose = {}; ikJoints = {}; command = {}; cancelled = false;
-        commands.clear(); slowPoseLookup = 0;
+        commands.clear(); slowPoseLookup = 0; poseDelayMs = 270;
+        limitDelayMs = cancelOnLimitRead = 0; poseReadAction = {};
         inverseTargets.clear();
         inverseMaxX = jointLimitFromX = std::numeric_limits<double>::infinity();
         arrivalPositionError = arrivalAngleError = 0;
@@ -58,6 +60,20 @@ struct Robot {
         sends = stops = polls = lookups = cancelOnPoll = limitReads = 0;
     }
 } robot;
+// The real UI renews the press independently of the worker's blocking SDK calls.
+class LeaseHeartbeat {
+public:
+    explicit LeaseHeartbeat(collection::TeachJogLease& lease) : worker_([this, &lease] {
+        while (!done_.load()) {
+            lease.heartbeat();
+            std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        }
+    }) {}
+    ~LeaseHeartbeat() { done_.store(true); worker_.join(); }
+private:
+    std::atomic<bool> done_{false};
+    std::thread worker_;
+};
 const FlangePose target{500, -100, 450, 0, 90, 0};
 void move(collection::LineMotionWait wait = {0, 300}, collection::MotionTick tick = {}) {
     collection::moveSelectedTcpLinear(1, "selected-probe", target, robot.cancelled, wait, tick);
@@ -97,8 +113,9 @@ extern "C" CRresult cr_get_robotMoveStatus(RobotHandle, BOOL* moving) {
     return sucess;
 }
 extern "C" CRresult cr_get_AssignTCP_Pose(RobotHandle, double* offset, double* pose) {
+    if (robot.poseReadAction) robot.poseReadAction();
     if (robot.slowPoseLookup && robot.lookups >= robot.slowPoseLookup)
-        std::this_thread::sleep_for(std::chrono::milliseconds(270));
+        std::this_thread::sleep_for(std::chrono::milliseconds(robot.poseDelayMs));
     require(std::equal(offset, offset + ROB_AXIS_NUM, robot.offset.begin()), "selected offset not used for telemetry");
     std::copy(robot.actual.begin(), robot.actual.end(), pose);
     if (robot.badPose) pose[2] = std::numeric_limits<double>::quiet_NaN();
@@ -121,6 +138,8 @@ extern "C" CRresult cr_cfg_safety_joint_limit_get(RobotHandle, SafetyLimitsMode 
     require(axis >= 0 && axis < ROB_AXIS_NUM, "SDK safety index must be zero-based");
     require(mode == mode_Normal || mode == mode_Reduced, "invalid safety envelope");
     ++robot.limitReads;
+    if (robot.limitDelayMs) std::this_thread::sleep_for(std::chrono::milliseconds(robot.limitDelayMs));
+    if (robot.cancelOnLimitRead && robot.limitReads >= robot.cancelOnLimitRead) robot.cancelled = true;
     const double bound = mode == mode_Reduced ? robot.reducedLimit : robot.limit;
     *limit = {180, -bound, bound};
     if (robot.badLimit) limit->minJointPosition = std::numeric_limits<double>::quiet_NaN();
@@ -166,6 +185,8 @@ int main(int argc, char** argv) {
         move({0, 300}, [&] { ++ticks; });
         require(robot.sends == 1 && robot.stops == 0 && ticks >= 3 && robot.limitReads == 12 && robot.lookups >= 5,
                 "manual move failed to confirm actual selected TCP and stationary state");
+        require(robot.lookups == 2 + robot.polls,
+                "manual motion read extra TCP snapshots instead of reusing its own samples");
         require(collection::flangeAtTarget(robot.ikPose, converted), "IK preflight used TCP instead of flange");
         // Far translations and arbitrary orientations are intentionally allowed.
         require(robot.actual == target, "manual move inherited nine-point distance/orientation restriction");
@@ -234,6 +255,34 @@ int main(int argc, char** argv) {
             if (++delayedTicks == 3) std::this_thread::sleep_for(std::chrono::milliseconds(70));
         }); });
         require(robot.stops == 1, "callback overrun returned success beyond timeout");
+        for (bool changePose : {false, true}) {
+            robot.reset(); int tickCount = 0;
+            rejects([&] { move({0, 220}, [&] {
+                if (++tickCount == 3) {
+                    if (changePose) { robot.neverReach = true; robot.actual[0] = target[0] + 1; }
+                    else robot.alwaysMoving = true;
+                }
+            }); });
+            require(robot.stops == 1,
+                    "arrival used robot state or TCP pose captured before the tick");
+        }
+        // The deadline includes preparation. A late successful read or limit
+        // response must not be followed by a movement command.
+        for (int stage = 0; stage < 3; ++stage) {
+            robot.reset();
+            if (stage < 2) { robot.slowPoseLookup = stage + 1; robot.poseDelayMs = 80; }
+            else robot.limitDelayMs = 80;
+            const auto failure = rejects([&] { move({0, 60}); });
+            require(robot.sends == 0 && failure == "TCP 单段运动超时，请检查机器人连接和状态" &&
+                    robot.lookups == (stage == 1 ? 2 : 1),
+                    "late preparation response bypassed the deadline or exposed internal stage details");
+            if (stage == 2) require(robot.limitReads == 1,
+                    "expired limit read continued through the remaining safety limits");
+        }
+        robot.reset(); robot.cancelOnLimitRead = 1;
+        rejects([] { move(); });
+        require(robot.sends == 0 && robot.limitReads == 1,
+                "cancelled limit read continued toward dispatch");
         robot.reset(); robot.neverReach = true; robot.stopCode = sdkError;
         require(rejects([] { move({0, 60}); }).find("停止指令失败") != std::string::npos,
                 "manual stop failure concealed");
@@ -356,10 +405,50 @@ int main(int argc, char** argv) {
         collection::TeachJogLease toolChanged;
         rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, toolChanged, robot.cancelled); });
         require(robot.sends == 0, "changed tool accepted by a later jog segment");
-        robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = 5;
-        collection::TeachJogLease slowFinalRead;
-        rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, slowFinalRead, robot.cancelled); });
-        require(robot.sends == 0, "successful slow final read bypassed expired UI lease");
+        // A compound SDK read can take over 100ms while the independent UI
+        // heartbeat remains healthy. It must not be mistaken for a stale pose.
+        robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = 1; robot.poseDelayMs = 120;
+        collection::TeachJogLease slowHeld;
+        {
+            LeaseHeartbeat heartbeat(slowHeld);
+            const auto failure = rejects([&] {
+                collection::jogSelectedTcp(1, "selected-probe", jog, slowHeld, robot.cancelled,
+                    [&] { if (robot.sends >= 2) slowHeld.release(); });
+            });
+            require(robot.sends == 2 && robot.stops == 1 && failure.find("读取过慢") == std::string::npos &&
+                    robot.lookups == 8,
+                    "healthy held jog rejected slow successful reads or duplicated snapshots");
+        }
+        // Stop or expiry during origin, preflight, final refresh and arrival
+        // reads must be observed immediately when the blocking read returns.
+        for (int lookup : {1, 2, 3, 4}) {
+            for (int action = 0; action < 3; ++action) {
+                robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = lookup;
+                robot.poseDelayMs = action == 2 ? collection::TeachJogLease::expiryMs + 20 : 120;
+                collection::TeachJogLease reading;
+                robot.poseReadAction = [&] {
+                    if (robot.lookups == lookup) {
+                        if (action == 0) reading.release();
+                        else if (action == 1) robot.cancelled = true;
+                    }
+                };
+                rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, reading, robot.cancelled); });
+                require(robot.sends == (lookup == 4 ? 1 : 0) && robot.stops == (lookup == 4 ? 1 : 0) &&
+                        robot.lookups == lookup,
+                        "control lost during SDK read was ignored before dispatch or stop");
+            }
+        }
+        robot.poseReadAction = {};
+        for (int lookup : {1, 2}) {
+            robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = lookup; robot.poseDelayMs = 100;
+            auto shortTarget = robot.actual; shortTarget[0] += 1;
+            const auto failure = rejects([&] {
+                collection::moveSelectedTcpTarget(1, "selected-probe", shortTarget, {100, 5},
+                    robot.cancelled, {0, 80});
+            });
+            require(robot.sends == 0 && robot.lookups == lookup && failure.find("总时间超时") != std::string::npos,
+                    "origin or complete endpoint preflight escaped the total target deadline");
+        }
         robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
         collection::TeachJogLease angular;
         jog.component = 3;

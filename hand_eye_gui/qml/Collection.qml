@@ -91,7 +91,7 @@ ApplicationWindow {
                     HmiText { visible: root.width >= 1100; text: "图像采集"; color: Theme.ink; font.pixelSize: Theme.title; font.weight: Font.DemiBold }
                     Rectangle {
                         Layout.fillWidth: true; Layout.minimumWidth: 80; Layout.preferredHeight: 28; radius: 14
-                        readonly property color tone: root.controller.motionFault || /失败|异常|故障|意外变化/.test(root.controller.statusMessage) ? Theme.danger : root.busy ? Theme.accent : root.controller.cameraOpened ? Theme.ok : Theme.warning
+                        readonly property color tone: root.controller.motionFault || /失败|异常|故障|意外变化|过慢|超时/.test(root.controller.statusMessage) ? Theme.danger : root.busy ? Theme.accent : root.controller.cameraOpened ? Theme.ok : Theme.warning
                         color: Qt.rgba(tone.r,tone.g,tone.b,0.12); border.color: Qt.rgba(tone.r,tone.g,tone.b,0.35)
                         HmiText { objectName: "globalStatus"; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; text: root.controller.statusMessage; color: parent.tone; elide: Text.ElideRight; wrapMode: Text.NoWrap; verticalAlignment: Text.AlignVCenter }
                     }
