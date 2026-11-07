@@ -619,6 +619,25 @@ int main(int argc, char** argv) {
         }
         waitFor([&] { return robot.destroys == 1; });
         robot.reset(); robot.failLine = false; robot.stopWorks = true; robot.stopCode = sucess;
+        {
+            CollectionController controller;
+            CollectionControllerTestAccess::prepare(controller, temp.path());
+            CollectionControllerTestAccess::tools(controller);
+            controller.setSelectedTcp("ToolA");
+            controller.setManualSpeeds(100, 20);
+            // ToolA's offset makes the initial TCP X=110. Preserve the full
+            // destination, including a tiny orientation edit, in one command.
+            controller.moveTcpToDisplay("140,200,300,180.0003,0,0", "axis");
+            require(controller.collectionBusy(), "complete target did not acquire operation lock");
+            waitFor([&] { return !controller.collectionBusy(); });
+            require(robot.lines == 1 && robot.lastSpeed == 100 && !controller.motionFault() &&
+                    robot.pose[0] == 130 && robot.pose[1] == 200 && robot.pose[2] == 300 &&
+                    robot.pose[3] == 180.0003 && robot.pose[4] == 0 && robot.pose[5] == 0,
+                    "X+30 controller target was segmented, slowed, rewritten or failed to arrive");
+            require(controller.statusMessage().contains("TCP 操作完成"), "complete target did not report arrival");
+        }
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset(); robot.failLine = false; robot.stopWorks = true; robot.stopCode = sucess;
         CollectionControllerTestAccess::verifyTeaching(temp.path());
         waitFor([&] { return robot.destroys == 1; });
         robot.reset();

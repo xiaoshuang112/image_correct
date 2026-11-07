@@ -355,7 +355,7 @@ SharedCollectionState {
         for (const auto& message : {QStringLiteral("TCP 位置或姿态发生意外变化，请停止后重新开始示教"),
                                    QStringLiteral("停止指令失败（错误码 17），请在示教器确认机器人状态"),
                                    QStringLiteral("TCP 状态读取过慢，请检查机器人连接后重试"),
-                                   QStringLiteral("TCP 单段运动超时，请检查机器人连接和状态")}) {
+                                   QStringLiteral("TCP 移动超时，请检查机器人连接和状态")}) {
             controller->setProperty("statusMessage", message);
             require(item("globalStatus")->property("color").value<QColor>() == errorStatusColor,
                     "motion error was displayed as a healthy status");

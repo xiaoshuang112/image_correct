@@ -51,9 +51,4 @@ struct TeachJogRequest {
 // robot stopped before unlocking. Return on release does not confirm stopped.
 void jogSelectedTcp(RobotHandle handle, const QString& name, const TeachJogRequest& request,
     const TeachJogLease& lease, const std::atomic<bool>& cancelled, MotionTick tick = {});
-void moveSelectedTcpTarget(RobotHandle handle, const QString& name, const FlangePose& target,
-    const TeachSpeeds& speeds, const std::atomic<bool>& cancelled,
-    LineMotionWait wait = {1200, 180000}, MotionTick tick = {},
-    TeachOrientation orientation = TeachOrientation::RotationVector);
-
 } // namespace collection

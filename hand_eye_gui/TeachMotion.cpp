@@ -145,6 +145,11 @@ double orientationDistance(const FlangePose& a, const FlangePose& b) {
 double distance(const FlangePose& a, const FlangePose& b, int first) {
     return std::hypot(a[first] - b[first], a[first + 1] - b[first + 1], a[first + 2] - b[first + 2]);
 }
+QString poseText(const FlangePose& pose) {
+    QStringList values;
+    for (double value : pose) values << QString::number(value, 'g', 17);
+    return values.join(',');
+}
 TcpPose freshPose(RobotHandle handle, const QString& name, const std::atomic<bool>& cancelled,
     const TeachJogLease* lease) {
     demandControl(cancelled, lease);
@@ -172,9 +177,8 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
     if (angularTravel > 0.100001 || linearTravel > 1.000001 ||
         distance(before, target, 3) > 1.0)
         throw std::runtime_error("示教目标超出单步连续运动范围");
-    // The prior segment may have settled anywhere within the configured
-    // tolerance. Keep that allowance even if this shorter segment tightens its
-    // own angular arrival test; do not classify a valid residual as a new move.
+    // Tighten angular jogging so an unmoved small step cannot pass. Preserve
+    // the original allowance for the previous segment's arrival residual.
     const double angleDeviationTolerance = wait.angleToleranceDeg;
     if (angularTravel > 1e-7) wait.angleToleranceDeg = std::min(wait.angleToleranceDeg,
         std::max(0.00001, angularTravel / 4));
@@ -188,11 +192,6 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
         const double angleError = orientationDistance(actual.pose, target);
         if (positionError > linearTravel + positionToleranceMm + 1e-9 ||
             angleError > angularTravel + angleDeviationTolerance + 1e-9) {
-            auto poseText = [](const FlangePose& pose) {
-                QStringList values;
-                for (double value : pose) values << QString::number(value, 'g', 17);
-                return values.join(',');
-            };
             APP_LOG_EVENT_ERROR("robot.motion", "teach_guard", "deviation",
                 {{"tcp", name}, {"actual", poseText(actual.pose)}, {"target", poseText(target)},
                  {"position_error_mm", QString::number(positionError, 'g', 17)},
@@ -207,84 +206,6 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
         controlCheck, poseCheck);
 }
 } // namespace
-
-void moveSelectedTcpTarget(RobotHandle handle, const QString& name, const FlangePose& target,
-    const TeachSpeeds& speeds, const std::atomic<bool>& cancelled, LineMotionWait wait,
-    MotionTick tick, TeachOrientation orientation) {
-    const auto operationStarted = std::chrono::steady_clock::now();
-    speedsChecked(speeds);
-    finite(target);
-    representation(orientation);
-    if (wait.settlingMs < 0 || wait.timeoutMs <= wait.settlingMs ||
-        !std::isfinite(wait.angleToleranceDeg) || wait.angleToleranceDeg <= 0 || wait.angleToleranceDeg > 0.2)
-        throw std::runtime_error("机器人等待参数无效");
-    const auto deadline = operationStarted + std::chrono::milliseconds(wait.timeoutMs);
-    auto checkDeadline = [&] {
-        demandControl(cancelled, nullptr);
-        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::steady_clock::now() - operationStarted).count();
-        if (std::chrono::steady_clock::now() >= deadline) {
-            APP_LOG_EVENT_ERROR("robot.motion", "teach_target_timeout", "expired",
-                {{"phase", "origin_or_complete_preflight"}, {"elapsed_ms", QString::number(elapsed)},
-                 {"timeout_ms", QString::number(wait.timeoutMs)}});
-            throw std::runtime_error("TCP 目标移动总时间超时");
-        }
-    };
-    checkDeadline();
-    const auto origin = freshPose(handle, name, cancelled, nullptr);
-    checkDeadline();
-    const auto start = tcpPoseForDisplay(origin.pose, orientation);
-    auto finish = tcpPoseForDisplay(target, orientation);
-    if (orientation == TeachOrientation::EulerZYX) {
-        for (int i : {3, 5}) finish[i] += 360 * std::round((start[i] - finish[i]) / 360);
-    } else finish = continuousVector(finish, start);
-    const double linear = distance(start, finish, 0), angular = distance(start, finish, 3);
-    if (angular > 1e-9) {
-        if (orientation == TeachOrientation::RotationVector) { rotationVectorSafe(start); rotationVectorSafe(finish); }
-        else {
-            eulerSafe(start); eulerSafe(finish);
-        }
-    }
-    // The sum bounds physical rotation for a simultaneous change in three
-    // Euler or rotation-vector parameters, including near Euler gimbal lock.
-    double angularBound = 0;
-    for (int i = 3; i < 6; ++i) angularBound += std::abs(finish[i] - start[i]);
-    const double countValue = std::max({1.0, std::ceil(linear - 1e-9), std::ceil(angularBound / angularStepDeg - 1e-9)});
-    if (countValue > 1000000) throw std::runtime_error("TCP 目标距离过大");
-    const int count = static_cast<int>(countValue);
-    const double linearSpeed = angularBound > 1e-9 ? std::min(speeds.linearMmS, rotatingSdkSpeedMmS) : speeds.linearMmS;
-    const double minimumDuration = std::max(linear / linearSpeed, angularBound / speeds.angularDegS);
-    auto checkTimeBudget = [&] {
-        checkDeadline();
-        const double remaining = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
-        if (minimumDuration + wait.settlingMs / 1000.0 >= remaining)
-            throw std::runtime_error("按当前速度无法在总超时内完成目标移动及稳定等待，未下发运动");
-    };
-    checkTimeBudget();
-    checkSelectedTcpTarget(handle, name, target, cancelled, checkDeadline);
-    checkTimeBudget();
-    auto before = origin.pose;
-    for (int index = 1; index <= count; ++index) {
-        demandControl(cancelled, nullptr);
-        const auto began = std::chrono::steady_clock::now();
-        if (began >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
-        FlangePose displayed{};
-        for (int i = 0; i < 6; ++i) displayed[i] = start[i] + (finish[i] - start[i]) * index / count;
-        const auto next = continuousVector(tcpPoseFromDisplay(displayed, orientation), before);
-        const auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(deadline - began).count();
-        LineMotionWait segmentWait{index == count ? wait.settlingMs : 0,
-            static_cast<int>(std::min<std::int64_t>(remaining, 3000 + wait.settlingMs)), wait.angleToleranceDeg};
-        if (segmentWait.timeoutMs <= segmentWait.settlingMs) throw std::runtime_error("TCP 目标移动总时间超时");
-        segment(handle, name, origin, before, next, speeds, cancelled, nullptr, segmentWait, tick);
-        if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
-        const double duration = minimumDuration / count;
-        const auto due = began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(duration));
-        if (due >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
-        paceUntil(due, cancelled, nullptr, tick);
-        if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
-        before = next;
-    }
-}
 
 void jogSelectedTcp(RobotHandle handle, const QString& name, const TeachJogRequest& request,
     const TeachJogLease& lease, const std::atomic<bool>& cancelled, MotionTick tick) {

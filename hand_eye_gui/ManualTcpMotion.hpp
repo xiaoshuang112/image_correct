@@ -12,11 +12,6 @@ using TcpPoseCheck = std::function<void(const TcpPose&)>;
 // command itself retains the TCP target and explicit tool for TCP-linear motion.
 FlangePose tcpTargetToFlange(const FlangePose& target, const FlangePose& toolOffset);
 
-// Read-only preflight of the complete requested destination before a sequence
-// starts. Each actual segment still repeats these checks using fresh state.
-void checkSelectedTcpTarget(RobotHandle handle, const QString& name, const FlangePose& target,
-    const std::atomic<bool>& cancelled, MotionTick controlCheck = {});
-
 // Moves the selected tool in base coordinates without changing the active tool.
 // Re-reads tool configuration before dispatch; waits on actual selected-TCP pose
 // and stationary status. Any exception after dispatch requests stop and rethrows;

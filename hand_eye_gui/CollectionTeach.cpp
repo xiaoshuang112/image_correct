@@ -123,10 +123,10 @@ void CollectionController::moveTcpToDisplay(const QString& text, const QString& 
     try {
         const auto representation = orientation(mode);
         const auto target = collection::tcpPoseFromDisplay(collection::parseTcpTarget(text), representation);
-        const auto speeds = m_teachSpeeds;
-        startManualMotion([this, target, speeds, representation](RobotHandle handle, const QString& tool, collection::MotionTick tick) {
-            collection::moveSelectedTcpTarget(handle, tool, target, speeds, m_cancelRequested,
-                {1200, 180000}, tick, representation);
+        const double speed = m_teachSpeeds.linearMmS;
+        startManualMotion([this, target, speed](RobotHandle handle, const QString& tool, collection::MotionTick tick) {
+            collection::moveSelectedTcpLinear(handle, tool, target, m_cancelRequested,
+                {1200, 180000}, tick, speed);
         }, "正在检查目标并移动所选 TCP");
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }

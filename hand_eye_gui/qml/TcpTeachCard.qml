@@ -116,7 +116,7 @@ CollectCard {
                 text: String(card.controller.manualAngularSpeedDegS); enabled: !card.locked && !card.jogHeld
                 validator: DoubleValidator { bottom: 0.1; top: 180; decimals: 2; locale: "C" }
                 invalid: !acceptableInput
-                ToolTip.visible: hovered; ToolTip.text: "角度步进控制目标推进速率；单段实际角速度由机器人控制器规划"
+                ToolTip.visible: hovered; ToolTip.text: "用于长按旋转微调；移动到输入坐标时使用平移速度，由机器人规划姿态变化"
                 onEditingFinished: if (card.speedsValid) card.controller.setManualSpeeds(Number(linearSpeed.text), Number(text))
             }
             HmiText { text: "°/s"; font.pixelSize: Theme.meta }

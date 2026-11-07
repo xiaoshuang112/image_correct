@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
             if (stage < 2) { robot.slowPoseLookup = stage + 1; robot.poseDelayMs = 80; }
             else robot.limitDelayMs = 80;
             const auto failure = rejects([&] { move({0, 60}); });
-            require(robot.sends == 0 && failure == "TCP 单段运动超时，请检查机器人连接和状态" &&
+            require(robot.sends == 0 && failure == "TCP 移动超时，请检查机器人连接和状态" &&
                     robot.lookups == (stage == 1 ? 2 : 1),
                     "late preparation response bypassed the deadline or exposed internal stage details");
             if (stage == 2) require(robot.limitReads == 1,
@@ -439,16 +439,6 @@ int main(int argc, char** argv) {
             }
         }
         robot.poseReadAction = {};
-        for (int lookup : {1, 2}) {
-            robot.reset(); robot.strictTarget = false; robot.slowPoseLookup = lookup; robot.poseDelayMs = 100;
-            auto shortTarget = robot.actual; shortTarget[0] += 1;
-            const auto failure = rejects([&] {
-                collection::moveSelectedTcpTarget(1, "selected-probe", shortTarget, {100, 5},
-                    robot.cancelled, {0, 80});
-            });
-            require(robot.sends == 0 && robot.lookups == lookup && failure.find("总时间超时") != std::string::npos,
-                    "origin or complete endpoint preflight escaped the total target deadline");
-        }
         robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
         collection::TeachJogLease angular;
         jog.component = 3;
@@ -462,85 +452,78 @@ int main(int argc, char** argv) {
         collection::TeachJogLease noRotation;
         rejects([&] { collection::jogSelectedTcp(1, "selected-probe", jog, noRotation, robot.cancelled); });
         require(robot.sends == 1 && robot.stops == 1, "angular tolerance swallowed an unmoved jog step");
-        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
-        auto angularTarget = robot.actual; angularTarget[3] = .2;
-        const auto angularBegan = std::chrono::steady_clock::now();
-        collection::moveSelectedTcpTarget(1, "selected-probe", angularTarget, {10, .5}, robot.cancelled, {0, 2000});
-        require(robot.sends == 2 && std::chrono::steady_clock::now() - angularBegan >= std::chrono::milliseconds(395) &&
-            collection::flangeAtTarget(robot.actual, angularTarget, .00001), "angular progression did not pace serial bounded targets");
-        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
-        robot.actual[3] = 179.95;
-        auto across = robot.actual; across[3] = 180.05;
-        collection::moveSelectedTcpTarget(1, "selected-probe", across, {10, 5}, robot.cancelled, {0, 2000}, {}, TeachOrientation::EulerZYX);
-        require(robot.sends <= 2 && robot.command.pose[3] > 180 && robot.command.pose[3] < 181,
-            "Euler roll crossing 180 degrees caused a rotation-vector jump");
-        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
-        const FlangePose multiStart{100, 200, 300, 10, 80, 30};
-        const FlangePose multiFinish{100, 200, 300, 10.2, 80, 29.8};
-        robot.actual = collection::tcpPoseFromDisplay(multiStart, TeachOrientation::EulerZYX);
-        auto previous = robot.actual;
-        const auto multiTarget = collection::tcpPoseFromDisplay(multiFinish, TeachOrientation::EulerZYX);
-        collection::moveSelectedTcpTarget(1, "selected-probe", multiTarget, {10, 5}, robot.cancelled,
-            {0, 2000}, {}, TeachOrientation::EulerZYX);
-        require(robot.sends >= 4, "multi-component Euler target was not divided conservatively");
-        for (const auto& command : robot.commands) {
-            FlangePose issued{}; std::copy_n(command.pose, 6, issued.begin());
-            require(collection::flangeAtTarget(issued, previous, .100001),
-                "multi-component step exceeded .1 degree or moved TCP center");
-            previous = issued;
-        }
-        // Reject the complete requested destination before moving through any
-        // otherwise reachable intermediate positions.
+        // A complete target uses one SDK line at the requested linear speed.
+        // A tiny difference from an earlier orientation sample must neither
+        // split X+30 into jog steps nor reduce its speed or arrival tolerance.
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100; robot.arrivalAngleError = .006;
+        auto thirtyMmTarget = robot.actual; thirtyMmTarget[0] += 30; thirtyMmTarget[3] = .0003;
+        collection::moveSelectedTcpLinear(1, "selected-probe", thirtyMmTarget, robot.cancelled,
+            {0, 2000, .2}, {}, 100);
+        require(robot.sends == 1 && robot.stops == 0 && robot.command.speed[0] == 100 &&
+                std::equal(thirtyMmTarget.begin(), thirtyMmTarget.end(), robot.command.pose) &&
+                collection::flangeAtTarget(robot.actual, thirtyMmTarget, .2),
+                "complete X+30 target was split, slowed or had its requested orientation rewritten");
+        require(robot.inverseTargets.size() == 1 && collection::flangeAtTarget(robot.inverseTargets.front(),
+            collection::tcpTargetToFlange(thirtyMmTarget, robot.offset)),
+                "complete target endpoint was not preflighted before dispatch");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100; robot.arrivalAngleError = .006;
+        auto tinyAngleTarget = robot.actual; tinyAngleTarget[0] += .2; tinyAngleTarget[3] = .0003;
+        collection::moveSelectedTcpLinear(1, "selected-probe", tinyAngleTarget, robot.cancelled,
+            {60, 2000, .01}, {}, 100);
+        require(robot.sends == 1 && robot.stops == 0 && robot.command.pose[3] == tinyAngleTarget[3] &&
+                collection::flangeAtTarget(robot.actual, tinyAngleTarget, .01),
+                "complete target tightened the caller's angle tolerance for a tiny orientation difference");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100; robot.arrivalAngleError = .0055;
+        tinyAngleTarget = robot.actual; tinyAngleTarget[0] += .2; tinyAngleTarget[3] = .001;
+        const auto arrivalFailure = rejects([&] {
+            collection::moveSelectedTcpLinear(1, "selected-probe", tinyAngleTarget, robot.cancelled,
+                {0, 500, .005}, {}, 100);
+        });
+        require(robot.sends == 1 && robot.stops == 1 && arrivalFailure.find("超时") != std::string::npos,
+                "complete target accepted feedback outside the caller's angle tolerance");
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100; robot.actual[3] = 180;
+        auto equivalentTarget = robot.actual; equivalentTarget[0] += 30; equivalentTarget[3] = -180;
+        collection::moveSelectedTcpLinear(1, "selected-probe", equivalentTarget, robot.cancelled,
+            {0, 2000}, {}, 100);
+        require(robot.sends == 1 && robot.stops == 0 &&
+                std::equal(equivalentTarget.begin(), equivalentTarget.end(), robot.command.pose) &&
+                collection::flangeAtTarget(robot.actual, equivalentTarget),
+                "complete target rejected or rewrote an equivalent axis-angle branch");
+        // IK and both normal/reduced safety envelopes apply to the complete
+        // requested destination before the single command is sent.
         for (int failure = 0; failure < 3; ++failure) {
-            robot.reset(); robot.strictTarget = false;
-            if (failure == 0) robot.inverseMaxX = 102;
-            else robot.jointLimitFromX = 103;
-            if (failure == 2) robot.reducedLimit = 180;
-            auto unreachable = robot.actual; unreachable[0] = 104;
-            rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", unreachable,
-                {10, 5}, robot.cancelled, {0, 2000}); });
-            require(robot.sends == 0, "unreachable complete target moved through partial targets first");
+            robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100;
+            if (failure == 0) robot.inverseMaxX = 129;
+            else {
+                robot.ikJoints[0] = 181;
+                if (failure == 1) robot.limit = 180;
+                else robot.reducedLimit = 180;
+            }
+            rejects([&] {
+                collection::moveSelectedTcpLinear(1, "selected-probe", thirtyMmTarget,
+                    robot.cancelled, {0, 2000}, {}, 100);
+            });
+            require(robot.sends == 0 && robot.inverseTargets.size() == 1 &&
+                    collection::flangeAtTarget(robot.inverseTargets.front(),
+                        collection::tcpTargetToFlange(thirtyMmTarget, robot.offset)),
+                    "unreachable complete endpoint bypassed IK or a joint safety envelope");
         }
-        for (bool rotating : {false, true}) {
-            robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
-            auto tooSlow = robot.actual; tooSlow[rotating ? 3 : 0] += 1;
-            rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", tooSlow,
-                {1, .1}, robot.cancelled, {0, 200}); });
-            require(robot.sends == 0, "impossible total motion duration was rejected only after moving");
-        }
-        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
-        auto mixed = robot.actual; mixed[0] += 1; mixed[3] += .1;
-        rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", mixed,
-            {100, 180}, robot.cancelled, {0, 200}); });
-        require(robot.sends == 0, "duration check ignored the 1 mm/s SDK limit for rotating segments");
-        // A pure translation can settle with an angular residual allowed by
-        // the configured arrival tolerance, including between serial segments.
-        robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = .1;
-        auto translated = robot.actual; translated[0] += 2;
-        collection::moveSelectedTcpTarget(1, "selected-probe", translated, {10, 5},
-            robot.cancelled, {0, 2000, .2});
-        require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, translated, .2),
-            "valid arrival residual was treated as unexpected orientation movement");
-        require(!robot.inverseTargets.empty() && collection::flangeAtTarget(robot.inverseTargets.front(),
-            collection::tcpTargetToFlange(translated, robot.offset)), "complete endpoint was not preflighted first");
-        robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = .21;
-        const auto deviation = rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", translated,
-            {10, 5}, robot.cancelled, {0, 2000, .2}); });
-        require(robot.sends == 1 && robot.stops == 1 && deviation.find("意外变化") != std::string::npos,
-            "orientation outside arrival tolerance bypassed unexpected-motion guard");
         for (double residual : {-collection::positionToleranceMm, collection::positionToleranceMm}) {
-            robot.reset(); robot.strictTarget = false; robot.arrivalPositionError = residual;
-            collection::moveSelectedTcpTarget(1, "selected-probe", translated, {10, 5},
-                robot.cancelled, {0, 2000});
-            require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, translated),
-                "valid position residual blocked the next serial segment");
+            robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100;
+            robot.arrivalPositionError = residual;
+            collection::moveSelectedTcpLinear(1, "selected-probe", thirtyMmTarget,
+                robot.cancelled, {0, 2000}, {}, 100);
+            require(robot.sends == 1 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, thirtyMmTarget),
+                    "complete target rejected a valid position residual");
         }
-        robot.reset(); robot.strictTarget = false;
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 100;
         robot.arrivalPositionError = collection::positionToleranceMm + .001;
-        rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", translated,
-            {10, 5}, robot.cancelled, {0, 500}); });
+        rejects([&] {
+            collection::moveSelectedTcpLinear(1, "selected-probe", thirtyMmTarget,
+                robot.cancelled, {0, 500}, {}, 100);
+        });
         require(robot.sends == 1 && robot.stops == 1,
-            "position outside arrival tolerance was accepted by the next serial segment");
+                "complete target accepted position feedback outside arrival tolerance");
         std::cout << "Manual selected-TCP trajectory, transform, preflight, stop and stationary checks passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }
