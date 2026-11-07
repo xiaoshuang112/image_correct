@@ -118,8 +118,6 @@ void CollectionController::copyCurrentTcpCoordinates(const QString& mode) {
     } catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); }
 }
 
-void CollectionController::moveTcpTo(const QString& text) { moveTcpToDisplay(text, "axis"); }
-
 void CollectionController::moveTcpToDisplay(const QString& text, const QString& mode) {
     if (m_collectionBusy) return;
     try {

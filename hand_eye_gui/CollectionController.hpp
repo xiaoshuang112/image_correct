@@ -73,7 +73,6 @@ class CollectionController : public QObject
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString ninePointProgress READ ninePointProgress NOTIFY collectionChanged)
     Q_PROPERTY(QVariantList ninePointDefaultYawOffsets READ ninePointDefaultYawOffsets CONSTANT)
-    Q_PROPERTY(QVariantList tcpPoseValues READ tcpPoseValues NOTIFY tcpPoseChanged)
     Q_PROPERTY(bool tcpPoseValid READ tcpPoseValid NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseStatus READ tcpPoseStatus NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseTimestamp READ tcpPoseTimestamp NOTIFY tcpPoseChanged)
@@ -86,8 +85,6 @@ class CollectionController : public QObject
     Q_PROPERTY(double manualLinearSpeedMmS READ manualLinearSpeedMmS NOTIFY teachSettingsChanged)
     Q_PROPERTY(double manualAngularSpeedDegS READ manualAngularSpeedDegS NOTIFY teachSettingsChanged)
     Q_PROPERTY(bool jogActive READ jogActive NOTIFY collectionChanged)
-    Q_PROPERTY(bool teachAngularMotionAvailable READ teachAngularMotionAvailable CONSTANT)
-    Q_PROPERTY(QString teachAngularMotionStatus READ teachAngularMotionStatus CONSTANT)
     Q_PROPERTY(QString previewPositiveX READ previewPositiveX NOTIFY previewDirectionsChanged)
     Q_PROPERTY(QString previewPositiveY READ previewPositiveY NOTIFY previewDirectionsChanged)
     Q_PROPERTY(QString lastCaptureTime READ lastCaptureTime NOTIFY collectionChanged)
@@ -125,7 +122,6 @@ public:
     Q_INVOKABLE void chooseTcpCoordinateFile();
     Q_INVOKABLE void importTcpCoordinates(const QUrl& url);
     Q_INVOKABLE QVariantMap parseTcpTarget(const QString& text) const;
-    Q_INVOKABLE void moveTcpTo(const QString& text);
     QVariantList tcpPoseValues() const { return m_tcpPoseValues; }
     bool tcpPoseValid() const { return m_tcpPoseValid; }
     QString tcpPoseStatus() const;
@@ -140,8 +136,6 @@ public:
     double manualLinearSpeedMmS() const { return m_teachSpeeds.linearMmS; }
     double manualAngularSpeedDegS() const { return m_teachSpeeds.angularDegS; }
     bool jogActive() const { return bool(m_jogLease); }
-    bool teachAngularMotionAvailable() const { return true; }
-    QString teachAngularMotionStatus() const { return "角度步进控制目标推进速率；单段实际角速度由机器人控制器规划"; }
     QString previewPositiveX() const { return m_previewPositiveX; }
     QString previewPositiveY() const { return m_previewPositiveY; }
     QString lastCaptureTime() const { return m_lastCaptureTime; }

@@ -168,9 +168,14 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
     const std::atomic<bool>& cancelled, const TeachJogLease* lease,
     LineMotionWait wait, const MotionTick& tick) {
     const double angularTravel = orientationDistance(before, target);
-    if (angularTravel > 0.100001 || distance(before, target, 0) > 1.000001 ||
+    const double linearTravel = distance(before, target, 0);
+    if (angularTravel > 0.100001 || linearTravel > 1.000001 ||
         distance(before, target, 3) > 1.0)
         throw std::runtime_error("示教目标超出单步连续运动范围");
+    // The prior segment may have settled anywhere within the configured
+    // tolerance. Keep that allowance even if this shorter segment tightens its
+    // own angular arrival test; do not classify a valid residual as a new move.
+    const double angleDeviationTolerance = wait.angleToleranceDeg;
     if (angularTravel > 1e-7) wait.angleToleranceDeg = std::min(wait.angleToleranceDeg,
         std::max(0.00001, angularTravel / 4));
     auto guard = [&] {
@@ -178,8 +183,8 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
         if (actual.offset != origin.offset) throw std::runtime_error("所选 TCP 工具偏移已变化，请重新开始示教");
         // Reject an external move rather than turn a nominal small segment into
         // a distant target. Pose tolerances are the shared completion tolerances.
-        if (distance(actual.pose, target, 0) > 1.1 ||
-            orientationDistance(actual.pose, target) > angularTravel + 0.02)
+        if (distance(actual.pose, target, 0) > linearTravel + positionToleranceMm + 1e-9 ||
+            orientationDistance(actual.pose, target) > angularTravel + angleDeviationTolerance + 1e-9)
             throw std::runtime_error("TCP 位置或姿态发生意外变化，请停止后重新开始示教");
     };
     moveSelectedTcpLinear(handle, name, target, cancelled, wait, tick,
@@ -190,6 +195,7 @@ void segment(RobotHandle handle, const QString& name, const TcpPose& origin,
 void moveSelectedTcpTarget(RobotHandle handle, const QString& name, const FlangePose& target,
     const TeachSpeeds& speeds, const std::atomic<bool>& cancelled, LineMotionWait wait,
     MotionTick tick, TeachOrientation orientation) {
+    const auto operationStarted = std::chrono::steady_clock::now();
     speedsChecked(speeds);
     finite(target);
     representation(orientation);
@@ -216,8 +222,18 @@ void moveSelectedTcpTarget(RobotHandle handle, const QString& name, const Flange
     const double countValue = std::max({1.0, std::ceil(linear - 1e-9), std::ceil(angularBound / angularStepDeg - 1e-9)});
     if (countValue > 1000000) throw std::runtime_error("TCP 目标距离过大");
     const int count = static_cast<int>(countValue);
-    const auto operationStarted = std::chrono::steady_clock::now();
     const auto deadline = operationStarted + std::chrono::milliseconds(wait.timeoutMs);
+    const double linearSpeed = angularBound > 1e-9 ? std::min(speeds.linearMmS, rotatingSdkSpeedMmS) : speeds.linearMmS;
+    const double minimumDuration = std::max(linear / linearSpeed, angularBound / speeds.angularDegS);
+    auto checkTimeBudget = [&] {
+        demandControl(cancelled, nullptr);
+        const double remaining = std::chrono::duration<double>(deadline - std::chrono::steady_clock::now()).count();
+        if (minimumDuration + wait.settlingMs / 1000.0 >= remaining)
+            throw std::runtime_error("按当前速度无法在总超时内完成目标移动及稳定等待，未下发运动");
+    };
+    checkTimeBudget();
+    checkSelectedTcpTarget(handle, name, target, cancelled);
+    checkTimeBudget();
     auto before = origin.pose;
     for (int index = 1; index <= count; ++index) {
         demandControl(cancelled, nullptr);
@@ -232,7 +248,7 @@ void moveSelectedTcpTarget(RobotHandle handle, const QString& name, const Flange
         if (segmentWait.timeoutMs <= segmentWait.settlingMs) throw std::runtime_error("TCP 目标移动总时间超时");
         segment(handle, name, origin, before, next, speeds, cancelled, nullptr, segmentWait, tick);
         if (std::chrono::steady_clock::now() >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
-        const double duration = std::max(linear / speeds.linearMmS, angularBound / speeds.angularDegS) / count;
+        const double duration = minimumDuration / count;
         const auto due = began + std::chrono::duration_cast<std::chrono::steady_clock::duration>(std::chrono::duration<double>(duration));
         if (due >= deadline) throw std::runtime_error("TCP 目标移动总时间超时");
         paceUntil(due, cancelled, nullptr, tick);

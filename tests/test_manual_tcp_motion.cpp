@@ -34,7 +34,11 @@ struct Robot {
     bool badPose = false, badJoint = false, badInverse = false, badLimit = false;
     bool wrongIdentity = false, changeBeforeSend = false, changeDuringMove = false;
     bool strictTarget = true;
-    double limit = 360;
+    double limit = 360, reducedLimit = 360;
+    double inverseMaxX = std::numeric_limits<double>::infinity();
+    double jointLimitFromX = std::numeric_limits<double>::infinity();
+    double arrivalPositionError = 0, arrivalAngleError = 0;
+    std::vector<FlangePose> inverseTargets;
     CRresult lineCode = sucess, stopCode = sucess, inverseCode = sucess, limitCode = sucess, poseCode = sucess;
     int sends = 0, stops = 0, polls = 0, lookups = 0, cancelOnPoll = 0, limitReads = 0;
     int slowPoseLookup = 0;
@@ -42,10 +46,13 @@ struct Robot {
         actual = {100, 200, 300, 0, 0, 0}; offset = {0, 0, 100, 0, 0, 0};
         ikPose = {}; ikJoints = {}; command = {}; cancelled = false;
         commands.clear(); slowPoseLookup = 0;
+        inverseTargets.clear();
+        inverseMaxX = jointLimitFromX = std::numeric_limits<double>::infinity();
+        arrivalPositionError = arrivalAngleError = 0;
         expectedSpeed = 10;
         issued = neverReach = alwaysMoving = fault = false;
         badPose = badJoint = badInverse = badLimit = false;
-        wrongIdentity = changeBeforeSend = changeDuringMove = false; limit = 360;
+        wrongIdentity = changeBeforeSend = changeDuringMove = false; limit = reducedLimit = 360;
         strictTarget = true;
         lineCode = stopCode = inverseCode = limitCode = poseCode = sucess;
         sends = stops = polls = lookups = cancelOnPoll = limitReads = 0;
@@ -82,8 +89,11 @@ extern "C" CRresult cr_get_robotMoveStatus(RobotHandle, BOOL* moving) {
     ++robot.polls;
     if (robot.cancelOnPoll && robot.polls >= robot.cancelOnPoll) robot.cancelled = true;
     *moving = robot.alwaysMoving || robot.polls < 2;
-    if (robot.polls >= 2 && !robot.neverReach)
+    if (robot.polls >= 2 && !robot.neverReach) {
         std::copy_n(robot.command.pose, ROB_AXIS_NUM, robot.actual.begin());
+        robot.actual[0] += robot.arrivalPositionError;
+        robot.actual[3] += robot.arrivalAngleError;
+    }
     return sucess;
 }
 extern "C" CRresult cr_get_AssignTCP_Pose(RobotHandle, double* offset, double* pose) {
@@ -101,15 +111,18 @@ extern "C" CRresult cr_get_jointActualPos(RobotHandle, double* joints) {
 }
 extern "C" CRresult cr_kineInverse(RobotHandle, double* pose, double*, double* joints) {
     std::copy_n(pose, ROB_AXIS_NUM, robot.ikPose.begin());
+    robot.inverseTargets.push_back(robot.ikPose);
     std::copy(robot.ikJoints.begin(), robot.ikJoints.end(), joints);
+    if (pose[0] >= robot.jointLimitFromX) joints[0] = std::min(robot.limit, robot.reducedLimit) + 1;
     if (robot.badInverse) joints[0] = std::numeric_limits<double>::quiet_NaN();
-    return robot.inverseCode;
+    return pose[0] > robot.inverseMaxX ? sdkError : robot.inverseCode;
 }
 extern "C" CRresult cr_cfg_safety_joint_limit_get(RobotHandle, SafetyLimitsMode mode, int axis, SafetyLimitsJointAngle* limit) {
     require(axis >= 0 && axis < ROB_AXIS_NUM, "SDK safety index must be zero-based");
     require(mode == mode_Normal || mode == mode_Reduced, "invalid safety envelope");
     ++robot.limitReads;
-    *limit = {180, -robot.limit, robot.limit};
+    const double bound = mode == mode_Reduced ? robot.reducedLimit : robot.limit;
+    *limit = {180, -bound, bound};
     if (robot.badLimit) limit->minJointPosition = std::numeric_limits<double>::quiet_NaN();
     return robot.limitCode;
 }
@@ -325,6 +338,58 @@ int main(int argc, char** argv) {
                 "multi-component step exceeded .1 degree or moved TCP center");
             previous = issued;
         }
+        // Reject the complete requested destination before moving through any
+        // otherwise reachable intermediate positions.
+        for (int failure = 0; failure < 3; ++failure) {
+            robot.reset(); robot.strictTarget = false;
+            if (failure == 0) robot.inverseMaxX = 102;
+            else robot.jointLimitFromX = 103;
+            if (failure == 2) robot.reducedLimit = 180;
+            auto unreachable = robot.actual; unreachable[0] = 104;
+            rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", unreachable,
+                {10, 5}, robot.cancelled, {0, 2000}); });
+            require(robot.sends == 0, "unreachable complete target moved through partial targets first");
+        }
+        for (bool rotating : {false, true}) {
+            robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+            auto tooSlow = robot.actual; tooSlow[rotating ? 3 : 0] += 1;
+            rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", tooSlow,
+                {1, .1}, robot.cancelled, {0, 200}); });
+            require(robot.sends == 0, "impossible total motion duration was rejected only after moving");
+        }
+        robot.reset(); robot.strictTarget = false; robot.expectedSpeed = 1;
+        auto mixed = robot.actual; mixed[0] += 1; mixed[3] += .1;
+        rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", mixed,
+            {100, 180}, robot.cancelled, {0, 200}); });
+        require(robot.sends == 0, "duration check ignored the 1 mm/s SDK limit for rotating segments");
+        // A pure translation can settle with an angular residual allowed by
+        // the configured arrival tolerance, including between serial segments.
+        robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = .1;
+        auto translated = robot.actual; translated[0] += 2;
+        collection::moveSelectedTcpTarget(1, "selected-probe", translated, {10, 5},
+            robot.cancelled, {0, 2000, .2});
+        require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, translated, .2),
+            "valid arrival residual was treated as unexpected orientation movement");
+        require(!robot.inverseTargets.empty() && collection::flangeAtTarget(robot.inverseTargets.front(),
+            collection::tcpTargetToFlange(translated, robot.offset)), "complete endpoint was not preflighted first");
+        robot.reset(); robot.strictTarget = false; robot.arrivalAngleError = .21;
+        const auto deviation = rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", translated,
+            {10, 5}, robot.cancelled, {0, 2000, .2}); });
+        require(robot.sends == 1 && robot.stops == 1 && deviation.find("意外变化") != std::string::npos,
+            "orientation outside arrival tolerance bypassed unexpected-motion guard");
+        for (double residual : {-collection::positionToleranceMm, collection::positionToleranceMm}) {
+            robot.reset(); robot.strictTarget = false; robot.arrivalPositionError = residual;
+            collection::moveSelectedTcpTarget(1, "selected-probe", translated, {10, 5},
+                robot.cancelled, {0, 2000});
+            require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, translated),
+                "valid position residual blocked the next serial segment");
+        }
+        robot.reset(); robot.strictTarget = false;
+        robot.arrivalPositionError = collection::positionToleranceMm + .001;
+        rejects([&] { collection::moveSelectedTcpTarget(1, "selected-probe", translated,
+            {10, 5}, robot.cancelled, {0, 500}); });
+        require(robot.sends == 1 && robot.stops == 1,
+            "position outside arrival tolerance was accepted by the next serial segment");
         std::cout << "Manual selected-TCP trajectory, transform, preflight, stop and stationary checks passed\n";
         return 0;
     } catch (const std::exception& e) { std::cerr << e.what() << '\n'; return 1; }

@@ -5,7 +5,6 @@
 
 #include <QString>
 
-#include <initializer_list>
 #include <vector>
 #include <utility>
 #include <atomic>
@@ -28,7 +27,6 @@ public:
     static DiagnosticLogger& instance();
 
     bool initialize();
-    QString sessionId() const;
     void log(Level level,
              const char* category,
              const QString& message,
@@ -36,14 +34,6 @@ public:
              int line = 0,
              const char* function = nullptr);
     using LogField = std::pair<QString, QString>;
-    void logEvent(Level level,
-                  const char* category,
-                  const QString& event,
-                  const QString& result,
-                  std::initializer_list<LogField> fields = {},
-                  const char* file = nullptr,
-                  int line = 0,
-                  const char* function = nullptr);
     void logEvent(Level level,
                   const char* category,
                   const QString& event,

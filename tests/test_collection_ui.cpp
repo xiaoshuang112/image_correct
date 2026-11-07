@@ -91,7 +91,6 @@ SharedCollectionState {
     property int cameraActualHeight: 3036
     property int cameraExposureUs: 12000
     property int cameraActualExposureUs: 12000
-    property string logText: ""
     property string handEyePath: "/tmp/calibration.yaml"
     property string outputDirectory: "/tmp/collect-ui-check"
     property string exposureList: "5000,8500,14500,25000"
@@ -125,7 +124,9 @@ SharedCollectionState {
     property bool captureCancelled: false
     function capturePhoto() {
         beginCapture() // beginCollectionOperation notifies before increment
-        finishCapture(!captureFailure && !captureCancelled) // one shared completion NOTIFY
+        var saved = !captureFailure && !captureCancelled
+        if (saved) lastCaptureTime = Qt.formatTime(new Date(), "hh:mm:ss")
+        finishCapture(saved) // one shared completion NOTIFY
     }
     function openCollectionFolder() {}
     function refreshTcpTools() {
@@ -152,8 +153,6 @@ SharedCollectionState {
     property string tcpPoseTool: ""
     property bool tcpPoseFresh: true
     property string orientationMode: "axis"
-    property bool teachAngularMotionAvailable: true
-    property string teachAngularMotionStatus: "角度示教可用"
     readonly property var tcpDisplayPoseValues: tcpPoseValues.map(function(v,i) { return i >= 3 && orientationMode === "euler" ? v + 1 : v })
     property real manualLinearSpeedMmS: 10
     property real manualAngularSpeedDegS: 5
@@ -168,12 +167,13 @@ SharedCollectionState {
     function beginTcpJog(axis, sign, mode) { jogCalls++; activeLease = jogCalls; jogActive = true; return activeLease }
     function renewTcpJog(token) { if (token === activeLease && jogActive) jogHeartbeats++ }
     function stopTcpJog(token) { if (token === activeLease && jogActive) { jogStops++; jogActive = false } }
+    property bool conversionFailure: false
     function convertTcpPose(text, from, to) {
+        if (conversionFailure) return {valid: false, error: "模拟欧拉奇异点：转换失败", values: []}
         var result = parseTcpTarget(text)
         if (result.valid && from !== to) result.values = result.values.map(function(v,i) { return i < 3 ? v : v + (to === "euler" ? 1 : -1) })
         return result
     }
-    function moveTcpToDisplay(text, mode) { moveTcpTo(text) }
     function copyCurrentTcpCoordinates(mode) { copyText(tcpDisplayPoseValues.map(function(v) { return Number(v).toFixed(2) }).join(",")) }
     function setPreviewDirections(x,y) {
         previewPositiveX = x
@@ -198,7 +198,7 @@ SharedCollectionState {
         }
         return {valid: true, error: "", values: values}
     }
-    function moveTcpTo(text) { manualMoveCalls++; lastTarget = text; manualMoveActive = true; collectionBusy = true; manualMoveProgress = "正在移动" }
+    function moveTcpToDisplay(text, mode) { manualMoveCalls++; lastTarget = text; manualMoveActive = true; collectionBusy = true; manualMoveProgress = "正在移动" }
     property bool settingsSaving: false
     property bool coordinatesImporting: false
     property int coordinateDialogCalls: 0
@@ -296,10 +296,12 @@ SharedCollectionState {
         require(flashes.count() == 0, "unchanged count flashed");
         invoke("capturePhoto");
         require(flashes.count() == 1, "successful capture did not flash once");
+        const auto lastCaptureTime = controller->property("lastCaptureTime").toString();
+        require(!lastCaptureTime.isEmpty() && text("savedCountSummary").endsWith(lastCaptureTime), "saved summary did not show backend capture time");
         invoke("collectionChanged");
         require(flashes.count() == 1, "shared NOTIFY flashed unchanged count");
         controller->setProperty("captureFailure", true); invoke("capturePhoto");
-        require(flashes.count() == 1, "failed capture flashed");
+        require(flashes.count() == 1 && controller->property("lastCaptureTime").toString() == lastCaptureTime, "failed capture changed saved history");
         controller->setProperty("captureFailure", false);
         controller->setProperty("savedImageCount", 0);
         require(imageArea->property("seenCount").toInt() == 0 && !animation->property("running").toBool(), "reset retained shutter history");
@@ -348,8 +350,18 @@ SharedCollectionState {
         require(item("actualPoseWhileEditing")->isVisible() && text("actualPoseWhileEditing").contains("101.00") && !item("jog0Plus")->isEnabled(), "draft does not isolate target and actual");
         click(item("copyPoseButton"));
         require(QGuiApplication::clipboard()->text().startsWith("101.00,-21.00,301.00"), "copy copied draft instead of actual");
-        require(QMetaObject::invokeMethod(teach, "changeMode", Q_ARG(QVariant, QVariant("euler"))), "cannot switch representation"); QTest::qWait(20);
-        require(controller->property("orientationMode").toString() == "euler" && text("tcpAxis3").toDouble() == 1.0 && controller->property("manualMoveCalls").toInt() == 0, "representation switch did not convert frozen target without motion");
+        auto* modeSelector = item("orientationModeSelector");
+        controller->setProperty("conversionFailure", true);
+        modeSelector->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Down); QTest::qWait(20);
+        require(modeSelector->property("currentIndex").toInt() == 0 &&
+            controller->property("orientationMode").toString() == "axis" &&
+            teach->property("targetText").toString() == frozenTarget && teach->property("feedback").toString().contains("转换失败") &&
+            controller->property("manualMoveCalls").toInt() == 0 && controller->property("jogCalls").toInt() == 0,
+            "failed conversion left selector, interpretation or target out of sync");
+        controller->setProperty("conversionFailure", false);
+        QTest::keyClick(window, Qt::Key_Down); QTest::qWait(20);
+        require(modeSelector->property("currentIndex").toInt() == 1 && controller->property("orientationMode").toString() == "euler" && text("tcpAxis3").toDouble() == 1.0 && teach->property("feedback").toString().isEmpty() && controller->property("manualMoveCalls").toInt() == 0, "representation switch did not convert frozen target and clear previous error without motion");
         item("tcpAxis0")->forceActiveFocus(); QTest::keyClick(window, Qt::Key_Return); QTest::keyClick(window, Qt::Key_Space);
         require(controller->property("manualMoveCalls").toInt() == 0 && count() == 2, "target keyboard activated motion/capture");
         click(item("useCurrentPoseButton"));
@@ -379,9 +391,6 @@ SharedCollectionState {
         press(jog); QTest::qWait(100); window->setProperty("page", "settings"); QTest::qWait(220); release(jog);
         require(controller->property("jogCalls").toInt() == 5, "page change did not cancel pending hold");
         window->setProperty("page", "main"); QTest::qWait(20);
-        controller->setProperty("teachAngularMotionAvailable", false); QTest::qWait(10);
-        require(!item("jog3Plus")->isEnabled() && item("jog0Plus")->isEnabled(), "unsupported angle capability not reflected");
-        controller->setProperty("teachAngularMotionAvailable", true);
         require(QMetaObject::invokeMethod(controller.get(), "setPreviewDirections", Q_ARG(QVariant, QVariant("right")), Q_ARG(QVariant, QVariant("right"))), "direction update failed"); QTest::qWait(10);
         require(item("previewDirectionY")->property("choices").toList().size() == 2 && controller->property("previewPositiveY").toString() == "up", "directions not perpendicular");
         invoke("frameUpdated");

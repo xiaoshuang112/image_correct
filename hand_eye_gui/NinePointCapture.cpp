@@ -130,7 +130,6 @@ bool flangeAtTarget(const FlangePose& actual, const FlangePose& target, double a
     const cv::Mat b = calib_transform::axisAnglePoseToTransform(target.data());
     const cv::Mat rotation = a(cv::Rect(0, 0, 3, 3)).t() * b(cv::Rect(0, 0, 3, 3));
     const double angle = std::acos(std::clamp((cv::trace(rotation)[0] - 1) / 2, -1.0, 1.0)) * 180 / CV_PI;
-    constexpr double positionToleranceMm = 0.05;
     return distanceSquared <= positionToleranceMm * positionToleranceMm + 1e-12 && angle <= angleToleranceDeg;
 }
 

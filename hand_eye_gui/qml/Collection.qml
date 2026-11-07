@@ -23,9 +23,7 @@ ApplicationWindow {
     property string frameMetadata: ""
     property bool hasFrame: false
     property int seenCount: controller.savedImageCount
-    property int shutterSerial: 0
     property bool historyReady: false
-    property string latestSaveTime: "—"
     readonly property bool interactionLocked: busy || teach.jogHeld
     function takePhoto() { if (ready && page === "main" && !teach.jogHeld) controller.capturePhoto() }
     function ninePointAngles() {
@@ -40,7 +38,7 @@ ApplicationWindow {
     }
     function syncHistory() {
         var count = controller.savedImageCount
-        if (historyReady && count > seenCount) { ++shutterSerial; latestSaveTime = Qt.formatTime(new Date(), "hh:mm:ss"); shutterFlash.restart() }
+        if (historyReady && count > seenCount) { shutterFlash.restart() }
         else if (count < seenCount) { shutterFlash.stop(); flash.opacity = 0 }
         seenCount = count; historyReady = true
     }
@@ -175,7 +173,7 @@ ApplicationWindow {
                             HmiText { visible: !root.compact; text: "运行信息"; font.pixelSize: Theme.meta }
                             HmiText { objectName: "taskSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta; text: "当前任务  " + (root.controller.motionFault ? "等待停止确认" : root.controller.jogActive ? "长按微调" : root.controller.manualMoveActive ? "目标移动" : root.controller.collectionBusy ? "采集中" : "待机") }
                             HmiText { objectName: "ninePointProgress"; Layout.fillWidth: true; font.pixelSize: Theme.meta; maximumLineCount: root.compact ? 1 : 2; elide: Text.ElideRight; text: "采集进度  " + (root.controller.ninePointProgress || "—") }
-                            HmiText { objectName: "savedCountSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta; text: "已保存  " + root.controller.savedImageCount + " 张   ·   " + (root.controller.lastCaptureTime || root.latestSaveTime) }
+                            HmiText { objectName: "savedCountSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta; text: "已保存  " + root.controller.savedImageCount + " 张   ·   " + (root.controller.lastCaptureTime || "—") }
                             HmiText { objectName: "latestResult"; Layout.fillWidth: true; font.pixelSize: Theme.meta; maximumLineCount: root.compact ? 2 : 3; elide: Text.ElideRight; text: !teach.poseReady || root.busy || teach.targetDraft && !teach.parsed.valid ? teach.reason : teach.feedback || teach.reason; color: root.controller.motionFault ? Theme.danger : teach.targetDraft ? Theme.warning : Theme.ink2 }
                             HmiText {
                                 objectName: "actualPoseWhileEditing"; visible: teach.targetDraft; Layout.fillWidth: true; font.pixelSize: Theme.meta; font.family: Theme.mono

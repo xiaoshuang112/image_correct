@@ -422,7 +422,7 @@ int main(int argc, char** argv) {
                     "stop failure unlocked controller or continued collecting");
             const auto lines = robot.lines.load();
             controller.disconnectRobot(); controller.closeCamera(); controller.connectRobot();
-            controller.capturePhoto(); controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets()); controller.moveTcpTo("100,200,300,180,0,0");
+            controller.capturePhoto(); controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets()); controller.moveTcpToDisplay("100,200,300,180,0,0", "axis");
             require(controller.robotConnected() && controller.cameraOpened() && robot.destroys == 0 &&
                     robot.lines == lines && robot.unexpected == 0, "fault lock allowed device teardown or new operation");
             const auto stops = robot.stops.load();
@@ -520,7 +520,7 @@ int main(int argc, char** argv) {
             CollectionControllerTestAccess::tools(controller);
             require(!controller.parseTcpTarget("1,2,3,4,5,nan")["valid"].toBool(), "backend accepted non-finite target");
             require(controller.parseTcpTarget("1， 2,3,4,5,6")["values"].toList().size() == 6, "backend rejected valid target");
-            controller.moveTcpTo("1,2,3");
+            controller.moveTcpToDisplay("1,2,3", "axis");
             require(!controller.collectionBusy() && robot.lines == 0, "invalid target started operation");
             robot.readDelayMs = 350;
             controller.setSelectedTcp("ToolA");
@@ -571,7 +571,7 @@ int main(int argc, char** argv) {
             robot.readDelayMs = 700;
             controller->setSelectedTcp("ToolA");
             waitFor([&] { return robot.activeReads > 0; });
-            controller->moveTcpTo("120,200,300,180,0,0");
+            controller->moveTcpToDisplay("120,200,300,180,0,0", "axis");
             QElapsedTimer elapsed; elapsed.start();
             controller.reset();
             require(elapsed.elapsed() < 150 && robot.lines == 0 && robot.destroys == 0,
@@ -586,7 +586,7 @@ int main(int argc, char** argv) {
             CollectionControllerTestAccess::tools(controller);
             controller.setSelectedTcp("ToolA");
             controller.closeCamera(); // Manual robot motion does not require camera readiness.
-            controller.moveTcpTo("120,200,300,180,0,0");
+            controller.moveTcpToDisplay("120,200,300,180,0,0", "axis");
             require(controller.collectionBusy() && controller.manualMoveActive(), "manual move did not lock immediately");
             controller.setSelectedTcp("ToolB");
             require(controller.selectedTcp() == "ToolA", "selected tool changed during dispatch");
@@ -607,7 +607,7 @@ int main(int argc, char** argv) {
             CollectionControllerTestAccess::prepare(controller, temp.path());
             CollectionControllerTestAccess::tools(controller);
             controller.setSelectedTcp("ToolA");
-            controller.moveTcpTo("120,200,300,180,0,0");
+            controller.moveTcpToDisplay("120,200,300,180,0,0", "axis");
             waitFor([&] { return robot.lines > 0; });
             require(robot.lastSpeed == controller.manualLinearSpeedMmS(), "manual controller did not pass its independent configured speed");
             controller.cancelCollectionOperation();

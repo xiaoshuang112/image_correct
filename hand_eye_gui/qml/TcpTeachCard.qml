@@ -44,10 +44,10 @@ CollectCard {
             draftTexts = result.values.map(function(v) { return Number(v).toString() })
         }
         controller.orientationMode = mode
+        feedback = ""
     }
     function pressJog(axis, sign) {
         if (!canJog) return
-        if (axis >= 3 && !controller.teachAngularMotionAvailable) { feedback = controller.teachAngularMotionStatus; return }
         controller.setManualSpeeds(Number(linearSpeed.text), Number(angularSpeed.text))
         heldAxis = axis; heldSign = sign; feedback = "继续按住以开始微调…"; holdDelay.restart()
     }
@@ -116,7 +116,7 @@ CollectCard {
                 text: String(card.controller.manualAngularSpeedDegS); enabled: !card.locked && !card.jogHeld
                 validator: DoubleValidator { bottom: 0.1; top: 180; decimals: 2; locale: "C" }
                 invalid: !acceptableInput
-                ToolTip.visible: hovered; ToolTip.text: "控制目标角度的推进速率；单段实际速度由机器人控制器规划"
+                ToolTip.visible: hovered; ToolTip.text: "角度步进控制目标推进速率；单段实际角速度由机器人控制器规划"
                 onEditingFinished: if (card.speedsValid) card.controller.setManualSpeeds(Number(linearSpeed.text), Number(text))
             }
             HmiText { text: "°/s"; font.pixelSize: Theme.meta }
@@ -124,7 +124,12 @@ CollectCard {
                 objectName: "orientationModeSelector"; Layout.preferredWidth: card.narrow ? 104 : 130; Layout.preferredHeight: 32; font.family: Theme.sans; font.pixelSize: Theme.meta
                 model: ["轴角", "欧拉角 ZYX"]; currentIndex: card.controller.orientationMode === "euler" ? 1 : 0
                 enabled: !card.locked && !card.jogHeld && (!card.targetDraft || card.parsed.valid)
-                onActivated: card.changeMode(currentIndex === 1 ? "euler" : "axis")
+                onActivated: {
+                    card.changeMode(currentIndex === 1 ? "euler" : "axis")
+                    // A rejected conversion does not change the controller, so
+                    // its NOTIFY cannot restore a user-modified ComboBox index.
+                    currentIndex = Qt.binding(function() { return card.controller.orientationMode === "euler" ? 1 : 0 })
+                }
             }
             Item { Layout.fillWidth: true; Layout.minimumWidth: 0 }
             CollectButton { objectName: "copyPoseButton"; text: "复制当前"; small: true; leftPadding: 8; rightPadding: 8; enabled: card.poseReady; onClicked: card.controller.copyCurrentTcpCoordinates(card.controller.orientationMode) }
@@ -164,7 +169,7 @@ CollectCard {
                                 Rectangle {
                                     id: jog; objectName: "jog" + axisGroup.axis + (slot === 0 ? "Minus" : "Plus")
                                     property bool ownHold: card.heldAxis === axisGroup.axis && card.heldSign === (slot === 0 ? -1 : 1)
-                                    enabled: card.canJog && (axisGroup.axis < 3 || card.controller.teachAngularMotionAvailable) || ownHold
+                                    enabled: card.canJog || ownHold
                                     opacity: enabled ? 1 : 0.4; radius: Theme.radiusControl
                                     color: ownHold ? Theme.accentSoft : jogArea.containsMouse ? Theme.raisedHover : Theme.raised
                                     border.color: ownHold ? Theme.accent : Theme.hairline
@@ -176,7 +181,7 @@ CollectCard {
                                         onCanceled: if (jog.ownHold) card.stopJog()
                                         onExited: if (jog.ownHold) card.stopJog()
                                     }
-                                    ToolTip.visible: jogArea.containsMouse; ToolTip.text: axisGroup.axis >= 3 && !card.controller.teachAngularMotionAvailable ? card.controller.teachAngularMotionStatus : card.canJog ? "长按微调，松开停止" : card.reason
+                                    ToolTip.visible: jogArea.containsMouse; ToolTip.text: card.canJog ? "长按微调，松开停止" : card.reason
                                 }
                             }
                         }
