@@ -34,6 +34,7 @@ CollectionController::CollectionController(QObject* parent)
     connect(m_tcpPoseTimer, &QTimer::timeout, this, &CollectionController::pollTcpPose);
     m_tcpPoseTimer->start();
 
+    m_ninePointYawDeg = collection::defaultNinePointYawOffsets;
     m_previewTimer = new QTimer(this);
     m_previewTimer->setInterval(66);  // ~15 fps
     connect(m_previewTimer, &QTimer::timeout,
@@ -177,6 +178,12 @@ void CollectionController::loadConfigYaml()
 
     m_robotIp = QString::fromStdString(collectionConfig.robot_ip);
     m_robotSpeedMmS = collectionConfig.robot_speed_mm_s;
+    m_ninePointOffsetXMm = collectionConfig.nine_point_offset_x_mm;
+    m_ninePointOffsetYMm = collectionConfig.nine_point_offset_y_mm;
+    for (size_t point = 0; point < m_ninePointYawDeg.size() && point < collectionConfig.nine_point_yaw_deg.size(); ++point)
+        m_ninePointYawDeg[point] = collectionConfig.nine_point_yaw_deg[point];
+    QStringList yawValues;
+    for (double angle : m_ninePointYawDeg) yawValues << QString::number(angle);
     QStringList exposureValues;
     for (int exposure : collectionConfig.fusion_exposures_us) exposureValues << QString::number(exposure);
     m_exposureList = exposureValues.join(",");
@@ -212,8 +219,12 @@ void CollectionController::loadConfigYaml()
                         {"robot_ip", m_robotIp},
                         {"robot_speed_mm_s", QString::number(m_robotSpeedMmS)},
                         {"fusion_exposures_us", m_exposureList},
+                        {"nine_point_offset_x_mm", QString::number(m_ninePointOffsetXMm)},
+                        {"nine_point_offset_y_mm", QString::number(m_ninePointOffsetYMm)},
+                        {"nine_point_yaw_deg", yawValues.join(",")},
                         {"camera_gain", QString::number(m_cameraGain)},
                         {"resolved", sources.join(", ")}});
+    emit ninePointPlanChanged();
     } catch (const std::exception& error) {
         APP_LOG_EVENT_ERROR("config", "config_load", "fail",
             {{"path", QString::fromStdString(cfg_file)}, {"error", QString::fromUtf8(error.what())},
@@ -493,19 +504,47 @@ void CollectionController::setPreviewDisplaySize(const QSize& size)
     emit previewDisplaySizeChanged();
 }
 
+bool CollectionController::previewFrameGrabAllowed() const
+{
+    // Hidden pages and a user pause stay off. Exposure grabs are the only
+    // capture window that takes the camera; motion, settling, fusion and
+    // saving keep the live image moving.
+    if (!m_previewVisible || !m_previewActive || !m_cameraOpened || m_exposureCaptureActive)
+        return false;
+    return !m_previewHeld || m_manualMoveActive;
+}
+
 void CollectionController::updatePreviewTimer()
 {
-    // 页面隐藏只暂停预览处理，不改变用户的预览开关，也不影响采集线程。
-    if (m_previewVisible && m_previewActive && m_cameraOpened && (!m_collectionBusy || m_manualMoveActive)) {
+    if (previewFrameGrabAllowed()) {
         if (!m_previewTimer->isActive()) m_previewTimer->start();
     } else {
         m_previewTimer->stop();
     }
 }
 
+void CollectionController::suspendPreviewForExposure()
+{
+    QMetaObject::invokeMethod(this, [this] {
+        m_exposureCaptureActive = true;
+        ++m_previewGeneration;
+        updatePreviewTimer();
+    }, Qt::BlockingQueuedConnection);
+    if (m_previewFuture.valid()) m_previewFuture.wait();
+}
+
+void CollectionController::resumePreviewAfterExposure()
+{
+    QMetaObject::invokeMethod(this, [this] {
+        m_exposureCaptureActive = false;
+        updatePreviewTimer();
+        if (m_previewTimer->isActive()) onPreviewTick();
+    }, Qt::BlockingQueuedConnection);
+}
+
 void CollectionController::onPreviewTick()
 {
-    if (!m_previewVisible || !m_previewActive || !m_camera || !m_cameraOpened || (m_collectionBusy && !m_manualMoveActive)) return;
+    if (!previewFrameGrabAllowed() || !m_camera) return;
     try {
         if (m_previewFuture.valid()) {
             if (m_previewFuture.wait_for(std::chrono::milliseconds(0)) != std::future_status::ready) return;
@@ -540,7 +579,7 @@ void CollectionController::onPreviewTick()
                 }
             }
         }
-        if (!m_previewVisible || !m_previewActive || (m_collectionBusy && !m_manualMoveActive) || !m_cameraOpened) return;
+        if (!previewFrameGrabAllowed()) return;
         const auto camera = m_camera;
         const auto maps = m_undistortionMaps;
         const auto displaySize = m_previewDisplaySize;

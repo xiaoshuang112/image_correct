@@ -11,6 +11,7 @@
 #include <QElapsedTimer>
 #include <QPointer>
 #include <QUrl>
+#include <array>
 #include <functional>
 #include <mutex>
 #include <chrono>
@@ -73,6 +74,9 @@ class CollectionController : public QObject
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString ninePointProgress READ ninePointProgress NOTIFY collectionChanged)
     Q_PROPERTY(QVariantList ninePointDefaultYawOffsets READ ninePointDefaultYawOffsets CONSTANT)
+    Q_PROPERTY(double ninePointOffsetXMm READ ninePointOffsetXMm NOTIFY ninePointPlanChanged)
+    Q_PROPERTY(double ninePointOffsetYMm READ ninePointOffsetYMm NOTIFY ninePointPlanChanged)
+    Q_PROPERTY(QVariantList ninePointYawOffsets READ ninePointYawOffsets NOTIFY ninePointPlanChanged)
     Q_PROPERTY(bool tcpPoseValid READ tcpPoseValid NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseStatus READ tcpPoseStatus NOTIFY tcpPoseChanged)
     Q_PROPERTY(QString tcpPoseTimestamp READ tcpPoseTimestamp NOTIFY tcpPoseChanged)
@@ -115,6 +119,9 @@ public:
     QString selectedTcp() const { return m_selectedTcp; }
     QString ninePointProgress() const { return m_ninePointProgress; }
     QVariantList ninePointDefaultYawOffsets() const;
+    double ninePointOffsetXMm() const { return m_ninePointOffsetXMm; }
+    double ninePointOffsetYMm() const { return m_ninePointOffsetYMm; }
+    QVariantList ninePointYawOffsets() const;
     void setSelectedTcp(const QString& name);
     Q_INVOKABLE void openCollectionFolder();
     Q_INVOKABLE void openDiagnosticFolder();
@@ -213,13 +220,18 @@ signals:
     void tcpPoseChanged();
     void teachSettingsChanged();
     void previewDirectionsChanged();
+    void ninePointPlanChanged();
 
 private:
     friend struct CollectionControllerTestAccess;
     friend struct CollectionSettingsTestAccess;
     void initializeCollection();
     void loadCollectionUndistortion();
-    void beginCollectionOperation();
+    void beginCollectionOperation(bool holdPreview = true);
+    void suspendPreviewForExposure();
+    void resumePreviewAfterExposure();
+    bool previewFrameGrabAllowed() const;
+    bool persistNinePointPlan(double xMm, double yMm, const std::array<double, 9>& yaw, QString& error);
     void startCapture(bool ninePoints, double xMm = 0, double yMm = 0, const QVariantList& yawValues = {});
     void recordCapture(const QString& path);
     void confirmMotionStopped();
@@ -357,7 +369,8 @@ private:
     bool m_motionFault = false;
     bool m_stopRetrying = false;
     std::atomic<bool> m_robotStopUnconfirmed{false};
-    bool m_collectionWasPreviewing = false;
+    bool m_previewHeld = false;
+    bool m_exposureCaptureActive = false;
     QString m_outputDirectory;
     QString m_exposureList = "5000,8500,14500,25000";
     QString m_handEyePath;
@@ -366,6 +379,9 @@ private:
     std::shared_ptr<const collection::UndistortionMaps> m_undistortionMaps;
     QString m_lastCapturePath;
     QString m_ninePointProgress;
+    double m_ninePointOffsetXMm = 10;
+    double m_ninePointOffsetYMm = 10;
+    std::array<double, 9> m_ninePointYawDeg{0, 15, -15, -20, 0, 20, 15, -15, 0};
     int m_savedImageCount = 0;
     int m_savedPoseCount = 0;
     std::thread m_collectionThread;

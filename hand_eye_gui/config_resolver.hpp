@@ -38,6 +38,10 @@ struct CollectionConfig {
     std::string robot_ip = "192.168.66.14";
     int robot_speed_mm_s = collection::defaultRobotSpeedMmS;
     std::vector<int> fusion_exposures_us{5000, 8500, 14500, 25000};
+    // Keep aligned with collection::defaultNinePointYawOffsets and the 10 mm UI defaults.
+    double nine_point_offset_x_mm = 10;
+    double nine_point_offset_y_mm = 10;
+    std::vector<double> nine_point_yaw_deg{0, 15, -15, -20, 0, 20, 15, -15, 0};
     std::vector<std::string> warnings;
 };
 
@@ -48,7 +52,7 @@ CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
 
 // 保留原文件注释与排版，只更新指定顶层键。目标文件通过同目录临时文件
 // 校验后原子替换；键不存在时插入到 YAML 文档头之后。
-using ConfigValue = std::variant<int, std::string, std::vector<int>>;
+using ConfigValue = std::variant<int, double, std::string, std::vector<int>, std::vector<double>>;
 using ConfigUpdates = std::map<std::string, ConfigValue>;
 // Validate and commit all edited settings in one replacement; never partially
 // persist a page when a later key is invalid or duplicated in the original.

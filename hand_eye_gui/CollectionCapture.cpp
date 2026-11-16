@@ -26,7 +26,7 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
     const QDateTime& captureTime, const std::vector<int>& exposures,
     const std::shared_ptr<const UndistortionMaps>& undistortion,
     const std::function<std::array<double, 6>()>& readFlange,
-    const std::atomic<bool>& cancelled) {
+    const std::atomic<bool>& cancelled, ExposureCameraGate gate) {
     CaptureResult result;
     const auto checkCancelled = [&] {
         if (cancelled.load()) throw std::runtime_error("拍照已取消");
@@ -42,7 +42,25 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
         } catch (const std::exception& error) {
             poseError = "无法启动法兰位姿读取：" + QString::fromUtf8(error.what());
         }
-        const auto frames = camera.captureMultiExposureImages(exposures);
+        bool suspended = false;
+        if (gate.suspend) {
+            gate.suspend();
+            suspended = true;
+        }
+        const auto resume = [&] {
+            if (!suspended || !gate.resume) return;
+            suspended = false;
+            try { gate.resume(); }
+            catch (...) {}
+        };
+        std::vector<cv::Mat> frames;
+        try {
+            frames = camera.captureMultiExposureImages(exposures);
+            resume();
+        } catch (...) {
+            resume();
+            throw;
+        }
         checkCancelled();
         if (frames.size() != exposures.size())
             throw std::runtime_error("未采齐全部曝光帧，本次未保存图片");

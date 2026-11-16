@@ -124,6 +124,22 @@ int main(int argc, char** argv) {
                 record(jsonPath(raw)) == record(jsonPath(corrected.path)) &&
                 QFileInfo::exists(corrected.path.left(corrected.path.size()-4) + ".pixel_frame.json"),
                 "undistorted/raw pair or metadata format changed");
+        int stage = 0;
+        collection::ExposureCameraGate gate{
+            [&] { require(stage == 0, "preview suspended twice"); stage = 1; },
+            [&] { require(stage == 1, "preview resumed out of order"); stage = 2; }};
+        camera.acquiring = [&] { require(stage == 1, "exposure changed before the preview frame was released"); };
+        const auto gated = collection::captureAndSave(camera, temp.path(), time, {5000, 8500}, {}, readPose, cancelled, gate);
+        require(gated.complete && stage == 2, "preview did not resume after the exposure was restored");
+        stage = 0; camera.incomplete = true;
+        const auto gatedGap = collection::captureAndSave(camera, temp.path(), time, {5000, 8500}, {}, readPose, cancelled, gate);
+        require(!gatedGap.complete && gatedGap.path.isEmpty() && stage == 2, "incomplete exposure left preview suspended");
+        stage = 0; camera.incomplete = false;
+        camera.acquiring = [&] { throw std::runtime_error("exposure failed"); };
+        const auto gatedError = collection::captureAndSave(camera, temp.path(), time, {5000, 8500}, {}, readPose, cancelled, gate);
+        require(!gatedError.complete && gatedError.path.isEmpty() && stage == 2 && gatedError.message.contains("exposure failed"),
+                "exposure exception left preview suspended");
+        camera.acquiring = {};
         std::cout << "Capture format, pose degradation, cancellation, commit barriers and undistorted pairs passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

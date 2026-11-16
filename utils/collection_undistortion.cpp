@@ -76,8 +76,22 @@ UndistortionMaps::UndistortionMaps(const UndistortionCalibration& calibration,
     calibration.cameraMatrix.convertTo(computation, CV_32F);
     computation.convertTo(computation, CV_64F);
     cv::Rect validRoi;
-    const cv::Mat newK = cv::getOptimalNewCameraMatrix(
-        computation, calibration.distortion, size, 1.0, size, &validRoi, false);
+    cv::Mat newK;
+    // Exact zeros are an undistorted lens. OpenCV 4.6 still insets the
+    // getOptimalNewCameraMatrix sample grid (#23305, fixed in 4.8), which
+    // rescales K and moves pixels. Keep the float-roundtripped intrinsics
+    // and the full frame. Near-zero calibrations stay on the production path.
+    const double* coefficients = calibration.distortion.ptr<double>();
+    bool exactZero = true;
+    for (size_t i = 0; i < calibration.distortion.total(); ++i)
+        exactZero = exactZero && coefficients[i] == 0.0;
+    if (exactZero) {
+        newK = computation.clone();
+        validRoi = cv::Rect(0, 0, size.width, size.height);
+    } else {
+        newK = cv::getOptimalNewCameraMatrix(
+            computation, calibration.distortion, size, 1.0, size, &validRoi, false);
+    }
     if (newK.size() != cv::Size(3, 3) || !cv::checkRange(newK))
         throw std::runtime_error("去畸变输出内参无效");
     cv::Mat output;

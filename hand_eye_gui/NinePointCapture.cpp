@@ -7,6 +7,7 @@
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace collection {
 namespace {
@@ -37,6 +38,17 @@ FlangePose withEulerYawOffset(const FlangePose& origin, double degrees) {
     std::copy_n(origin.begin(), 3, result.begin());
     checkFinite(result);
     return result;
+}
+double translationDistance(const FlangePose& from, const FlangePose& to) {
+    double distance = 0;
+    for (int axis = 0; axis < 3; ++axis) distance += std::pow(to[axis] - from[axis], 2);
+    return std::sqrt(distance);
+}
+double eulerYawOffsetDegrees(const FlangePose& origin, const FlangePose& pose) {
+    const auto base = calib_transform::axisAnglePoseToTransform(origin.data());
+    const auto actual = calib_transform::axisAnglePoseToTransform(pose.data());
+    const cv::Mat relative = actual(cv::Rect(0, 0, 3, 3)) * base(cv::Rect(0, 0, 3, 3)).t();
+    return std::atan2(relative.at<double>(1, 0), relative.at<double>(0, 0)) * 180 / CV_PI;
 }
 void checkGridPose(const FlangePose& origin, const FlangePose& pose) {
     checkFinite(origin);
@@ -99,14 +111,40 @@ void runNinePointCapture(const FlangePose& origin, const NinePointTargets& targe
     checkCancelled(cancelled);
     for (int point = 0; point < static_cast<int>(targets.size()); ++point) {
         checkCancelled(cancelled);
-        const bool displaced = targets[point] != origin;
-        if (displaced) move(targets[point], point);
+        move(targets[point], point);
         checkCancelled(cancelled);
         capture(point);
-        checkCancelled(cancelled);
-        if (displaced) move(origin, -1);
     }
     checkCancelled(cancelled);
+    move(origin, -1);
+}
+
+std::vector<FlangePose> linearGridStops(const FlangePose& origin, const FlangePose& from,
+    const FlangePose& to) {
+    checkGridPose(origin, from);
+    checkGridPose(origin, to);
+    const double distance = translationDistance(from, to);
+    const int segments = distance <= maximumNinePointOffsetMm ? 1
+        : static_cast<int>(std::ceil(distance / maximumNinePointOffsetMm - 1e-12));
+    const double yawFrom = eulerYawOffsetDegrees(origin, from);
+    const double yawTo = eulerYawOffsetDegrees(origin, to);
+    std::vector<FlangePose> stops;
+    stops.reserve(static_cast<size_t>(segments));
+    for (int index = 1; index <= segments; ++index) {
+        FlangePose pose = to;
+        if (index != segments) {
+            const double fraction = static_cast<double>(index) / segments;
+            pose = withEulerYawOffset(origin, yawFrom + (yawTo - yawFrom) * fraction);
+            for (int axis = 0; axis < 3; ++axis)
+                pose[axis] = from[axis] + (to[axis] - from[axis]) * fraction;
+        }
+        checkGridPose(origin, pose);
+        const FlangePose& previous = stops.empty() ? from : stops.back();
+        if (translationDistance(previous, pose) > maximumNinePointOffsetMm + 0.2)
+            throw std::runtime_error("单段直线运动超过 50 mm，未下发运动");
+        stops.push_back(pose);
+    }
+    return stops;
 }
 
 FlangePose readStationaryFlange(RobotHandle handle) {
@@ -150,11 +188,13 @@ void confirmRobotStopped(RobotHandle handle) {
     throw std::runtime_error("尚未确认机器人已停止");
 }
 
-void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targets) {
+namespace {
+void checkPosesReachable(RobotHandle handle, const std::vector<FlangePose>& poses) {
+    if (poses.empty()) return;
     FlangePose reference{};
     check(cr_get_jointActualPos(handle, reference.data()), "读取基准关节角失败");
     checkFinite(reference);
-    for (auto pose : targets) {
+    for (auto pose : poses) {
         FlangePose joints{};
         checkFinite(pose);
         check(cr_kineInverse(handle, pose.data(), reference.data(), joints.data()), "九点目标逆解失败");
@@ -166,6 +206,22 @@ void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targ
                 throw std::runtime_error("九点目标关节变化超过 30°，请调整基准位置或减小偏移");
         }
     }
+}
+} // namespace
+void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targets) {
+    checkPosesReachable(handle, {targets.begin(), targets.end()});
+}
+void checkNinePointRoute(RobotHandle handle, const FlangePose& origin, const NinePointTargets& targets) {
+    std::vector<FlangePose> poses(targets.begin(), targets.end());
+    FlangePose cursor = origin;
+    auto appendWaypoints = [&](const FlangePose& target) {
+        const auto stops = linearGridStops(origin, cursor, target);
+        if (stops.size() > 1) poses.insert(poses.end(), stops.begin(), stops.end() - 1);
+        cursor = stops.back();
+    };
+    for (const auto& target : targets) appendWaypoints(target);
+    appendWaypoints(origin);
+    checkPosesReachable(handle, poses);
 }
 
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
@@ -209,9 +265,7 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const Flange
     const auto initial = readStationaryFlange(handle);
     checkGridPose(origin, initial);
     checkGridPose(origin, target);
-    double distance = 0;
-    for (int axis = 0; axis < 3; ++axis) distance += std::pow(target[axis] - initial[axis], 2);
-    distance = std::sqrt(distance);
+    const double distance = translationDistance(initial, target);
     if (distance > maximumNinePointOffsetMm + 0.2)
         throw std::runtime_error("单段直线运动超过 50 mm，未下发运动");
     PointControlPara command{};
@@ -243,5 +297,12 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const Flange
             throw std::runtime_error("九点采图运动异常；停止指令失败，请在示教器确认机器人状态");
         throw;
     }
+}
+
+void moveFlangeAlongGrid(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
+    const auto start = readStationaryFlange(handle);
+    for (const auto& stop : linearGridStops(origin, start, target))
+        moveFlangeLinear(handle, origin, stop, cancelled, wait, tick, speedMmS);
 }
 } // namespace collection

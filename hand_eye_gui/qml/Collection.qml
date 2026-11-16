@@ -26,6 +26,11 @@ ApplicationWindow {
     property bool historyReady: false
     readonly property bool interactionLocked: busy || teach.jogHeld
     function takePhoto() { if (ready && page === "main" && !teach.jogHeld) controller.capturePhoto() }
+    function formatPlanNumber(value) {
+        var scaled = Math.round(Number(value) * 100) / 100
+        if (!isFinite(scaled)) return ""
+        return String(scaled)
+    }
     function ninePointAngles() {
         if (!angleInputs || angleInputs.count !== 9) return []
         var values = []
@@ -118,15 +123,15 @@ ApplicationWindow {
                         }
                         RowLayout {
                             visible: root.ninePointMode; Layout.fillWidth: true; spacing: 8
-                            CollectField { id: offsetX; objectName: "ninePointOffsetXInput"; implicitHeight: root.compact ? 32 : 44; leftPadding: 28; text: "10"; placeholderText: "ΔX mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.interactionLocked; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } HmiText { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: "ΔX"; font.pixelSize: Theme.meta } }
-                            CollectField { id: offsetY; objectName: "ninePointOffsetYInput"; implicitHeight: root.compact ? 32 : 44; leftPadding: 28; text: "10"; placeholderText: "ΔY mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.interactionLocked; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } HmiText { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: "ΔY"; font.pixelSize: Theme.meta } }
+                            CollectField { id: offsetX; objectName: "ninePointOffsetXInput"; implicitHeight: root.compact ? 32 : 44; leftPadding: 28; text: root.formatPlanNumber(root.controller.ninePointOffsetXMm); placeholderText: "ΔX mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.interactionLocked; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } HmiText { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: "ΔX"; font.pixelSize: Theme.meta } }
+                            CollectField { id: offsetY; objectName: "ninePointOffsetYInput"; implicitHeight: root.compact ? 32 : 44; leftPadding: 28; text: root.formatPlanNumber(root.controller.ninePointOffsetYMm); placeholderText: "ΔY mm"; Layout.fillWidth: true; Layout.minimumWidth: 0; enabled: !root.interactionLocked; validator: DoubleValidator { bottom: 0.1; top: 50; decimals: 2; locale: "C" } HmiText { anchors.left: parent.left; anchors.leftMargin: 5; anchors.verticalCenter: parent.verticalCenter; text: "ΔY"; font.pixelSize: Theme.meta } }
                         }
                         HmiText { visible: root.ninePointMode && !root.compact; text: "X / Y 偏移 · mm（0.1～50）"; font.pixelSize: Theme.meta }
                         GridLayout {
                             objectName: "ninePointPlan"; visible: root.ninePointMode; Layout.fillWidth: true
                             columns: 3; columnSpacing: 4; rowSpacing: 4
                             Repeater {
-                                id: angleInputs; model: root.controller.ninePointDefaultYawOffsets
+                                id: angleInputs; model: root.controller.ninePointYawOffsets
                                 onItemAdded: root.gridAnglesValid = root.ninePointAngles().length === 9
                                 onItemRemoved: root.gridAnglesValid = root.ninePointAngles().length === 9
                                 CollectField {

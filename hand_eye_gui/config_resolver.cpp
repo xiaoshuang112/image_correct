@@ -1,6 +1,7 @@
 #include "config_resolver.hpp"
 
 #include <cerrno>
+#include <cmath>
 #include <cstring>
 #include <exception>
 #include <filesystem>
@@ -217,23 +218,100 @@ CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
         if (valid) out.fusion_exposures_us = values;
         else out.warnings.push_back("fusion_exposures_us 应为 2～5 个不同的正整数（1～1000000 μs），使用默认序列");
     }
+    auto readNumber = [](const cv::FileNode& node, double& value) {
+        if (node.isInt()) { value = static_cast<int>(node); return true; }
+        if (node.isReal()) {
+            value = static_cast<double>(node);
+            return std::isfinite(value);
+        }
+        return false;
+    };
+    auto validOffset = [](double value) {
+        return std::isfinite(value) && value >= 0.1 && value <= 50.0;
+    };
+    auto validYaw = [](double value) {
+        return std::isfinite(value) && std::abs(value) <= 20.0 && (value == 0.0 || std::abs(value) >= 0.01);
+    };
+    const auto offsetX = fs["nine_point_offset_x_mm"];
+    const auto offsetY = fs["nine_point_offset_y_mm"];
+    if (!offsetX.empty() || !offsetY.empty()) {
+        double x = out.nine_point_offset_x_mm, y = out.nine_point_offset_y_mm;
+        const bool xOk = !offsetX.empty() && readNumber(offsetX, x) && validOffset(x);
+        const bool yOk = !offsetY.empty() && readNumber(offsetY, y) && validOffset(y);
+        if (!offsetX.empty() && !xOk) {
+            x = defaults.nine_point_offset_x_mm;
+            out.warnings.push_back("nine_point_offset_x_mm 应为 0.1～50 mm，使用默认偏移");
+        }
+        if (!offsetY.empty() && !yOk) {
+            y = defaults.nine_point_offset_y_mm;
+            out.warnings.push_back("nine_point_offset_y_mm 应为 0.1～50 mm，使用默认偏移");
+        }
+        if (std::hypot(x, y) > 50.0) {
+            x = defaults.nine_point_offset_x_mm;
+            y = defaults.nine_point_offset_y_mm;
+            out.warnings.push_back("九点对角距基准超过 50 mm，X/Y 偏移使用默认值");
+        }
+        out.nine_point_offset_x_mm = x;
+        out.nine_point_offset_y_mm = y;
+    }
+    const auto yaw = fs["nine_point_yaw_deg"];
+    if (!yaw.empty()) {
+        std::vector<double> values;
+        bool valid = yaw.isSeq() && yaw.size() == defaults.nine_point_yaw_deg.size();
+        if (valid) for (const auto& node : yaw) {
+            double value = 0;
+            if (!readNumber(node, value) || !validYaw(value)) { valid = false; break; }
+            values.push_back(value);
+        }
+        if (valid) out.nine_point_yaw_deg = values;
+        else out.warnings.push_back("nine_point_yaw_deg 应为九个 −20°～+20° 的角度，使用默认角度");
+    }
     return out;
 }
 
 namespace {
+std::string formatYamlDouble(double value) {
+    std::ostringstream text;
+    text.setf(std::ios::fixed);
+    text << std::setprecision(2) << value;
+    auto formatted = text.str();
+    if (const auto dot = formatted.find('.'); dot != std::string::npos) {
+        while (!formatted.empty() && formatted.back() == '0') formatted.pop_back();
+        if (!formatted.empty() && formatted.back() == '.') formatted.pop_back();
+    }
+    if (formatted == "-0" || formatted.empty()) return "0";
+    return formatted;
+}
+bool readYamlNumber(const cv::FileNode& node, double& value) {
+    if (node.isInt()) { value = static_cast<int>(node); return true; }
+    if (node.isReal()) {
+        value = static_cast<double>(node);
+        return std::isfinite(value);
+    }
+    return false;
+}
 std::string yamlValue(const ConfigValue& value) {
     if (const auto* number = std::get_if<int>(&value)) return std::to_string(*number);
-    std::ostringstream text;
-    if (const auto* string = std::get_if<std::string>(&value)) text << std::quoted(*string);
-    else {
-        text << '[';
-        bool first = true;
-        for (int number : std::get<std::vector<int>>(value)) {
-            if (!first) text << ", ";
-            text << number; first = false;
-        }
-        text << ']';
+    if (const auto* real = std::get_if<double>(&value)) return formatYamlDouble(*real);
+    if (const auto* string = std::get_if<std::string>(&value)) {
+        std::ostringstream text;
+        text << std::quoted(*string);
+        return text.str();
     }
+    std::ostringstream text;
+    text << '[';
+    bool first = true;
+    auto append = [&](const std::string& item) {
+        if (!first) text << ", ";
+        text << item;
+        first = false;
+    };
+    if (const auto* numbers = std::get_if<std::vector<int>>(&value)) {
+        for (int number : *numbers) append(std::to_string(number));
+    } else {
+        for (double number : std::get<std::vector<double>>(value)) append(formatYamlDouble(number));
+    }
+    text << ']';
     return text.str();
 }
 
@@ -326,7 +404,8 @@ bool updateFlatConfigValuesFile(const std::string& path,
                 lines[matchIndex] += " " + originalLine.substr(comment);
             // Remove a block sequence or wrapped flow sequence belonging to this
             // key. Preserve comments/blank lines and all following top-level keys.
-            if (std::holds_alternative<std::vector<int>>(value)) {
+            if (std::holds_alternative<std::vector<int>>(value) ||
+                std::holds_alternative<std::vector<double>>(value)) {
                 size_t end = matchIndex + 1;
                 while (end < lines.size()) {
                     const auto& next = lines[end];
@@ -390,9 +469,18 @@ bool updateFlatConfigValuesFile(const std::string& path,
             bool matches = false;
             if (const auto* number = std::get_if<int>(&value))
                 matches = node.isInt() && static_cast<int>(node) == *number;
-            else if (const auto* string = std::get_if<std::string>(&value))
+            else if (const auto* real = std::get_if<double>(&value)) {
+                double actual = 0;
+                matches = readYamlNumber(node, actual) && std::abs(actual - *real) <= 1e-6;
+            } else if (const auto* string = std::get_if<std::string>(&value))
                 matches = node.isString() && node.string() == *string;
-            else if (node.isSeq()) {
+            else if (const auto* reals = std::get_if<std::vector<double>>(&value)) {
+                matches = node.isSeq() && static_cast<size_t>(node.size()) == reals->size();
+                for (int index = 0; matches && index < node.size(); ++index) {
+                    double actual = 0;
+                    matches = readYamlNumber(node[index], actual) && std::abs(actual - (*reals)[index]) <= 1e-6;
+                }
+            } else if (node.isSeq()) {
                 std::vector<int> persisted;
                 node >> persisted;
                 matches = persisted == std::get<std::vector<int>>(value);

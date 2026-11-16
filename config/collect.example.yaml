@@ -10,3 +10,8 @@ fusion_exposures_us: [5000, 8500, 14500, 25000]
 camera_gain: 3
 robot_ip: "192.168.66.14"
 robot_speed_mm_s: 10
+# Nine-point grid relative to the baseline flange. Offsets are millimeters;
+# yaw is ZYX Euler Rz in degrees, left to right and top to bottom.
+nine_point_offset_x_mm: 10
+nine_point_offset_y_mm: 10
+nine_point_yaw_deg: [0, 15, -15, -20, 0, 20, 15, -15, 0]
