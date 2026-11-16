@@ -1,5 +1,6 @@
 #include "CollectionController.hpp"
 #include "DiagnosticLogger.hpp"
+#include "config_resolver.hpp"
 #include "CollectionPoseRecord.hpp"
 #include "CollectionCapture.hpp"
 #include "NinePointCapture.hpp"
@@ -15,6 +16,7 @@
 #include <array>
 #include <cmath>
 #include <stdexcept>
+#include <vector>
 
 namespace {
 std::array<double, 6> readFlangePose(RobotHandle handle) {
@@ -106,17 +108,36 @@ void CollectionController::openCollectionFolder() {
     setStatus("已打开图片文件夹");
 }
 
-void CollectionController::beginCollectionOperation() {
+void CollectionController::beginCollectionOperation(bool holdPreview) {
     if (m_collectionThread.joinable()) m_collectionThread.join();
     ++m_tcpPoseGeneration;
-    m_collectionWasPreviewing = m_previewActive;
-    ++m_previewGeneration;
-    m_previewTimer->stop();
     m_cancelRequested = false;
     m_collectionBusy = true;
     m_ninePointProgress.clear();
     m_manualMoveProgress.clear();
+    m_exposureCaptureActive = false;
+    m_previewHeld = holdPreview;
+    if (holdPreview) ++m_previewGeneration;
+    updatePreviewTimer();
     emit collectionChanged();
+}
+
+bool CollectionController::persistNinePointPlan(double xMm, double yMm,
+    const std::array<double, 9>& yaw, QString& error) {
+    if (m_appPath.empty()) return true;
+    config_resolver::ConfigUpdates updates;
+    updates["nine_point_offset_x_mm"] = xMm;
+    updates["nine_point_offset_y_mm"] = yMm;
+    updates["nine_point_yaw_deg"] = std::vector<double>(yaw.begin(), yaw.end());
+    std::string detail;
+    if (!config_resolver::updateFlatConfigFile(m_appPath + "config.yaml", updates, detail)) {
+        error = "九点参数写入配置失败：" + QString::fromStdString(detail);
+        return false;
+    }
+    m_ninePointOffsetXMm = xMm;
+    m_ninePointOffsetYMm = yMm;
+    m_ninePointYawDeg = yaw;
+    return true;
 }
 
 void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
@@ -127,9 +148,10 @@ void CollectionController::finishCollectionOperation(const QString& message, con
     m_motionFault = m_robotStopUnconfirmed.load();
     m_collectionBusy = m_motionFault;
     m_stopRetrying = false;
+    m_previewHeld = false;
+    m_exposureCaptureActive = false;
     if (!savedPath.isEmpty()) recordCapture(savedPath);
-    if (!m_collectionBusy && m_collectionWasPreviewing && m_previewActive && m_cameraOpened)
-        updatePreviewTimer();
+    updatePreviewTimer();
     QString status = savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
     if (!savedPath.isEmpty() && message != "多曝光融合完成，图片已保存")
         status += "；" + message;
@@ -217,6 +239,11 @@ QVariantList CollectionController::ninePointDefaultYawOffsets() const {
     for (double angle : collection::defaultNinePointYawOffsets) result << angle;
     return result;
 }
+QVariantList CollectionController::ninePointYawOffsets() const {
+    QVariantList result;
+    for (double angle : m_ninePointYawDeg) result << angle;
+    return result;
+}
 
 void CollectionController::startCapture(bool ninePoints, double xMm, double yMm, const QVariantList& yawValues) {
     if (m_collectionBusy) return;
@@ -263,7 +290,7 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
     if (m_robotConnected) readPose = [handle] { return readFlangePose(handle); };
     const auto shutterTime = QDateTime::currentDateTime();
     const auto output = m_outputDirectory;
-    beginCollectionOperation();
+    beginCollectionOperation(false);
     const auto sampleTcp = tcpSamplingCallback(session);
     setStatus(ninePoints ? "九点采图：正在检查当前基准位及目标…"
                         : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
@@ -288,18 +315,24 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
                     setStatus(m_ninePointProgress);
                 }, Qt::QueuedConnection);
             };
+            const collection::ExposureCameraGate gate{
+                [this] { suspendPreviewForExposure(); },
+                [this] { resumePreviewAfterExposure(); }};
             if (ninePoints) m_robotStopUnconfirmed = true;
             try {
                 if (!ninePoints) {
                     const auto result = collection::captureAndSave(*camera, output, shutterTime,
-                        exposures, undistortion, readPose, m_cancelRequested);
+                        exposures, undistortion, readPose, m_cancelRequested, gate);
                     message = result.message;
                     path = result.path;
                 } else {
+                    QString configError;
+                    if (!persistNinePointPlan(xMm, yMm, yawOffsets, configError))
+                        throw std::runtime_error(configError.toStdString());
                     collection::checkCaptureExposures(*camera, exposures);
                     const auto origin = collection::readStationaryFlange(handle);
                     const auto targets = collection::ninePointTargets(origin, xMm, yMm, yawOffsets);
-                    collection::checkNinePointReachability(handle, targets);
+                    collection::checkNinePointRoute(handle, origin, targets);
                     APP_LOG_EVENT_INFO("collection", "nine_point", "baseline",
                         {{"x", QString::number(origin[0], 'f', 6)}, {"y", QString::number(origin[1], 'f', 6)},
                          {"z", QString::number(origin[2], 'f', 6)}, {"rx", QString::number(origin[3], 'f', 6)},
@@ -318,14 +351,14 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
                             wait.angleToleranceDeg = angleToleranceDeg;
                             wait.timeoutMs = std::max(wait.timeoutMs, wait.settlingMs + 5000 +
                                 static_cast<int>(std::ceil(collection::maximumNinePointOffsetMm * 1000 / speed)));
-                            collection::moveFlangeLinear(handle, origin, target, m_cancelRequested, wait, sampleTcp, speed);
+                            collection::moveFlangeAlongGrid(handle, origin, target, m_cancelRequested, wait, sampleTcp, speed);
                         },
                         [&](int point) {
                             if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], angleToleranceDeg))
                                 throw std::runtime_error("实际位姿偏离本次拍摄目标");
                             progress(QString("第 %1/9 点 · %2 · 正在采集及保存").arg(point + 1).arg(names[point]));
                             const auto result = collection::captureAndSave(*camera, output, QDateTime::currentDateTime(),
-                                exposures, undistortion, readPose, m_cancelRequested);
+                                exposures, undistortion, readPose, m_cancelRequested, gate);
                             if (!result.path.isEmpty()) {
                                 ++saved;
                                 QMetaObject::invokeMethod(this, [this, image = result.path] { recordCapture(image); }, Qt::QueuedConnection);

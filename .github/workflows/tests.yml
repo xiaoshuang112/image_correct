@@ -1,0 +1,26 @@
+name: tests
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  software:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake pkg-config \
+            libopencv-dev \
+            qtbase5-dev qtdeclarative5-dev qtquickcontrols2-5-dev \
+            qml-module-qtquick2 qml-module-qtquick-window2 \
+            qml-module-qtquick-layouts qml-module-qtquick-controls2
+      - name: Configure
+        run: cmake -S . -B build_tests -DBUILD_QT_GUI=OFF -DBUILD_TESTS=ON
+      - name: Build
+        run: cmake --build build_tests -j"$(nproc)"
+      - name: Test
+        run: ctest --test-dir build_tests --output-on-failure

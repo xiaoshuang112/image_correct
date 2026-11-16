@@ -25,7 +25,7 @@ struct Robot {
     bool issued = false, neverReach = false, badInverse = false, badJoint = false, protective = false;
     bool lostPoseDuringMove = false, invalidPoseDuringMove = false, faultDuringMove = false;
     CRresult inverseCode = sucess;
-    int sends = 0, stops = 0, polls = 0, inverseReads = 0, cancelOnPoll = 0;
+    int sends = 0, stops = 0, polls = 0, inverseReads = 0, cancelOnPoll = 0, failOnSend = 0, badInverseAfter = 0;
     std::atomic<bool> cancelled{false};
     void reset() {
         actual = {100, 200, 300, 180, 0, 0}; command = {};
@@ -33,7 +33,7 @@ struct Robot {
         modeCode = poseCode = lineCode = stopCode = sucess;
         issued = neverReach = badInverse = badJoint = protective = false;
         lostPoseDuringMove = invalidPoseDuringMove = faultDuringMove = false; inverseCode = sucess;
-        sends = stops = polls = inverseReads = cancelOnPoll = 0; cancelled = false;
+        sends = stops = polls = inverseReads = cancelOnPoll = failOnSend = badInverseAfter = 0; cancelled = false;
     }
 } robot;
 }
@@ -66,7 +66,8 @@ extern "C" CRresult cr_get_jointActualPos(RobotHandle, double* joints) {
 }
 extern "C" CRresult cr_kineInverse(RobotHandle, double*, double*, double* joints) {
     ++robot.inverseReads;
-    std::fill_n(joints, ROB_AXIS_NUM, robot.badInverse ? 90 : 0);
+    const bool reject = robot.badInverse || (robot.badInverseAfter > 0 && robot.inverseReads > robot.badInverseAfter);
+    std::fill_n(joints, ROB_AXIS_NUM, reject ? 90 : 0);
     return robot.inverseCode;
 }
 extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL block) {
@@ -78,7 +79,8 @@ extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL blo
         require(command.speed[axis] == robot.expectedSpeed && command.acc[axis] == 20, "motion limits changed");
         require(std::isfinite(command.jointpos[axis]), "invalid joint reference sent");
     }
-    robot.command = command; robot.issued = true; ++robot.sends;
+    robot.command = command; robot.issued = true; robot.polls = 0; ++robot.sends;
+    if (robot.failOnSend > 0 && robot.sends == robot.failOnSend) return static_cast<CRresult>(1);
     return robot.lineCode;
 }
 extern "C" CRresult cr_moveControl(RobotHandle, MoveType type) {
@@ -176,9 +178,13 @@ int main() {
             saving = true; events.push_back("save" + std::to_string(point)); saving = false;
         };
         collection::runNinePointCapture(origin, targets, move, capture, cancelled);
-        require(events == std::vector<std::string>{"move0", "save0", "move-1", "move1", "save1", "move-1", "move2", "save2",
-                "move-1", "move3", "save3", "move-1", "save4", "move5", "save5", "move-1",
-                "move6", "save6", "move-1", "move7", "save7", "move-1", "move8", "save8", "move-1"}, "route or save/move order incorrect");
+        std::vector<std::string> direct;
+        for (int point = 0; point < 9; ++point) {
+            direct.push_back("move" + std::to_string(point));
+            direct.push_back("save" + std::to_string(point));
+        }
+        direct.push_back("move-1");
+        require(events == direct, "route or save/move order incorrect");
         require(current == origin, "normal completion did not return to origin");
         int customCaptures = 0, customReturns = 0;
         collection::runNinePointCapture(origin, custom,
@@ -192,7 +198,7 @@ int main() {
                 require(current == custom[point], "custom capture ran at the wrong point or angle");
                 ++customCaptures;
             }, cancelled);
-        require(customCaptures == 9 && customReturns == 9 && current == origin,
+        require(customCaptures == 9 && customReturns == 1 && current == origin,
                 "custom center was skipped or the original baseline was not restored");
         rejects([&] { collection::runNinePointCapture(origin, custom, move, [&](int point) {
             if (point == 4) throw std::runtime_error("center save failed");
@@ -223,6 +229,13 @@ int main() {
             events.push_back("failed_move"); throw std::runtime_error("motion failed");
         }, capture, cancelled); });
         require(events == std::vector<std::string>{"failed_move"}, "capture or return followed failed move");
+        events.clear(); current = targets[8];
+        rejects([&] { collection::runNinePointCapture(origin, targets, [&](const FlangePose& pose, int index) {
+            events.push_back(index < 0 ? "return" : "move" + std::to_string(index));
+            if (index < 0) throw std::runtime_error("return failed");
+            current = pose;
+        }, capture, cancelled); });
+        require(events.back() == "return" && current == targets[8], "return failure continued or left the last capture pose");
 
         collection::checkNinePointReachability(1, targets);
         require(robot.inverseReads == 9 && robot.sends == 0, "preflight moved robot or missed a target");
@@ -351,7 +364,32 @@ int main() {
             require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, origin),
                     "rotated point or return to baseline was rejected");
         }
-        std::cout << "Nine-point grid, Euler yaw, ordering, save barrier, cancellation, base/zero-tool motion and failures passed\n";
+        robot.reset();
+        collection::checkNinePointRoute(1, origin, targets);
+        require(robot.inverseReads == 9 && robot.sends == 0, "short route invented a waypoint or moved");
+        const auto wide = collection::ninePointTargets(origin, 30, 40);
+        const auto split = collection::linearGridStops(origin, wide[2], wide[3]);
+        require(split.size() == 2 && split.back() == wide[3], "cross-row leg was not split onto the capture pose");
+        require(std::abs(split.front()[0] - 100) < 1e-6 && std::abs(split.front()[1] - 220) < 1e-6 &&
+                split.front()[2] == origin[2], "waypoint left the straight line or changed height");
+        require(std::hypot(split.front()[0] - wide[2][0], split.front()[1] - wide[2][1]) <= 50.0 &&
+                std::hypot(wide[3][0] - split.front()[0], wide[3][1] - split.front()[1]) <= 50.0,
+                "split segment still exceeds 50 mm");
+        robot.reset(); robot.actual = wide[2];
+        collection::moveFlangeAlongGrid(1, origin, wide[3], robot.cancelled, {0, 300});
+        require(robot.sends == 2 && robot.stops == 0 && collection::flangeAtTarget(robot.actual, wide[3]),
+                "long leg did not stop and arrive on each segment");
+        robot.reset(); robot.actual = wide[2]; robot.failOnSend = 2;
+        rejects([&] { collection::moveFlangeAlongGrid(1, origin, wide[3], robot.cancelled, {0, 300}); });
+        require(robot.sends == 2 && robot.stops == 1 && !collection::flangeAtTarget(robot.actual, wide[3]),
+                "failed segment continued toward the next capture pose");
+        robot.reset();
+        collection::checkNinePointRoute(1, origin, wide);
+        require(robot.inverseReads == 11 && robot.sends == 0, "waypoint joint check was skipped or moved the robot");
+        robot.reset(); robot.badInverseAfter = 9;
+        rejects([&] { collection::checkNinePointRoute(1, origin, wide); });
+        require(robot.sends == 0, "unreachable waypoint sent motion");
+        std::cout << "Nine-point grid, Euler yaw, direct route, waypoints, save barrier, cancellation, base/zero-tool motion and failures passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }
 }

@@ -1,9 +1,11 @@
 #include "hand_eye_gui/CollectionController.hpp"
 #include "hand_eye_gui/CameraImageProvider.hpp"
 #include "hand_eye_gui/NinePointCapture.hpp"
+#include "hand_eye_gui/config_resolver.hpp"
 #include <QApplication>
 #include <QFileDialog>
 #include <QFile>
+#include <QDir>
 #include <QDirIterator>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -38,7 +40,7 @@ const auto sdkError = static_cast<CRresult>(1);
 struct Robot {
     std::array<double, 6> pose{100, 200, 300, 180, 0, 0};
     std::atomic<bool> moving{false}, stopWorks{false}, statusFails{false};
-    std::atomic<int> lines{0}, stops{0}, destroys{0}, unexpected{0};
+    std::atomic<int> lines{0}, stops{0}, destroys{0}, unexpected{0}, acceptLines{-1};
     std::atomic<double> lastSpeed{0};
     std::atomic<int> readDelayMs{0}, activeReads{0}, toolReads{0}, destroyDuringRead{0};
     std::atomic<bool> invalidPose{false}, poseReadFails{false};
@@ -50,7 +52,7 @@ struct Robot {
     void reset() {
         pose = {100, 200, 300, 180, 0, 0};
         moving = stopWorks = statusFails = false;
-        lines = stops = destroys = unexpected = 0;
+        lines = stops = destroys = unexpected = 0; acceptLines = -1;
         lastSpeed = 0;
         destroyCode = sucess;
         stopCode = sdkError; failLine = true;
@@ -64,6 +66,7 @@ class Camera : public AICamera {
 public:
     std::atomic<int> previewReads{0}, activePreviewReads{0};
     std::atomic<bool> blockPreview{false}, releasePreview{false}, previewOnGui{false}, captureOverlapped{false};
+    std::atomic<bool> blockCapture{false}, releaseCapture{false}, captureEntered{false};
     const std::thread::id guiThread = std::this_thread::get_id();
     cv::Mat previewFrame;
     Camera() : AICamera(CameraConfig{}) {}
@@ -86,7 +89,11 @@ public:
     bool getAutoExposure() override { return false; }
     bool getExposureRange(int& low, int& high) override { low = 100; high = 50000; return true; }
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& values) override {
+        captureEntered = true;
         captureOverlapped = activePreviewReads > 0;
+        const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+        while (blockCapture && !releaseCapture && std::chrono::steady_clock::now() < until)
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
         std::vector<cv::Mat> frames;
         for (int value : values) frames.emplace_back(32, 32, CV_8UC3, cv::Scalar(value / 100, 80, 100));
         return frames;
@@ -274,12 +281,16 @@ struct CollectionControllerTestAccess {
         require(camera->previewReads == reads && !controller.m_previewTimer->isActive() &&
                 controller.previewActive() && controller.cameraOpened(), "hidden preview still reads camera or changes user state");
         controller.m_previewFrameCount = 1;
+        camera->blockCapture = true;
         controller.capturePhoto();
         require(controller.collectionBusy(), "hidden preview prevented capture operation");
+        waitFor([&] { return camera->captureEntered.load(); });
         controller.setPreviewVisible(true);
         controller.onPreviewTick();
-        require(camera->previewReads == reads && !controller.m_previewTimer->isActive(), "page navigation resumed preview during capture");
+        require(camera->previewReads == reads && !controller.m_previewTimer->isActive() && !camera->captureOverlapped,
+                "page navigation resumed preview during exposure");
         controller.setPreviewVisible(false);
+        camera->releaseCapture = true;
         waitFor([&] { return !controller.collectionBusy(); });
         require(controller.savedImageCount() == 1 && !controller.m_previewTimer->isActive(), "capture completion restarted hidden preview or failed to save");
         controller.setPreviewVisible(true);
@@ -291,6 +302,14 @@ struct CollectionControllerTestAccess {
         controller.setPreviewVisible(false);
         controller.startPreview();
         require(controller.previewActive() && !controller.m_previewTimer->isActive(), "starting hidden preview enabled frame processing");
+    }
+    static void setAppPath(CollectionController& controller, const QString& path) {
+        controller.m_appPath = path.toStdString();
+    }
+    static std::string appPath(const CollectionController& controller) { return controller.m_appPath; }
+    static std::shared_ptr<AICamera> camera(CollectionController& controller) { return controller.m_camera; }
+    static bool previewTimerActive(const CollectionController& controller) {
+        return controller.m_previewTimer->isActive();
     }
     static void prepare(CollectionController& controller, const QString& output) {
         controller.m_camera = std::make_shared<Camera>();
@@ -344,7 +363,9 @@ extern "C" CRresult cr_kineInverse(RobotHandle, double*, double*, double* joints
 extern "C" CRresult cr_move_line(RobotHandle, PointControlPara command, BOOL) {
     robot.lastSpeed = command.speed[0];
     ++robot.lines;
-    if (robot.failLine) { robot.moving = true; return sdkError; }
+    if (robot.failLine || (robot.acceptLines >= 0 && robot.lines > robot.acceptLines)) {
+        robot.moving = true; return sdkError;
+    }
     std::copy_n(command.pose, ROB_AXIS_NUM, robot.pose.begin());
     robot.pose[0] -= command.tcpID < 0 ? command.tcpOffset[0] : 0;
     return sucess;
@@ -475,11 +496,23 @@ int main(int argc, char** argv) {
             const collection::NinePointAngles yaw{1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01};
             QVariantList angles;
             for (double value : yaw) angles << value;
+            const QString configDir = temp.path() + "/nine-point-config";
+            require(QDir().mkpath(configDir), "cannot create nine-point config directory");
+            CollectionControllerTestAccess::setAppPath(controller, configDir + "/");
             controller.captureNinePoints(0.1, 0.1, angles);
             angles[0] = -18; // The running worker must retain its immutable snapshot.
             waitFor([&] { return !controller.collectionBusy(); }, 40000);
-            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 18 &&
+            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 10 &&
                     robot.pose == std::array<double, 6>{100,200,300,180,0,0}, "normal small-offset batch did not finish and unlock");
+            {
+                cv::FileStorage config(CollectionControllerTestAccess::appPath(controller) + "config.yaml", cv::FileStorage::READ);
+                const auto loaded = config_resolver::resolveCollectionConfig(config);
+                require(loaded.nine_point_offset_x_mm == 0.1 && loaded.nine_point_offset_y_mm == 0.1 &&
+                        loaded.nine_point_yaw_deg.size() == yaw.size(), "nine-point plan was not written at capture start");
+                for (size_t point = 0; point < yaw.size(); ++point)
+                    require(std::abs(loaded.nine_point_yaw_deg[point] - yaw[point]) < 1e-6,
+                            "capture start wrote a later angle edit instead of the running plan");
+            }
             require(robot.lastSpeed == controller.robotSpeedMmS(), "nine-point controller did not pass configured speed");
             QStringList records;
             QDirIterator files(batchOutput, {"capture_*_fused.json"}, QDir::Files, QDirIterator::Subdirectories);
@@ -514,6 +547,61 @@ int main(int argc, char** argv) {
             waitFor([&] { return !controller.collectionBusy(); });
             require(!controller.motionFault() && controller.savedImageCount() == 0 && robot.lines == 1 &&
                     controller.statusMessage().contains("已保存 0/9"), "failed image save advanced or returned the robot");
+        }
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset(); robot.stopWorks = true; robot.stopCode = sucess; robot.failLine = false;
+        {
+            CollectionController controller;
+            CollectionControllerTestAccess::prepare(controller, temp.path());
+            CollectionControllerTestAccess::setAppPath(controller, temp.path() + "/missing-config-dir/");
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
+            waitFor([&] { return !controller.collectionBusy(); });
+            require(!controller.motionFault() && controller.savedImageCount() == 0 && robot.lines == 0 &&
+                    controller.statusMessage().contains("九点参数写入配置失败"),
+                    "config write failure still moved the robot");
+        }
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset(); robot.stopWorks = true; robot.stopCode = sucess; robot.failLine = false;
+        {
+            CollectionController controller;
+            CollectionControllerTestAccess::prepare(controller, temp.path());
+            auto camera = std::static_pointer_cast<Camera>(CollectionControllerTestAccess::camera(controller));
+            camera->previewFrame = cv::Mat(8, 8, CV_8UC3, cv::Scalar(4, 5, 6));
+            camera->blockCapture = true;
+            controller.startPreview();
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
+            waitFor([&] { return camera->previewReads >= 2 && !camera->captureEntered; }, 8000);
+            require(controller.collectionBusy() && CollectionControllerTestAccess::previewTimerActive(controller),
+                    "preview stopped while the nine-point robot was still moving");
+            waitFor([&] { return camera->captureEntered.load(); }, 20000);
+            const int frozen = camera->previewReads;
+            QCoreApplication::processEvents();
+            std::this_thread::sleep_for(std::chrono::milliseconds(150));
+            QCoreApplication::processEvents();
+            require(camera->previewReads == frozen && !CollectionControllerTestAccess::previewTimerActive(controller) &&
+                    !camera->captureOverlapped && camera->activePreviewReads == 0,
+                    "preview grabbed a frame during the exposure sequence");
+            controller.cancelCollectionOperation();
+            camera->releaseCapture = true;
+            waitFor([&] { return !controller.collectionBusy(); }, 20000);
+            require(controller.savedImageCount() == 0 && !controller.statusMessage().contains("九点采图完成") &&
+                    CollectionControllerTestAccess::previewTimerActive(controller),
+                    "cancelled exposure reported completion or left preview stopped");
+            controller.stopPreview();
+            require(!CollectionControllerTestAccess::previewTimerActive(controller), "user pause was overridden after nine-point capture");
+        }
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset(); robot.stopWorks = true; robot.stopCode = sucess; robot.failLine = false; robot.acceptLines = 9;
+        {
+            CollectionController controller;
+            CollectionControllerTestAccess::prepare(controller, temp.path());
+            controller.captureNinePoints(10, 10, controller.ninePointDefaultYawOffsets());
+            waitFor([&] { return !controller.collectionBusy(); }, 40000);
+            require(!controller.motionFault() && controller.savedImageCount() == 9 && robot.lines == 10 &&
+                    robot.pose != std::array<double, 6>{100,200,300,180,0,0} &&
+                    controller.statusMessage().contains("已保存 9/9") &&
+                    !controller.statusMessage().contains("九点采图完成"),
+                    "failed final return reported the nine-point task complete");
         }
         waitFor([&] { return robot.destroys == 1; });
         robot.reset();

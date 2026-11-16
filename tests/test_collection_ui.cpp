@@ -131,6 +131,9 @@ SharedCollectionState {
     onSelectedTcpChanged: tcpToolsChanged()
     property string ninePointProgress: ""
     readonly property var ninePointDefaultYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
+    property real ninePointOffsetXMm: 10
+    property real ninePointOffsetYMm: 10
+    property var ninePointYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
     property bool motionFault: false
     property int ninePointCalls: 0
     property real lastNinePointX: 0

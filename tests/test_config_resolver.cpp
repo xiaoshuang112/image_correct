@@ -248,6 +248,29 @@ int test_config_resolver() {
     TEST_CHECK(collect.robot_ip == "192.168.66.14" &&
                collect.fusion_exposures_us == std::vector<int>({7000, 21000}),
                "collection_field_fallback_is_independent");
+    const std::vector<double> defaultYaw{0, 15, -15, -20, 0, 20, 15, -15, 0};
+    TEST_CHECK(collect.nine_point_offset_x_mm == 10 && collect.nine_point_offset_y_mm == 10 &&
+               collect.nine_point_yaw_deg == defaultYaw, "nine_point_plan_defaults_when_absent");
+    collect = collection("nine_point_offset_x_mm: 7.5\nnine_point_offset_y_mm: 12.5\n"
+                         "nine_point_yaw_deg: [1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01]\n");
+    TEST_CHECK(collect.warnings.empty() && collect.nine_point_offset_x_mm == 7.5 &&
+               collect.nine_point_offset_y_mm == 12.5 &&
+               collect.nine_point_yaw_deg == std::vector<double>({1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01}),
+               "nine_point_plan_loaded");
+    collect = collection("nine_point_offset_x_mm: 40\nnine_point_offset_y_mm: 40\n");
+    TEST_CHECK(collect.nine_point_offset_x_mm == 10 && collect.nine_point_offset_y_mm == 10 &&
+               !collect.warnings.empty(), "nine_point_diagonal_falls_back");
+    for (const std::string& invalid : {"0", "50.01", ".Nan", "\"10\""}) {
+        collect = collection("nine_point_offset_x_mm: " + invalid + "\nnine_point_offset_y_mm: 12\n");
+        TEST_CHECK(collect.nine_point_offset_x_mm == 10 && collect.nine_point_offset_y_mm == 12 &&
+                   !collect.warnings.empty(), "invalid_nine_point_x_falls_back_independently");
+    }
+    collect = collection("nine_point_yaw_deg: [0, 15, -15, -20, 0, 20, 15, -15]\n");
+    TEST_CHECK(collect.nine_point_yaw_deg == defaultYaw && !collect.warnings.empty(),
+               "short_nine_point_yaw_falls_back_whole");
+    collect = collection("nine_point_yaw_deg: [0, 15, -15, -20, 0.001, 20, 15, -15, 0]\n");
+    TEST_CHECK(collect.nine_point_yaw_deg == defaultYaw && !collect.warnings.empty(),
+               "tiny_nine_point_yaw_falls_back_whole");
 
     // UI writes use the same YAML file, preserve unrelated fields, and can
     // update either conventional block lists or compact inline lists.
@@ -273,6 +296,17 @@ int test_config_resolver() {
                    loadedCamera.cam_height == 2048 && loadedCollection.robot_ip == "192.168.66.20" &&
                    loadedCollection.fusion_exposures_us == std::vector<int>({6000, 18000}),
                    "all_collection_fields_survive_restart_read");
+    }
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath, {
+        {"nine_point_offset_x_mm", 7.5}, {"nine_point_offset_y_mm", 12.5},
+        {"nine_point_yaw_deg", std::vector<double>{1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01}}}, err),
+        "nine_point_plan_persisted");
+    {
+        cv::FileStorage config(kCfgPath, cv::FileStorage::READ);
+        const auto loaded = config_resolver::resolveCollectionConfig(config);
+        TEST_CHECK(loaded.nine_point_offset_x_mm == 7.5 && loaded.nine_point_offset_y_mm == 12.5 &&
+                   loaded.nine_point_yaw_deg == std::vector<double>({1.25, 2.5, -3.75, -10, 0.1, 10, 7.5, -15, 0.01}) &&
+                   loaded.robot_ip == "192.168.66.20", "nine_point_plan_survives_restart_read");
     }
     for (const std::string& sequence : {std::string("\n  - 5000\n  - 8500"), std::string("[5000,\n 8500\n]")}) {
         writeFile("%YAML:1.0\n---\nfusion_exposures_us: " + sequence + "\n# keep\nrobot_ip: \"192.168.66.14\"\n");
