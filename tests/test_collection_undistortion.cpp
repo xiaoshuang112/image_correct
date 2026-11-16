@@ -134,6 +134,10 @@ int main(int argc, char** argv) {
         write(k, cv::Mat::zeros(1, 5, CV_64F));
         collection::UndistortionMaps zero(collection::UndistortionCalibration::load(path), raw.size(), "CAM-1");
         require(cv::norm(zero.apply(raw), raw) == 0, "zero distortion changed pixels");
+        require(cv::norm(zero.geometry().outputCameraMatrix, computation) == 0,
+                "zero distortion replaced the camera matrix");
+        require(zero.geometry().validPixROI == cv::Rect(0, 0, raw.cols, raw.rows),
+                "zero distortion inset the valid region");
         write({}, {}); rejects([&] { collection::UndistortionCalibration::load(path); });
         write(k, {}); rejects([&] { collection::UndistortionCalibration::load(path); });
         write(cv::Mat::eye(4, 4, CV_64F), d); rejects([&] { collection::UndistortionCalibration::load(path); });
@@ -172,12 +176,20 @@ int main(int argc, char** argv) {
         const cv::Size fieldSize(1280, 1024);
         collection::UndistortionMaps fieldMaps(collection::UndistortionCalibration::load(path), fieldSize, "DB2650007");
         const cv::Mat& fieldNewK = fieldMaps.geometry().outputCameraMatrix;
+        // Published K_new is the OpenCV 4.8+ result. Earlier releases sample an
+        // inset border grid in icvGetRectangles (#23305) and differ by about
+        // half a pixel; those builds are checked against their own
+        // getOptimalNewCameraMatrix below.
+#if CV_VERSION_MAJOR > 4 || (CV_VERSION_MAJOR == 4 && CV_VERSION_MINOR >= 8)
         const double expectedNewK[4] = {697.563127074, 615.707952065, 698.282779635, 530.385497800};
         const double actualNewK[4] = {
             fieldNewK.at<double>(0, 0), fieldNewK.at<double>(0, 2),
             fieldNewK.at<double>(1, 1), fieldNewK.at<double>(1, 2)};
         for (int i = 0; i < 4; ++i)
             require(std::abs(actualNewK[i] - expectedNewK[i]) < 1e-4, "field K_new does not match production alpha=1");
+#else
+        (void)fieldNewK;
+#endif
         cv::Mat fieldRaw(fieldSize, CV_8UC3);
         cv::RNG fieldRandom(20261018); fieldRandom.fill(fieldRaw, cv::RNG::UNIFORM, 0, 256);
         cv::Mat fieldComputation;
