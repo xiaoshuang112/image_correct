@@ -2,13 +2,24 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
 #include <cmath>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
 #include <stdexcept>
 
 namespace collection {
 
 UndistortionCalibration UndistortionCalibration::load(const std::string& path) {
     try {
-        cv::FileStorage file(path, cv::FileStorage::READ);
+        // path 是 UTF-8 窄字符串：先按 UTF-8 解码成原生路径读字节，再在内存里解析。
+        // cv::FileStorage 按文件名打开时走 ANSI fopen，非 ASCII 名字会被当前 ANSI
+        // 代码页（此机器 936/GBK）误解码，从而读不到真正的文件。
+        std::ifstream input(std::filesystem::u8path(path), std::ios::binary);
+        if (!input) throw std::runtime_error("无法读取手眼标定文件");
+        std::ostringstream buffer;
+        buffer << input.rdbuf();
+        const std::string contents = buffer.str();
+        cv::FileStorage file(contents, cv::FileStorage::READ | cv::FileStorage::MEMORY);
         if (!file.isOpened()) throw std::runtime_error("无法读取手眼标定文件");
         UndistortionCalibration result;
         file["camera_matrix"] >> result.cameraMatrix;
