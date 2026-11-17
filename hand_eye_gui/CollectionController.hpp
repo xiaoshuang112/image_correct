@@ -12,6 +12,7 @@
 #include <QPointer>
 #include <QUrl>
 #include <array>
+#include <condition_variable>
 #include <functional>
 #include <mutex>
 #include <chrono>
@@ -355,6 +356,10 @@ private:
         int channels = 0;
     };
     std::shared_future<PreviewFrame> m_previewFuture;
+    std::mutex m_exposurePreviewMutex;
+    std::condition_variable m_exposurePreviewChanged;
+    bool m_exposurePreviewReady = false;
+    bool m_exposurePreviewClosing = false;
     quint64 m_previewGeneration = 0, m_pendingPreviewGeneration = 0;
     QSize m_previewDisplaySize{1280, 960};
     QTimer*              m_previewTimer  = nullptr;

@@ -66,7 +66,7 @@ class Camera : public AICamera {
 public:
     std::atomic<int> previewReads{0}, activePreviewReads{0};
     std::atomic<bool> blockPreview{false}, releasePreview{false}, previewOnGui{false}, captureOverlapped{false};
-    std::atomic<bool> blockCapture{false}, releaseCapture{false}, captureEntered{false};
+    std::atomic<bool> exposureRangeRead{false}, blockCapture{false}, releaseCapture{false}, captureEntered{false};
     const std::thread::id guiThread = std::this_thread::get_id();
     cv::Mat previewFrame;
     Camera() : AICamera(CameraConfig{}) {}
@@ -87,7 +87,12 @@ public:
     int getColorExposureTime() override { return 5000; }
     bool setAutoExposure(bool) override { return true; }
     bool getAutoExposure() override { return false; }
-    bool getExposureRange(int& low, int& high) override { low = 100; high = 50000; return true; }
+    bool getExposureRange(int& low, int& high) override {
+        low = 100;
+        high = 50000;
+        exposureRangeRead = true;
+        return true;
+    }
     std::vector<cv::Mat> captureMultiExposureImages(const std::vector<int>& values) override {
         captureEntered = true;
         captureOverlapped = activePreviewReads > 0;
@@ -320,6 +325,32 @@ struct CollectionControllerTestAccess {
         controller.m_outputDirectory = output;
         controller.m_exposureList = "5000,8500";
     }
+    static void verifyCaptureShutdown(const QString& output, bool duringExposure) {
+        auto controller = std::make_unique<CollectionController>();
+        auto camera = std::make_shared<Camera>();
+        controller->m_camera = camera;
+        controller->m_cameraOpened = true;
+        controller->m_outputDirectory = output;
+        controller->m_exposureList = "5000,8500";
+        camera->blockCapture = duringExposure;
+        camera->previewFrame = cv::Mat(8, 8, CV_8UC3, cv::Scalar(4, 5, 6));
+        controller->startPreview();
+        waitFor([&] { return controller->m_previewFrameCount > 0; });
+        controller->capturePhoto();
+        if (duringExposure) {
+            waitFor([&] { return camera->captureEntered.load(); });
+            camera->releaseCapture = true;
+        } else {
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!camera->exposureRangeRead && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            require(camera->exposureRangeRead, "capture worker did not reach exposure validation");
+        }
+        // Simulate destruction after the GUI stops dispatching queued events.
+        controller.reset();
+        if (!duringExposure)
+            require(!camera->captureEntered, "capture started during shutdown without pausing preview");
+    }
     static void tools(CollectionController& controller) {
         controller.m_tcpNames = QStringList{"ToolA", "ToolB"};
     }
@@ -473,6 +504,15 @@ int main(int argc, char** argv) {
     QApplication app(argc, argv);
     app.setQuitOnLastWindowClosed(false);
     try {
+        if (app.arguments().contains(QStringLiteral("--capture-shutdown"))) {
+            QTemporaryDir output;
+            require(output.isValid(), "temporary output directory failed");
+            std::cout << "Shutdown before preview pause" << std::endl;
+            CollectionControllerTestAccess::verifyCaptureShutdown(output.path(), false);
+            std::cout << "Shutdown while returning from exposure" << std::endl;
+            CollectionControllerTestAccess::verifyCaptureShutdown(output.path(), true);
+            return 0;
+        }
         CollectionControllerTestAccess::verifySessionGates();
         testCollectionSettings();
         QTemporaryDir temp;
