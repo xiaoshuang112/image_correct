@@ -69,11 +69,18 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
         checkCancelled();
         const QString directory = QDir(outputDirectory).filePath(captureTime.toString("yyyy-MM-dd"));
         if (!QDir().mkpath(directory)) throw std::runtime_error("无法创建图片保存目录");
-        const QString rawPath = QDir(directory).filePath("capture_" +
+        const QString filename = "capture_" +
             captureTime.toString("yyyyMMdd_HHmmss_zzz") + "_" +
-            QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png");
+            QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png";
+        const QString rawDirectory = undistortion ? QDir(directory).filePath("raw") : directory;
+        const QString correctedDirectory = QDir(directory).filePath("undistorted");
+        if (!QDir().mkpath(rawDirectory) || (undistortion && !QDir().mkpath(correctedDirectory)))
+            throw std::runtime_error("无法创建图片保存子目录");
+        const QString rawPath = QDir(rawDirectory).filePath(filename);
+        const QString correctedPath = QDir(correctedDirectory).filePath(
+            filename.left(filename.size() - 4) + "_undistorted.png");
         checkCancelled();
-        result.path = saveCaptureImages(fused, corrected, rawPath);
+        result.path = saveCaptureImages(fused, corrected, rawPath, correctedPath);
         result.message = undistortion ? "多曝光融合及去畸变完成，校正图与原始图已保存"
                                      : "多曝光融合完成，图片已保存";
         // Keep manual captures even when pose/metadata fails; automatic motion

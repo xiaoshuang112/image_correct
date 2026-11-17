@@ -26,12 +26,14 @@ void write(const QString& path, const std::vector<uchar>& bytes) {
 }
 }
 
-QString saveCaptureImages(const cv::Mat& raw, const cv::Mat& corrected, const QString& rawPath) {
+QString saveCaptureImages(const cv::Mat& raw, const cv::Mat& corrected, const QString& rawPath,
+                          const QString& correctedPath) {
     if (raw.empty() || raw.type() != CV_8UC3 || !rawPath.endsWith(".png"))
         throw std::runtime_error("融合图像或图片文件名无效");
     if (!corrected.empty() && (corrected.size() != raw.size() || corrected.type() != raw.type()))
         throw std::runtime_error("去畸变图像格式或分辨率无效");
-    const QString correctedPath = rawPath.left(rawPath.size() - 4) + "_undistorted.png";
+    if (!corrected.empty() && (!correctedPath.endsWith(".png") || correctedPath == rawPath))
+        throw std::runtime_error("去畸变图片文件名无效");
     if (QFileInfo::exists(rawPath) || (!corrected.empty() && QFileInfo::exists(correctedPath)))
         throw std::runtime_error("图片文件已存在，本次不覆盖");
     const auto rawBytes = encode(raw);

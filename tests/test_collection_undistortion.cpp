@@ -89,7 +89,7 @@ int main(int argc, char** argv) {
         // This is the same persistence function used by capturePhoto. The
         // primary image and recent thumbnail must point at corrected pixels.
         const QString rawPath = temp.filePath("capture_fused.png");
-        const auto primary = collection::saveCaptureImages(raw, corrected, rawPath);
+        const auto primary = collection::saveCaptureImages(raw, corrected, rawPath, temp.filePath("capture_fused_undistorted.png"));
         require(primary == temp.filePath("capture_fused_undistorted.png"), "primary path is not corrected image");
         require(cv::norm(cv::imread(primary.toStdString()), corrected) == 0, "saved primary is not corrected");
         require(cv::norm(cv::imread(rawPath.toStdString()), original) == 0, "raw backup lost pixels");
@@ -114,15 +114,20 @@ int main(int argc, char** argv) {
         require(collection::saveUndistortionMetadata(primary, geometry).contains(QStringLiteral("不覆盖")),
                 "pixel-frame record was replaced");
         const auto savedRaw = read(rawPath), savedCorrected = read(primary);
-        rejects([&] { collection::saveCaptureImages(raw, corrected, rawPath); });
+        rejects([&] { collection::saveCaptureImages(raw, corrected, rawPath, temp.filePath("capture_fused_undistorted.png")); });
         require(read(rawPath) == savedRaw && read(primary) == savedCorrected, "collision overwrote images");
         const auto offPath = temp.filePath("disabled.png");
-        require(collection::saveCaptureImages(raw, {}, offPath) == offPath, "disabled mode changed primary path");
+        require(collection::saveCaptureImages(raw, {}, offPath, {}) == offPath, "disabled mode changed primary path");
         require(!QFile::exists(temp.filePath("disabled_undistorted.png")), "disabled mode saved corrected image");
         require(cv::norm(cv::imread(offPath.toStdString()), raw) == 0, "disabled mode changed image");
-        rejects([&] { collection::saveCaptureImages(raw, corrected, temp.filePath("absent/capture.png")); });
-        rejects([&] { collection::saveCaptureImages(raw, cv::Mat(5, 5, CV_8UC3), temp.filePath("bad.png")); });
+        rejects([&] { collection::saveCaptureImages(raw, corrected, temp.filePath("absent/capture.png"), temp.filePath("absent/corrected.png")); });
+        rejects([&] { collection::saveCaptureImages(raw, cv::Mat(5, 5, CV_8UC3), temp.filePath("bad.png"), temp.filePath("bad_corrected.png")); });
         require(!QFile::exists(temp.filePath("bad.png")), "invalid correction created partial image");
+
+        const QString pairRaw = temp.filePath("pair_raw.png");
+        rejects([&] { collection::saveCaptureImages(raw, corrected, pairRaw,
+            temp.filePath("missing/corrected.png")); });
+        require(!QFile::exists(pairRaw), "corrected-folder failure left a partial raw image");
 
         // Legacy hand-eye results use dist_coeffs and lack identity. Accept
         // these without pretending that their resolution was verified.

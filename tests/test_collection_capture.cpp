@@ -118,12 +118,20 @@ int main(int argc, char** argv) {
         calibration.calibratedSize = {32,32};
         const auto maps = std::make_shared<collection::UndistortionMaps>(calibration, cv::Size(32,32), "");
         const auto corrected = collection::captureAndSave(camera, temp.path(), time, {5000,8500}, maps, readPose, cancelled);
-        const auto rawPath = corrected.path;
-        QString raw = rawPath; raw.replace("_undistorted.png", ".png");
-        require(corrected.complete && corrected.path.endsWith("_fused_undistorted.png") && QFileInfo::exists(raw) &&
+        const QDir day(QDir(temp.path()).filePath("2026-11-03"));
+        QString filename = QFileInfo(corrected.path).fileName();
+        filename.replace("_undistorted.png", ".png");
+        const QString raw = day.filePath("raw/" + filename);
+        require(corrected.complete && QFileInfo(corrected.path).dir().absolutePath() == day.filePath("undistorted") &&
+                corrected.path.endsWith("_fused_undistorted.png") && QFileInfo::exists(raw) &&
                 record(jsonPath(raw)) == record(jsonPath(corrected.path)) &&
                 QFileInfo::exists(corrected.path.left(corrected.path.size()-4) + ".pixel_frame.json"),
                 "undistorted/raw pair or metadata format changed");
+        require(day.entryList({"*.png"}, QDir::Files).size() > 0 &&
+                !QFileInfo::exists(day.filePath(filename)) &&
+                QFileInfo::exists(day.filePath("raw/T_base_flange.json")) &&
+                QFileInfo::exists(day.filePath("undistorted/T_base_flange.json")),
+                "paired capture leaked into day root or omitted folder pose records");
         int stage = 0;
         collection::ExposureCameraGate gate{
             [&] { require(stage == 0, "preview suspended twice"); stage = 1; },
