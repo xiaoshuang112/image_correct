@@ -177,7 +177,7 @@ int main() {
             require(current == targets[point], "capture ran at wrong position");
             saving = true; events.push_back("save" + std::to_string(point)); saving = false;
         };
-        collection::runNinePointCapture(origin, targets, move, capture, cancelled);
+        collection::runPointCapture(origin, {targets.begin(), targets.end()}, move, capture, cancelled);
         std::vector<std::string> direct;
         for (int point = 0; point < 9; ++point) {
             direct.push_back("move" + std::to_string(point));
@@ -187,7 +187,7 @@ int main() {
         require(events == direct, "route or save/move order incorrect");
         require(current == origin, "normal completion did not return to origin");
         int customCaptures = 0, customReturns = 0;
-        collection::runNinePointCapture(origin, custom,
+        collection::runPointCapture(origin, {custom.begin(), custom.end()},
             [&](const FlangePose& pose, int index) {
                 if (index == -1) {
                     require(pose == origin, "return used the rotated center instead of the original baseline");
@@ -200,13 +200,13 @@ int main() {
             }, cancelled);
         require(customCaptures == 9 && customReturns == 1 && current == origin,
                 "custom center was skipped or the original baseline was not restored");
-        rejects([&] { collection::runNinePointCapture(origin, custom, move, [&](int point) {
+        rejects([&] { collection::runPointCapture(origin, {custom.begin(), custom.end()}, move, [&](int point) {
             if (point == 4) throw std::runtime_error("center save failed");
         }, cancelled); });
         require(current == custom[4], "moved after a rotated center save failure");
         for (int failed = 0; failed < 9; ++failed) {
             events.clear(); current = origin;
-            rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
+            rejects([&] { collection::runPointCapture(origin, {targets.begin(), targets.end()}, move, [&](int point) {
                 capture(point);
                 if (point == failed) throw std::runtime_error("save failed");
             }, cancelled); });
@@ -215,22 +215,22 @@ int main() {
         }
         events.clear();
         current = origin;
-        rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
+        rejects([&] { collection::runPointCapture(origin, {targets.begin(), targets.end()}, move, [&](int point) {
             capture(point); if (point == 2) throw std::runtime_error("disk full");
         }, cancelled); });
         require(events.back() == "save2" && current == targets[2], "moved after save failure");
         events.clear(); current = origin;
-        rejects([&] { collection::runNinePointCapture(origin, targets, move, [&](int point) {
+        rejects([&] { collection::runPointCapture(origin, {targets.begin(), targets.end()}, move, [&](int point) {
             capture(point); cancelled = true;
         }, cancelled); });
         require(events == std::vector<std::string>{"move0", "save0"}, "cancel still issued motion");
         events.clear(); cancelled = false;
-        rejects([&] { collection::runNinePointCapture(origin, targets, [&](const FlangePose&, int) {
+        rejects([&] { collection::runPointCapture(origin, {targets.begin(), targets.end()}, [&](const FlangePose&, int) {
             events.push_back("failed_move"); throw std::runtime_error("motion failed");
         }, capture, cancelled); });
         require(events == std::vector<std::string>{"failed_move"}, "capture or return followed failed move");
         events.clear(); current = targets[8];
-        rejects([&] { collection::runNinePointCapture(origin, targets, [&](const FlangePose& pose, int index) {
+        rejects([&] { collection::runPointCapture(origin, {targets.begin(), targets.end()}, [&](const FlangePose& pose, int index) {
             events.push_back(index < 0 ? "return" : "move" + std::to_string(index));
             if (index < 0) throw std::runtime_error("return failed");
             current = pose;
@@ -250,6 +250,27 @@ int main() {
         collection::moveFlangeLinear(1, origin, targets[1], robot.cancelled, {0, 300});
         require(robot.sends == 1 && robot.stops == 0 && robot.actual == targets[1] && robot.polls >= 3,
                 "movement did not confirm stopped actual pose");
+        robot.reset();
+        const std::vector<FlangePose> configured{{60,200,303,180,0,0}, {140,200,303,180,0,0}};
+        const std::vector<std::string> labels{"p1", "p2"};
+        const auto configuredRoute = collection::planConfiguredRoute(1, origin, configured, labels, robot.cancelled);
+        require(configuredRoute.size() == 3 && configuredRoute[1].size() == 2 &&
+                configuredRoute[1][0] == FlangePose{100,200,303,180,0,0} &&
+                configuredRoute.back().back() == origin && robot.inverseReads == 4 && robot.sends == 0,
+                "configured route did not precheck the 3D midpoint, endpoints and return");
+        robot.badInverseAfter = 1;
+        robot.inverseReads = 0;
+        require(rejects([&] { collection::planConfiguredRoute(1, origin, configured, labels, robot.cancelled); })
+                    .find("p2") != std::string::npos && robot.sends == 0,
+                "failed waypoint precheck did not identify the configured leg");
+        robot.reset();
+        robot.actual[0] += 0.1;
+        rejects([&] { collection::moveFlangeAlongConfiguredLeg(1, origin, origin, configuredRoute[0],
+            robot.cancelled, {0, 300}, {}, 10); });
+        require(robot.sends == 0, "configured route dispatched from outside the preflighted pose");
+        robot.reset();
+        collection::moveFlangeAlongConfiguredLeg(1, origin, origin, {origin}, robot.cancelled, {0, 300}, {}, 10);
+        require(robot.sends == 0, "configured capture commanded movement for a repeated pose");
         robot.reset(); int telemetry = 0;
         for (double speed : {1.0, 1000.0}) {
             robot.reset(); robot.expectedSpeed = speed;

@@ -16,12 +16,14 @@ void check(CRresult result, const char* operation) {
         throw std::runtime_error(std::string(operation) + "（错误码 " + std::to_string(result) + "）");
 }
 void checkCancelled(const std::atomic<bool>& cancelled) {
-    if (cancelled.load()) throw std::runtime_error("九点采图已停止");
+    if (cancelled.load()) throw std::runtime_error("自动采图已停止");
 }
 void checkFinite(const FlangePose& pose) {
     if (!std::all_of(pose.begin(), pose.end(), [](double v) { return std::isfinite(v); }))
         throw std::runtime_error("机器人位姿包含无效数值");
 }
+} // namespace
+
 FlangePose withEulerYawOffset(const FlangePose& origin, double degrees) {
     if (degrees == 0) return origin;
     const double radians = degrees * CV_PI / 180.0;
@@ -39,6 +41,8 @@ FlangePose withEulerYawOffset(const FlangePose& origin, double degrees) {
     checkFinite(result);
     return result;
 }
+
+namespace {
 double translationDistance(const FlangePose& from, const FlangePose& to) {
     double distance = 0;
     for (int axis = 0; axis < 3; ++axis) distance += std::pow(to[axis] - from[axis], 2);
@@ -65,6 +69,12 @@ void checkGridPose(const FlangePose& origin, const FlangePose& pose) {
     if (std::abs(yaw) > maximumNinePointYawDegrees + 0.2 || !flangeAtTarget(pose, expected))
         throw std::runtime_error("九点采图仅允许欧拉 Rz 相对基准变化 ±20°，Rx/Ry 保持不变");
 }
+void checkConfiguredPose(const FlangePose& origin, const FlangePose& pose) {
+    if (translationDistance(origin, pose) > maximumNinePointOffsetMm + positionToleranceMm)
+        throw std::runtime_error("目标距基准超过 50 mm");
+    if (flangeRotationDistanceDeg(origin, pose) > maximumNinePointYawDegrees + 0.2)
+        throw std::runtime_error("目标姿态相对基准超过 20°");
+}
 RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
     RobotModes mode{};
     check(cr_get_robotMode(handle, &mode), "读取机器人状态失败");
@@ -72,9 +82,9 @@ RobotModes checkEnabled(RobotHandle handle, bool allowMoving = false) {
         throw std::runtime_error("机器人须处于使能且停止状态");
     return mode;
 }
-void stopAndRethrow(RobotHandle handle, const std::exception& error) {
+void stopAndRethrow(RobotHandle handle, const std::exception& error, bool configured) {
     const auto result = cr_moveControl(handle, DecStop);
-    APP_LOG_EVENT_ERROR("robot.motion", "nine_point_stop", "requested",
+    APP_LOG_EVENT_ERROR("robot.motion", configured ? "configured_point_stop" : "nine_point_stop", "requested",
         {{"reason", QString::fromUtf8(error.what())}, {"stop_result", QString::number(result)}});
     if (result != sucess)
         throw std::runtime_error(std::string(error.what()) + "；停止指令失败（错误码 " +
@@ -105,7 +115,7 @@ NinePointTargets ninePointTargets(const FlangePose& origin, double xMm, double y
     return points;
 }
 
-void runNinePointCapture(const FlangePose& origin, const NinePointTargets& targets,
+void runPointCapture(const FlangePose& origin, const std::vector<FlangePose>& targets,
     const std::function<void(const FlangePose&, int)>& move,
     const std::function<void(int)>& capture, const std::atomic<bool>& cancelled) {
     checkCancelled(cancelled);
@@ -158,17 +168,19 @@ FlangePose readStationaryFlange(RobotHandle handle) {
     return pose;
 }
 
-bool flangeAtTarget(const FlangePose& actual, const FlangePose& target, double angleToleranceDeg) {
+double flangeRotationDistanceDeg(const FlangePose& actual, const FlangePose& target) {
     checkFinite(actual);
     checkFinite(target);
-    double distanceSquared = 0;
-    for (int axis = 0; axis < 3; ++axis)
-        distanceSquared += std::pow(actual[axis] - target[axis], 2);
     const cv::Mat a = calib_transform::axisAnglePoseToTransform(actual.data());
     const cv::Mat b = calib_transform::axisAnglePoseToTransform(target.data());
     const cv::Mat rotation = a(cv::Rect(0, 0, 3, 3)).t() * b(cv::Rect(0, 0, 3, 3));
-    const double angle = std::acos(std::clamp((cv::trace(rotation)[0] - 1) / 2, -1.0, 1.0)) * 180 / CV_PI;
-    return distanceSquared <= positionToleranceMm * positionToleranceMm + 1e-12 && angle <= angleToleranceDeg;
+    return std::acos(std::clamp((cv::trace(rotation)[0] - 1) / 2, -1.0, 1.0)) * 180 / CV_PI;
+}
+
+bool flangeAtTarget(const FlangePose& actual, const FlangePose& target, double angleToleranceDeg) {
+    const auto angle = flangeRotationDistanceDeg(actual, target);
+    return translationDistance(actual, target) <= std::sqrt(positionToleranceMm * positionToleranceMm + 1e-12)
+        && angle <= angleToleranceDeg;
 }
 
 void confirmRobotStopped(RobotHandle handle) {
@@ -189,23 +201,31 @@ void confirmRobotStopped(RobotHandle handle) {
 }
 
 namespace {
-void checkPosesReachable(RobotHandle handle, const std::vector<FlangePose>& poses) {
-    if (poses.empty()) return;
+FlangePose referenceJoints(RobotHandle handle) {
     FlangePose reference{};
     check(cr_get_jointActualPos(handle, reference.data()), "读取基准关节角失败");
     checkFinite(reference);
-    for (auto pose : poses) {
-        FlangePose joints{};
-        checkFinite(pose);
-        check(cr_kineInverse(handle, pose.data(), reference.data(), joints.data()), "九点目标逆解失败");
-        checkFinite(joints);
-        for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
-            double delta = joints[axis] - reference[axis];
-            if (axis == 5) delta = std::remainder(delta, 360.0);
-            if (std::abs(delta) > 30)
-                throw std::runtime_error("九点目标关节变化超过 30°，请调整基准位置或减小偏移");
-        }
+    return reference;
+}
+FlangePose checkReachablePose(RobotHandle handle, FlangePose pose, FlangePose seed,
+    const FlangePose& reference, const char* inverseError, const char* limitError) {
+    FlangePose joints{};
+    checkFinite(pose);
+    check(cr_kineInverse(handle, pose.data(), seed.data(), joints.data()), inverseError);
+    checkFinite(joints);
+    for (int axis = 0; axis < ROB_AXIS_NUM; ++axis) {
+        double delta = joints[axis] - reference[axis];
+        if (axis == 5) delta = std::remainder(delta, 360.0);
+        if (std::abs(delta) > 30) throw std::runtime_error(limitError);
     }
+    return joints;
+}
+void checkPosesReachable(RobotHandle handle, const std::vector<FlangePose>& poses) {
+    if (poses.empty()) return;
+    const auto reference = referenceJoints(handle);
+    for (const auto& pose : poses)
+        checkReachablePose(handle, pose, reference, reference, "九点目标逆解失败",
+            "九点目标关节变化超过 30°，请调整基准位置或减小偏移");
 }
 } // namespace
 void checkNinePointReachability(RobotHandle handle, const NinePointTargets& targets) {
@@ -222,6 +242,55 @@ void checkNinePointRoute(RobotHandle handle, const FlangePose& origin, const Nin
     for (const auto& target : targets) appendWaypoints(target);
     appendWaypoints(origin);
     checkPosesReachable(handle, poses);
+}
+
+std::vector<std::vector<FlangePose>> planConfiguredRoute(RobotHandle handle, const FlangePose& origin,
+    const std::vector<FlangePose>& targets, const std::vector<std::string>& labels,
+    const std::atomic<bool>& cancelled) {
+    if (targets.empty() || labels.size() != targets.size()) throw std::runtime_error("配置点位列表无效");
+    checkCancelled(cancelled);
+    const auto reference = referenceJoints(handle);
+    auto seed = reference;
+    FlangePose from = origin;
+    std::vector<std::vector<FlangePose>> route;
+    for (size_t index = 0; index <= targets.size(); ++index) {
+        const bool returning = index == targets.size();
+        const auto& to = returning ? origin : targets[index];
+        checkCancelled(cancelled);
+        try {
+            checkConfiguredPose(origin, to);
+            std::vector<FlangePose> stops;
+            // Both endpoints are within 50 mm of the origin. At most one
+            // midpoint is needed on their straight segment.
+            if (translationDistance(from, to) > maximumNinePointOffsetMm) {
+                auto transform = calib_transform::axisAnglePoseToTransform(from.data());
+                const auto end = calib_transform::axisAnglePoseToTransform(to.data());
+                const cv::Rect rotation(0, 0, 3, 3);
+                cv::Mat delta, half;
+                cv::Rodrigues(transform(rotation).t() * end(rotation), delta);
+                cv::Rodrigues(delta * 0.5, half);
+                const cv::Mat middle = transform(rotation) * half;
+                middle.copyTo(transform(rotation));
+                FlangePose midpoint{};
+                calib_transform::transformToAxisAnglePose(transform, midpoint.data());
+                for (int axis = 0; axis < 3; ++axis)
+                    midpoint[axis] = (from[axis] + to[axis]) / 2;
+                checkConfiguredPose(origin, midpoint);
+                stops.push_back(midpoint);
+            }
+            stops.push_back(to);
+            for (const auto& stop : stops) {
+                checkCancelled(cancelled);
+                seed = checkReachablePose(handle, stop, seed, reference, "目标逆解失败",
+                    "目标关节相对基准变化超过 30°");
+            }
+            route.push_back(std::move(stops));
+            from = to;
+        } catch (const std::exception& error) {
+            throw std::runtime_error((returning ? std::string("返回基准位") : labels[index]) + "：" + error.what());
+        }
+    }
+    return route;
 }
 
 void waitForStableFlange(RobotHandle handle, const FlangePose& target,
@@ -258,13 +327,22 @@ void waitForStableFlange(RobotHandle handle, const FlangePose& target,
     throw std::runtime_error("机器人到位或稳定等待超时");
 }
 
-void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
-    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
+namespace {
+void moveFlangeLine(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
+    const std::atomic<bool>& cancelled, LineMotionWait wait, const MotionTick& tick, double speedMmS,
+    const FlangePose* expected = nullptr) {
     checkCancelled(cancelled);
     if (!validRobotSpeed(speedMmS)) throw std::runtime_error("机器人移动速度超出 1～1000 mm/s，未下发运动");
     const auto initial = readStationaryFlange(handle);
-    checkGridPose(origin, initial);
-    checkGridPose(origin, target);
+    if (expected) {
+        if (!flangeAtTarget(initial, *expected, wait.angleToleranceDeg))
+            throw std::runtime_error("实际位姿偏离已检查的起点，未下发运动");
+        checkConfiguredPose(origin, initial);
+        checkConfiguredPose(origin, target);
+    } else {
+        checkGridPose(origin, initial);
+        checkGridPose(origin, target);
+    }
     const double distance = translationDistance(initial, target);
     if (distance > maximumNinePointOffsetMm + 0.2)
         throw std::runtime_error("单段直线运动超过 50 mm，未下发运动");
@@ -281,7 +359,7 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const Flange
     std::fill_n(command.speed, ROB_AXIS_NUM, speedMmS); // mm/s
     std::fill_n(command.acc, ROB_AXIS_NUM, 20.0);   // mm/s²
     checkCancelled(cancelled);
-    APP_LOG_EVENT_INFO("robot.motion", "nine_point_line", "start",
+    APP_LOG_EVENT_INFO("robot.motion", expected ? "configured_point_line" : "nine_point_line", "start",
         {{"x", QString::number(target[0], 'f', 3)}, {"y", QString::number(target[1], 'f', 3)},
          {"z", QString::number(target[2], 'f', 3)}, {"rx", QString::number(target[3], 'f', 6)},
          {"ry", QString::number(target[4], 'f', 6)}, {"rz", QString::number(target[5], 'f', 6)},
@@ -290,13 +368,20 @@ void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const Flange
         check(cr_move_line(handle, command, FALSE), "直线运动指令失败");
         waitForStableFlange(handle, target, cancelled, wait, tick);
     } catch (const std::exception& error) {
-        stopAndRethrow(handle, error);
+        stopAndRethrow(handle, error, expected != nullptr);
     } catch (...) {
         const auto result = cr_moveControl(handle, DecStop);
         if (result != sucess)
-            throw std::runtime_error("九点采图运动异常；停止指令失败，请在示教器确认机器人状态");
+            throw std::runtime_error(expected ? "按配置采图运动异常；停止指令失败，请在示教器确认机器人状态"
+                                              : "九点采图运动异常；停止指令失败，请在示教器确认机器人状态");
         throw;
     }
+}
+} // namespace
+
+void moveFlangeLinear(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
+    const std::atomic<bool>& cancelled, LineMotionWait wait, MotionTick tick, double speedMmS) {
+    moveFlangeLine(handle, origin, target, cancelled, wait, tick, speedMmS);
 }
 
 void moveFlangeAlongGrid(RobotHandle handle, const FlangePose& origin, const FlangePose& target,
@@ -304,5 +389,19 @@ void moveFlangeAlongGrid(RobotHandle handle, const FlangePose& origin, const Fla
     const auto start = readStationaryFlange(handle);
     for (const auto& stop : linearGridStops(origin, start, target))
         moveFlangeLinear(handle, origin, stop, cancelled, wait, tick, speedMmS);
+}
+
+void moveFlangeAlongConfiguredLeg(RobotHandle handle, const FlangePose& origin, FlangePose expected,
+    const std::vector<FlangePose>& stops, const std::atomic<bool>& cancelled,
+    LineMotionWait wait, MotionTick tick, double speedMmS) {
+    for (const auto& stop : stops) {
+        if (expected == stop) {
+            // A configured point can deliberately repeat the baseline or the last pose.
+            waitForStableFlange(handle, stop, cancelled, wait, tick);
+        } else {
+            moveFlangeLine(handle, origin, stop, cancelled, wait, tick, speedMmS, &expected);
+        }
+        expected = stop;
+    }
 }
 } // namespace collection

@@ -10,7 +10,10 @@ ApplicationWindow {
     color: Theme.bg; font.family: Theme.sans; font.pixelSize: Theme.body
     property var controller: collectionController
     property string page: "main"
-    property bool ninePointMode: false
+    property string captureMode: "single"
+    readonly property bool ninePointMode: captureMode === "nine"
+    readonly property bool configuredPointMode: captureMode === "configured"
+    property var configuredPoints: ({count: 0, error: ""})
     property bool gridAnglesValid: false
     property bool poseEditorOpen: false
     readonly property bool busy: controller.collectionBusy || controller.manualMoveActive || controller.jogActive || controller.motionFault
@@ -19,7 +22,7 @@ ApplicationWindow {
     readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
     readonly property bool gridOffsetValid: offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1 && Math.sqrt(Math.pow(Number(offsetX.text), 2) + Math.pow(Number(offsetY.text), 2)) <= 50
     readonly property bool editing: activeFocusItem !== null && (activeFocusItem.cursorPosition !== undefined || activeFocusItem.hasOwnProperty("currentIndex"))
-    readonly property bool shortcutReady: page === "main" && ready && !ninePointMode && !editing && !poseEditorOpen && !teach.targetDraft && !teach.jogHeld && !tcpSelector.activeFocus && !tcpSelector.popup.visible
+    readonly property bool shortcutReady: page === "main" && ready && captureMode === "single" && !editing && !poseEditorOpen && !teach.targetDraft && !teach.jogHeld && !tcpSelector.activeFocus && !tcpSelector.popup.visible
     property string frameMetadata: ""
     property bool hasFrame: false
     property int seenCount: controller.savedImageCount
@@ -118,8 +121,16 @@ ApplicationWindow {
                         HmiText { visible: !root.compact; text: "采集模式"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }
                         RowLayout {
                             Layout.fillWidth: true; spacing: 4
-                            CollectButton { objectName: "singleModeButton"; text: "单次"; small: root.compact; selected: !root.ninePointMode; Layout.fillWidth: true; enabled: !root.interactionLocked; onClicked: root.ninePointMode = false }
-                            CollectButton { objectName: "ninePointModeButton"; text: "九点"; small: root.compact; selected: root.ninePointMode; Layout.fillWidth: true; enabled: !root.interactionLocked; onClicked: root.ninePointMode = true }
+                            CollectButton { objectName: "singleModeButton"; text: "单次"; small: root.compact; selected: root.captureMode === "single"; Layout.fillWidth: true; enabled: !root.interactionLocked; onClicked: root.captureMode = "single" }
+                            CollectButton { objectName: "ninePointModeButton"; text: "九点"; small: root.compact; selected: root.ninePointMode; Layout.fillWidth: true; enabled: !root.interactionLocked; onClicked: root.captureMode = "nine" }
+                            CollectButton {
+                                objectName: "configuredModeButton"; text: "按配置"; small: root.compact; selected: root.configuredPointMode
+                                Layout.fillWidth: true; enabled: !root.interactionLocked
+                                onClicked: {
+                                    root.captureMode = "configured"
+                                    root.configuredPoints = root.controller.configuredPointSummary()
+                                }
+                            }
                         }
                         RowLayout {
                             visible: root.ninePointMode; Layout.fillWidth: true; spacing: 8
@@ -155,13 +166,36 @@ ApplicationWindow {
                         }
                         HmiText { visible: root.ninePointMode && !root.compact; text: "Rz 可编辑 · 相对基准（±20°）"; font.pixelSize: Theme.meta }
                         HmiText { objectName: "ninePointOffsetError"; visible: root.ninePointMode && !root.gridOffsetValid; Layout.fillWidth: true; text: "偏移须为 0.1～50 mm，对角距基准 ≤50 mm"; color: Theme.warning; font.pixelSize: Theme.meta }
+                        ColumnLayout {
+                            visible: root.configuredPointMode; Layout.fillWidth: true; spacing: 2
+                            HmiText { text: "move_tcp_points.json"; font.family: Theme.mono; font.pixelSize: Theme.meta }
+                            HmiText {
+                                objectName: "configuredPointSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta
+                                text: root.configuredPoints.error || root.configuredPoints.count + " 个点位"
+                                color: root.configuredPoints.error ? Theme.warning : Theme.ink2
+                            }
+                            CheckBox {
+                                id: saveConfiguredRaw; objectName: "saveConfiguredRaw"
+                                Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredHeight: root.compact ? 28 : 34
+                                text: "同时保存原始融合图（RAW）"
+                                enabled: !root.interactionLocked && root.controller.undistortionEnabled
+                                font.pixelSize: Theme.meta; palette.windowText: Theme.ink
+                            }
+                        }
                         CollectButton {
-                            objectName: root.busy ? "stopButton" : root.ninePointMode ? "ninePointButton" : "captureButton"
+                            objectName: root.busy ? "stopButton" : root.ninePointMode ? "ninePointButton" : root.configuredPointMode ? "configuredCaptureButton" : "captureButton"
                             Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 44 : 56
-                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.ninePointMode ? "开始九点采集" : "采集图片"
+                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.ninePointMode ? "开始九点采集" : root.configuredPointMode ? "开始按配置采图" : "采集图片"
                             primary: !root.interactionLocked; danger: root.busy
-                            enabled: root.busy || root.ready && !teach.jogHeld && (!root.ninePointMode || root.controller.robotConnected && root.gridOffsetValid && root.gridAnglesValid)
-                            onClicked: { if (root.busy) root.controller.cancelCollectionOperation(); else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text), root.ninePointAngles()); else root.takePhoto() }
+                            enabled: root.busy || root.ready && !teach.jogHeld &&
+                                     (root.captureMode === "single" || root.controller.robotConnected &&
+                                      (!root.ninePointMode || root.gridOffsetValid && root.gridAnglesValid))
+                            onClicked: {
+                                if (root.busy) root.controller.cancelCollectionOperation()
+                                else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text), root.ninePointAngles())
+                                else if (root.configuredPointMode) root.controller.captureConfiguredPoints(saveConfiguredRaw.checked && root.controller.undistortionEnabled)
+                                else root.takePhoto()
+                            }
                         }
                         Rectangle { Layout.fillWidth: true; implicitHeight: 1; color: Theme.hairline }
                         HmiText { visible: !root.compact; text: "TCP 工具"; font.pixelSize: Theme.meta; font.letterSpacing: 1.5 }

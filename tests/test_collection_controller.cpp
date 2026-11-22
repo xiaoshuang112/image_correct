@@ -323,6 +323,65 @@ struct CollectionControllerTestAccess {
     static void tools(CollectionController& controller) {
         controller.m_tcpNames = QStringList{"ToolA", "ToolB"};
     }
+    static void verifyConfiguredCapture(const QString& root) {
+        CollectionController controller;
+        const auto output = QDir(root).filePath("configured-output");
+        prepare(controller, output);
+        controller.m_paramPath = root.toStdString();
+        const auto path = QDir(root).filePath("move_tcp_points.json");
+        auto write = [&](const QByteArray& json) {
+            QFile file(path);
+            require(file.open(QIODevice::WriteOnly) && file.write(json) == json.size(), "cannot write configured point file");
+        };
+        require(controller.configuredPointSummary()["error"].toString().contains("move_tcp_points.json"),
+                "missing point file did not report its name");
+        write(R"({"p1":{"x":1,"y":0,"z":0,"rx":0,"ry":0}})");
+        controller.captureConfiguredPoints(false);
+        require(!controller.collectionBusy() && robot.lines == 0 && controller.statusMessage().contains("p1 缺少有效的 rz"),
+                "malformed point allowed motion or lost the field diagnostic");
+        write(R"({"p1":{"x":3,"y":0,"z":0,"rx":20,"ry":20,"rz":0}})");
+        controller.captureConfiguredPoints(false);
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(robot.lines == 0 && controller.statusMessage().contains("p1：组合旋转"),
+                "out-of-range rotation reached dispatch or lost the point diagnostic");
+        write(R"({"p1":{"x":30,"y":0,"z":0,"rx":0,"ry":0,"rz":0}})");
+        require(controller.configuredPointSummary()["count"].toInt() == 1, "configuration count incorrect");
+        write(R"({"p10":{"x":-4,"y":6,"z":-2,"rx":0,"ry":0,"rz":8},
+                  "p2":{"x":3,"y":-4,"z":5,"rx":2,"ry":-3,"rz":4}})");
+        const auto baseline = robot.pose;
+        const auto camera = std::static_pointer_cast<Camera>(controller.m_camera);
+        camera->blockCapture = true;
+        controller.captureConfiguredPoints(false);
+        write(R"({"p99":{"x":1,"y":0,"z":0,"rx":0,"ry":0,"rz":0}})");
+        waitFor([&] { return camera->captureEntered || !controller.collectionBusy(); });
+        const bool startedAtP2 = camera->captureEntered && robot.lines == 1 &&
+            robot.pose[0] == 103 && robot.pose[2] == 305 && controller.savedImageCount() == 0;
+        camera->releaseCapture = true;
+        require(startedAtP2, "configuration did not visit p2 before p10 or advanced while capture was pending");
+        waitFor([&] { return !controller.collectionBusy(); }, 12000);
+        require(!controller.motionFault() && controller.savedImageCount() == 2 &&
+                robot.lines == 3 && robot.pose == baseline && robot.lastSpeed == 37,
+                "configured run did not finish at the baseline with both saved points");
+        QStringList records;
+        QDirIterator files(output, {"capture_*_fused.json"}, QDir::Files, QDirIterator::Subdirectories);
+        while (files.hasNext()) records << files.next();
+        records.sort();
+        require(records.size() == 2 && records[0].endsWith("_P02_fused.json") &&
+                records[1].endsWith("_P10_fused.json") &&
+                records[0].chopped(QString("_P02_fused.json").size()) == records[1].chopped(QString("_P10_fused.json").size()),
+                "configured captures did not share a run timestamp and preserve point labels");
+        const std::array<collection::FlangePose, 2> expected{{
+            {103,196,305,182,-3,4}, {96,206,298,180,0,8}}};
+        for (int index = 0; index < records.size(); ++index) {
+            QFile file(records[index]);
+            require(file.open(QIODevice::ReadOnly), "cannot read configured pose");
+            const auto object = QJsonDocument::fromJson(file.readAll()).object();
+            const collection::FlangePose actual{object["x"].toDouble(), object["y"].toDouble(), object["z"].toDouble(),
+                                                object["rx"].toDouble(), object["ry"].toDouble(), object["rz"].toDouble()};
+            const auto target = collection::tcpPoseFromDisplay(expected[index], collection::TeachOrientation::EulerZYX);
+            require(collection::flangeAtTarget(actual, target, 0.001), "configured offset was accumulated or mapped to the wrong axis");
+        }
+    }
     static void verifySessionGates() {
         CollectionController::RobotSession session(42);
         std::atomic<bool> cancelled{true};
@@ -423,6 +482,10 @@ int main(int argc, char** argv) {
         CollectionControllerTestAccess::verifyCoordinateImport(temp.path());
         CollectionControllerTestAccess::verifyResponsivePreview(temp.path());
         CollectionControllerTestAccess::verifyPreviewVisibility(temp.path());
+        robot.reset(); robot.failLine = false;
+        CollectionControllerTestAccess::verifyConfiguredCapture(temp.path());
+        waitFor([&] { return robot.destroys == 1; });
+        robot.reset();
         {
             CameraImageProvider provider;
             QImage source(64, 48, QImage::Format_RGB888);

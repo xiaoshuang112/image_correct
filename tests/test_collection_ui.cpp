@@ -136,6 +136,8 @@ SharedCollectionState {
     property var ninePointYawOffsets: [0,15,-15,-20,0,20,15,-15,0]
     property bool motionFault: false
     property int ninePointCalls: 0
+    property int configuredPointCalls: 0
+    property bool configuredSaveOriginal: false
     property real lastNinePointX: 0
     property real lastNinePointY: 0
     property var lastNinePointAngles: []
@@ -263,6 +265,12 @@ SharedCollectionState {
         ninePointCalls++; lastNinePointX = x; lastNinePointY = y
         collectionBusy = true
         ninePointProgress = "第 1/9 点 · X− / Y+ · 正在采集及保存"
+    }
+    function configuredPointSummary() { return {count: 12, error: ""} }
+    function captureConfiguredPoints(saveOriginal) {
+        configuredPointCalls++
+        configuredSaveOriginal = saveOriginal
+        collectionBusy = true
     }
     function cancelCollectionOperation() { if (!motionFault) { collectionBusy = false; manualMoveActive = false; jogActive = false } }
     function toggleUndistortion() { undistortionEnabled = !undistortionEnabled }
@@ -538,6 +546,27 @@ SharedCollectionState {
         click(item("teachStopButton"));
         require(!window->close(), "window closed before stop confirmed");
         controller->setProperty("motionFault", false); QTest::qWait(20);
+        const auto previousUndistortion = controller->property("undistortionEnabled");
+        controller->setProperty("undistortionEnabled", false);
+        click(item("configuredModeButton"));
+        require(text("configuredPointSummary") == "12 个点位" && !item("ninePointPlan")->isVisible() &&
+                !item("saveConfiguredRaw")->isEnabled() && !item("saveConfiguredRaw")->property("checked").toBool(),
+                "configured mode did not show the point count and default RAW state");
+        QTest::keyClick(window, Qt::Key_Space);
+        require(controller->property("configuredPointCalls").toInt() == 0, "capture shortcut started configured motion");
+        controller->setProperty("undistortionEnabled", true);
+        QTest::qWait(10);
+        click(item("configuredCaptureButton"));
+        require(controller->property("configuredPointCalls").toInt() == 1 &&
+                !controller->property("configuredSaveOriginal").toBool() && !item("saveConfiguredRaw")->isEnabled(),
+                "unchecked RAW setting did not reach the configured capture or was editable during motion");
+        click(item("stopButton"));
+        click(item("saveConfiguredRaw"));
+        click(item("configuredCaptureButton"));
+        require(controller->property("configuredPointCalls").toInt() == 2 &&
+                controller->property("configuredSaveOriginal").toBool(), "checked RAW setting did not reach configured capture");
+        click(item("stopButton"));
+        controller->setProperty("undistortionEnabled", previousUndistortion);
         click(item("ninePointModeButton"));
         const QStringList defaults{"0", "+15", "-15", "-20", "0", "+20", "+15", "-15", "0"};
         const QStringList angles{"1.25", "2.5", "-3.75", "-10", "0.1", "10", "7.5", "-15", "0.01"};

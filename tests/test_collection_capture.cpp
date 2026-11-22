@@ -132,6 +132,27 @@ int main(int argc, char** argv) {
                 QFileInfo::exists(day.filePath("raw/T_base_flange.json")) &&
                 QFileInfo::exists(day.filePath("undistorted/T_base_flange.json")),
                 "paired capture leaked into day root or omitted folder pose records");
+        const auto configuredRoot = temp.filePath("configured");
+        const auto correctedOnly = collection::captureAndSave(camera, configuredRoot, time,
+            {5000,8500}, maps, readPose, cancelled, {}, {"P01", false});
+        const QDir configuredDay(QDir(configuredRoot).filePath("2026-11-03"));
+        require(correctedOnly.complete && correctedOnly.path == configuredDay.filePath(
+                    "undistorted/capture_20261103_235959_999_P01_fused_undistorted.png") &&
+                QFileInfo::exists(jsonPath(correctedOnly.path)) &&
+                QFileInfo::exists(correctedOnly.path.left(correctedOnly.path.size() - 4) + ".pixel_frame.json") &&
+                !QFileInfo::exists(configuredDay.filePath("raw")),
+                "corrected-only capture created an original or omitted a corrected record");
+        const auto configuredPair = collection::captureAndSave(camera, configuredRoot, time,
+            {5000,8500}, maps, readPose, cancelled, {}, {"P02", true});
+        const auto configuredRaw = configuredDay.filePath("raw/capture_20261103_235959_999_P02_fused.png");
+        require(configuredPair.complete && QFileInfo::exists(configuredRaw) &&
+                record(jsonPath(configuredRaw)) == record(jsonPath(configuredPair.path)),
+                "checked RAW option did not save a matching original");
+        const auto noCorrection = collection::captureAndSave(camera, configuredRoot, time,
+            {5000,8500}, {}, readPose, cancelled, {}, {"P03", false});
+        require(noCorrection.complete && noCorrection.path == configuredDay.filePath(
+                    "capture_20261103_235959_999_P03_fused.png") && QFileInfo::exists(noCorrection.path),
+                "unchecked RAW option suppressed the only image without correction");
         int stage = 0;
         collection::ExposureCameraGate gate{
             [&] { require(stage == 0, "preview suspended twice"); stage = 1; },

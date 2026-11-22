@@ -196,6 +196,8 @@ public slots:
 
     void capturePhoto();
     void captureNinePoints(double xMm, double yMm, const QVariantList& yawValues);
+    Q_INVOKABLE QVariantMap configuredPointSummary() const;
+    Q_INVOKABLE void captureConfiguredPoints(bool saveOriginal);
     void cancelCollectionOperation();
 
 signals:
@@ -232,7 +234,9 @@ private:
     void resumePreviewAfterExposure();
     bool previewFrameGrabAllowed() const;
     bool persistNinePointPlan(double xMm, double yMm, const std::array<double, 9>& yaw, QString& error);
-    void startCapture(bool ninePoints, double xMm = 0, double yMm = 0, const QVariantList& yawValues = {});
+    enum class CaptureMode { Single, NinePoints, Configured };
+    void startCapture(CaptureMode mode, double xMm = 0, double yMm = 0,
+                      const QVariantList& yawValues = {}, bool saveOriginal = false);
     void recordCapture(const QString& path);
     void confirmMotionStopped();
     void retryRobotStop();
