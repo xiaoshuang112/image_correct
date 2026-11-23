@@ -10,7 +10,10 @@
 #include <QDateTime>
 #include <QDesktopServices>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QUrl>
 #include <algorithm>
 #include <array>
@@ -19,6 +22,71 @@
 #include <vector>
 
 namespace {
+struct ConfiguredPoint {
+    int number;
+    collection::FlangePose offset;
+};
+
+std::vector<ConfiguredPoint> readConfiguredOffsets(const std::string& paramPath) {
+    QFile file(QDir(QString::fromStdString(paramPath)).filePath("move_tcp_points.json"));
+    if (!file.exists()) throw std::runtime_error("未找到 param/move_tcp_points.json");
+    if (!file.open(QIODevice::ReadOnly)) throw std::runtime_error("无法打开 move_tcp_points.json");
+    constexpr qint64 maximumBytes = 64 * 1024;
+    const auto bytes = file.read(maximumBytes + 1);
+    if (file.error() != QFileDevice::NoError) throw std::runtime_error("无法读取 move_tcp_points.json");
+    if (bytes.size() > maximumBytes) throw std::runtime_error("点位配置超过 64 KB");
+    QJsonParseError error;
+    const auto document = QJsonDocument::fromJson(bytes, &error);
+    if (error.error != QJsonParseError::NoError || !document.isObject())
+        throw std::runtime_error("点位配置须为 JSON 对象");
+    const auto points = document.object();
+    if (points.isEmpty()) throw std::runtime_error("点位配置为空");
+
+    std::vector<ConfiguredPoint> offsets;
+    for (auto point = points.begin(); point != points.end(); ++point) {
+        const auto key = point.key();
+        bool validNumber = false;
+        const int number = key.mid(1).toInt(&validNumber);
+        if (!validNumber || number < 1 || key != QString("p%1").arg(number))
+            throw std::runtime_error(QString("无效点位名称 %1，应为 p1、p2 等").arg(key).toStdString());
+        if (!point.value().isObject())
+            throw std::runtime_error(QString("%1 必须是坐标对象").arg(key).toStdString());
+        const auto values = point.value().toObject();
+        const char* axes[] = {"x", "y", "z", "rx", "ry", "rz"};
+        collection::FlangePose offset{};
+        for (size_t axis = 0; axis < offset.size(); ++axis) {
+            const auto value = values.value(QLatin1String(axes[axis]));
+            if (!value.isDouble() || !std::isfinite(value.toDouble()))
+                throw std::runtime_error(QString("%1 缺少有效的 %2 数值").arg(key, QLatin1String(axes[axis])).toStdString());
+            offset[axis] = value.toDouble();
+        }
+        if (std::hypot(offset[0], offset[1], offset[2]) > collection::maximumNinePointOffsetMm)
+            throw std::runtime_error(QString("%1 的 XYZ 偏移距基准超过 50 mm").arg(key).toStdString());
+        if (std::any_of(offset.begin() + 3, offset.end(), [](double angle) {
+            return std::abs(angle) > collection::maximumNinePointYawDegrees;
+        })) throw std::runtime_error(QString("%1 的欧拉角偏移超出 ±20°").arg(key).toStdString());
+        offsets.push_back({number, offset});
+    }
+    std::sort(offsets.begin(), offsets.end(),
+        [](const auto& a, const auto& b) { return a.number < b.number; });
+    return offsets;
+}
+
+collection::FlangePose configuredTarget(const collection::FlangePose& origin, const collection::FlangePose& offset) {
+    auto target = origin;
+    if (offset[3] == 0 && offset[4] == 0) {
+        target = collection::withEulerYawOffset(origin, offset[5]);
+    } else {
+        auto euler = collection::tcpPoseForDisplay(origin, collection::TeachOrientation::EulerZYX);
+        for (int axis = 3; axis < 6; ++axis) euler[axis] += offset[axis];
+        target = collection::tcpPoseFromDisplay(euler, collection::TeachOrientation::EulerZYX);
+    }
+    for (int axis = 0; axis < 3; ++axis) target[axis] = origin[axis] + offset[axis];
+    if (collection::flangeRotationDistanceDeg(origin, target) > collection::maximumNinePointYawDegrees + 1e-9)
+        throw std::runtime_error("组合旋转相对基准超过 20°");
+    return target;
+}
+
 std::array<double, 6> readFlangePose(RobotHandle handle) {
     std::array<double, 6> pose{}, zero{};
     const auto result = cr_get_AssignTCP_Pose(handle, zero.data(), pose.data());
@@ -216,7 +284,7 @@ void CollectionController::cancelCollectionOperation() {
             emit collectionChanged();
         }
         if (!m_ninePointProgress.isEmpty()) {
-            m_ninePointProgress = "正在停止九点采图…";
+            m_ninePointProgress = "正在停止自动采图…";
             emit collectionChanged();
         }
         setStatus("正在停止当前操作…");
@@ -230,9 +298,20 @@ void CollectionController::recordCapture(const QString& path) {
     emit collectionChanged();
 }
 
-void CollectionController::capturePhoto() { startCapture(false); }
+void CollectionController::capturePhoto() { startCapture(CaptureMode::Single); }
 void CollectionController::captureNinePoints(double xMm, double yMm, const QVariantList& yawValues) {
-    startCapture(true, xMm, yMm, yawValues);
+    startCapture(CaptureMode::NinePoints, xMm, yMm, yawValues);
+}
+QVariantMap CollectionController::configuredPointSummary() const {
+    try {
+        const int count = static_cast<int>(readConfiguredOffsets(m_paramPath).size());
+        return {{"count", count}, {"error", QString{}}};
+    } catch (const std::exception& error) {
+        return {{"count", 0}, {"error", QString::fromUtf8(error.what())}};
+    }
+}
+void CollectionController::captureConfiguredPoints(bool saveOriginal) {
+    startCapture(CaptureMode::Configured, 0, 0, {}, saveOriginal);
 }
 QVariantList CollectionController::ninePointDefaultYawOffsets() const {
     QVariantList result;
@@ -245,16 +324,29 @@ QVariantList CollectionController::ninePointYawOffsets() const {
     return result;
 }
 
-void CollectionController::startCapture(bool ninePoints, double xMm, double yMm, const QVariantList& yawValues) {
+void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm,
+                                        const QVariantList& yawValues, bool saveOriginal) {
     if (m_collectionBusy) return;
     if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
         setStatus("请打开相机并等待预览画面后拍照");
         return;
     }
+    const bool ninePoints = mode == CaptureMode::NinePoints;
+    const bool configured = mode == CaptureMode::Configured;
+    const bool automatic = mode != CaptureMode::Single;
+    const QString task = configured ? "按配置采图" : "九点采图";
+    if (automatic && !m_robotConnected) {
+        setStatus(task + "需要连接机器人");
+        return;
+    }
+    std::vector<ConfiguredPoint> offsets;
+    if (configured) {
+        try { offsets = readConfiguredOffsets(m_paramPath); }
+        catch (const std::exception& error) { setStatus(QString::fromUtf8(error.what())); return; }
+    }
     collection::NinePointAngles yawOffsets{};
     double angleToleranceDeg = 0.2;
     if (ninePoints) {
-        if (!m_robotConnected) { setStatus("九点采图需要连接机器人"); return; }
         if (yawValues.size() != static_cast<int>(yawOffsets.size())) {
             setStatus("请填写全部九个 Rz 角度"); return;
         }
@@ -292,11 +384,12 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
     const auto output = m_outputDirectory;
     beginCollectionOperation(false);
     const auto sampleTcp = tcpSamplingCallback(session);
-    setStatus(ninePoints ? "九点采图：正在检查当前基准位及目标…"
+    setStatus(automatic ? task + "：正在检查当前基准位及目标…"
                         : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
         m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
-                                         output, exposures, ninePoints, xMm, yMm, yawOffsets, angleToleranceDeg,
+                                         output, exposures, ninePoints, automatic, configured, task, xMm, yMm, yawOffsets,
+                                         angleToleranceDeg, offsets = std::move(offsets), saveOriginal,
                                          session, sampleTcp, speed, pendingPreview] {
             // Drain the one in-flight frame on this worker before using the camera for capture.
             if (pendingPreview.valid()) pendingPreview.wait();
@@ -308,9 +401,9 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
             }
             QString message, path;
             int saved = 0;
-            auto progress = [this](const QString& text) {
-                QMetaObject::invokeMethod(this, [this, text] {
-                    m_ninePointProgress = m_cancelRequested ? "正在停止九点采图…" : text;
+            auto progress = [this, task](const QString& text) {
+                QMetaObject::invokeMethod(this, [this, text, task] {
+                    m_ninePointProgress = m_cancelRequested ? "正在停止" + task + "…" : text;
                     emit collectionChanged();
                     setStatus(m_ninePointProgress);
                 }, Qt::QueuedConnection);
@@ -318,71 +411,121 @@ void CollectionController::startCapture(bool ninePoints, double xMm, double yMm,
             const collection::ExposureCameraGate gate{
                 [this] { suspendPreviewForExposure(); },
                 [this] { resumePreviewAfterExposure(); }};
-            if (ninePoints) m_robotStopUnconfirmed = true;
+            const int count = configured ? static_cast<int>(offsets.size()) : static_cast<int>(yawOffsets.size());
+            if (automatic) m_robotStopUnconfirmed = true;
             try {
-                if (!ninePoints) {
+                if (!automatic) {
                     const auto result = collection::captureAndSave(*camera, output, shutterTime,
                         exposures, undistortion, readPose, m_cancelRequested, gate);
                     message = result.message;
                     path = result.path;
                 } else {
-                    QString configError;
-                    if (!persistNinePointPlan(xMm, yMm, yawOffsets, configError))
-                        throw std::runtime_error(configError.toStdString());
+                    if (ninePoints) {
+                        QString configError;
+                        if (!persistNinePointPlan(xMm, yMm, yawOffsets, configError))
+                            throw std::runtime_error(configError.toStdString());
+                    }
                     collection::checkCaptureExposures(*camera, exposures);
                     const auto origin = collection::readStationaryFlange(handle);
-                    const auto targets = collection::ninePointTargets(origin, xMm, yMm, yawOffsets);
-                    collection::checkNinePointRoute(handle, origin, targets);
-                    APP_LOG_EVENT_INFO("collection", "nine_point", "baseline",
+                    std::vector<collection::FlangePose> targets;
+                    std::vector<std::vector<collection::FlangePose>> route;
+                    QStringList names, fileLabels;
+                    double arrivalAngle = angleToleranceDeg;
+                    if (configured) {
+                        std::vector<std::string> labels;
+                        const int numberWidth = std::max(2, QString::number(offsets.back().number).size());
+                        for (const auto& [number, offset] : offsets) {
+                            const auto name = QString("p%1").arg(number);
+                            names << name;
+                            labels.push_back(name.toStdString());
+                            fileLabels << QString("P%1").arg(number, numberWidth, 10, QLatin1Char('0'));
+                            try { targets.push_back(configuredTarget(origin, offset)); }
+                            catch (const std::exception& error) {
+                                throw std::runtime_error(name.toStdString() + "：" + error.what());
+                            }
+                        }
+                        route = collection::planConfiguredRoute(handle, origin, targets, labels, m_cancelRequested);
+                        auto previous = origin;
+                        for (const auto& leg : route) {
+                            for (const auto& stop : leg) {
+                                const double angle = collection::flangeRotationDistanceDeg(previous, stop);
+                                if (angle > 1e-5) arrivalAngle = std::min(arrivalAngle, angle / 4);
+                                previous = stop;
+                            }
+                        }
+                    } else {
+                        const auto grid = collection::ninePointTargets(origin, xMm, yMm, yawOffsets);
+                        collection::checkNinePointRoute(handle, origin, grid);
+                        targets.assign(grid.begin(), grid.end());
+                        names = QStringList{"X− / Y+", "Y+", "X+ / Y+", "X−", "中心位", "X+", "X− / Y−", "Y−", "X+ / Y−"};
+                    }
+                    APP_LOG_EVENT_INFO("collection", configured ? "configured_points" : "nine_point", "baseline",
                         {{"x", QString::number(origin[0], 'f', 6)}, {"y", QString::number(origin[1], 'f', 6)},
                          {"z", QString::number(origin[2], 'f', 6)}, {"rx", QString::number(origin[3], 'f', 6)},
                          {"ry", QString::number(origin[4], 'f', 6)}, {"rz", QString::number(origin[5], 'f', 6)},
-                         {"offset_x_mm", QString::number(xMm)}, {"offset_y_mm", QString::number(yMm)}});
-                    progress("九点采图 · 基准位稳定等待");
-                    collection::waitForStableFlange(handle, origin, m_cancelRequested, {}, sampleTcp);
-                    const QStringList names{"X− / Y+", "Y+", "X+ / Y+", "X−", "中心位", "X+", "X− / Y−", "Y−", "X+ / Y−"};
-                    collection::runNinePointCapture(origin, targets,
+                         {"offset_x_mm", QString::number(xMm)}, {"offset_y_mm", QString::number(yMm)},
+                         {"points", QString::number(count)}});
+                    progress(task + " · 基准位稳定等待");
+                    collection::LineMotionWait wait;
+                    if (configured) wait.angleToleranceDeg = arrivalAngle;
+                    collection::waitForStableFlange(handle, origin, m_cancelRequested, wait, sampleTcp);
+                    wait.angleToleranceDeg = arrivalAngle;
+                    wait.timeoutMs = std::max(wait.timeoutMs, wait.settlingMs + 5000 +
+                        static_cast<int>(std::ceil(collection::maximumNinePointOffsetMm * 1000 / speed)));
+
+                    auto pointProgress = [&](int point) {
+                        return QString("第 %1/%2 点 · %3").arg(point + 1).arg(count).arg(names[point]);
+                    };
+                    auto previous = origin;
+                    collection::runPointCapture(origin, targets,
                         [&](const collection::FlangePose& target, int point) {
-                            progress(point < 0 ? QString("已保存 %1/9 · 返回基准位").arg(saved)
-                                : QString("第 %1/9 点 · %2 · 欧拉 Rz %3° · 移动及稳定等待")
-                                    .arg(point + 1).arg(names[point]).arg(yawOffsets[point]));
-                            // Allow the longest 50 mm leg at the selected speed, plus settling and a margin.
-                            collection::LineMotionWait wait;
-                            wait.angleToleranceDeg = angleToleranceDeg;
-                            wait.timeoutMs = std::max(wait.timeoutMs, wait.settlingMs + 5000 +
-                                static_cast<int>(std::ceil(collection::maximumNinePointOffsetMm * 1000 / speed)));
-                            collection::moveFlangeAlongGrid(handle, origin, target, m_cancelRequested, wait, sampleTcp, speed);
+                            if (point < 0) progress(QString("已保存 %1/%2 · 返回基准位").arg(saved).arg(count));
+                            else {
+                                auto text = pointProgress(point);
+                                if (ninePoints) text += QString(" · 欧拉 Rz %1°").arg(yawOffsets[point]);
+                                progress(text + " · 移动及稳定等待");
+                            }
+                            if (configured) {
+                                collection::moveFlangeAlongConfiguredLeg(handle, origin, previous,
+                                    route[point < 0 ? count : point], m_cancelRequested, wait, sampleTcp, speed);
+                                previous = target;
+                            } else {
+                                collection::moveFlangeAlongGrid(handle, origin, target, m_cancelRequested, wait, sampleTcp, speed);
+                            }
                         },
                         [&](int point) {
-                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], angleToleranceDeg))
+                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], arrivalAngle))
                                 throw std::runtime_error("实际位姿偏离本次拍摄目标");
-                            progress(QString("第 %1/9 点 · %2 · 正在采集及保存").arg(point + 1).arg(names[point]));
-                            const auto result = collection::captureAndSave(*camera, output, QDateTime::currentDateTime(),
-                                exposures, undistortion, readPose, m_cancelRequested, gate);
+                            progress(pointProgress(point) + " · 正在采集及保存");
+                            const auto shotTime = QDateTime::currentDateTime();
+                            const auto result = collection::captureAndSave(*camera, output, configured ? shutterTime : shotTime,
+                                exposures, undistortion, readPose, m_cancelRequested, gate,
+                                configured ? collection::CaptureNaming{fileLabels[point], saveOriginal} : collection::CaptureNaming{});
                             if (!result.path.isEmpty()) {
                                 ++saved;
                                 QMetaObject::invokeMethod(this, [this, image = result.path] { recordCapture(image); }, Qt::QueuedConnection);
-                                APP_LOG_EVENT_INFO("collection", "nine_point_image", "saved",
+                                APP_LOG_EVENT_INFO("collection", configured ? "configured_point_image" : "nine_point_image", "saved",
                                     {{"index", QString::number(point + 1)}, {"point", names[point]},
-                                     {"euler_rz_offset_deg", QString::number(yawOffsets[point])},
+                                     {"euler_rz_offset_deg", QString::number(configured ? offsets[point].offset[5] : yawOffsets[point])},
+                                     {"shot_time", shotTime.toString(Qt::ISODateWithMs)},
                                      {"image", result.path}, {"complete", result.complete ? "true" : "false"}});
                             }
                             if (!result.complete) throw std::runtime_error(result.message.toStdString());
-                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], angleToleranceDeg))
+                            if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], arrivalAngle))
                                 throw std::runtime_error("采图后检测到机器人位姿变化，已停止后续动作");
                         }, m_cancelRequested);
-                    message = "九点采图完成 · 已保存 9/9，已回到基准位";
+                    message = QString("%1完成 · 已保存 %2/%2，已回到基准位").arg(task).arg(count);
                 }
             } catch (const std::exception& error) {
-                message = ninePoints ? QString("九点采图停止 · 已保存 %1/9：%2；未继续移动")
-                    .arg(saved).arg(QString::fromUtf8(error.what())) : QString::fromUtf8(error.what());
+                message = automatic ? QString("%1停止 · 已保存 %2/%3：%4；未继续移动")
+                    .arg(task).arg(saved).arg(count).arg(QString::fromUtf8(error.what())) : QString::fromUtf8(error.what());
             } catch (...) { message = "采图发生未知异常，已终止后续操作"; }
-            if (ninePoints) {
+            if (automatic) {
                 try { confirmMotionStopped(); }
                 catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
             }
-            QMetaObject::invokeMethod(this, [this, message, path, ninePoints] {
-                if (ninePoints) m_ninePointProgress = message;
+            QMetaObject::invokeMethod(this, [this, message, path, automatic] {
+                if (automatic) m_ninePointProgress = message;
                 finishCollectionOperation(message, path);
             }, Qt::QueuedConnection);
         });

@@ -26,7 +26,7 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
     const QDateTime& captureTime, const std::vector<int>& exposures,
     const std::shared_ptr<const UndistortionMaps>& undistortion,
     const std::function<std::array<double, 6>()>& readFlange,
-    const std::atomic<bool>& cancelled, ExposureCameraGate gate) {
+    const std::atomic<bool>& cancelled, ExposureCameraGate gate, CaptureNaming naming) {
     CaptureResult result;
     const auto checkCancelled = [&] {
         if (cancelled.load()) throw std::runtime_error("拍照已取消");
@@ -69,19 +69,23 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
         checkCancelled();
         const QString directory = QDir(outputDirectory).filePath(captureTime.toString("yyyy-MM-dd"));
         if (!QDir().mkpath(directory)) throw std::runtime_error("无法创建图片保存目录");
+        const auto label = naming.pointLabel.isEmpty()
+            ? QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) : naming.pointLabel;
+        const bool saveOriginal = !undistortion || naming.saveOriginal;
         const QString filename = "capture_" +
             captureTime.toString("yyyyMMdd_HHmmss_zzz") + "_" +
-            QUuid::createUuid().toString(QUuid::WithoutBraces).left(8) + "_fused.png";
+            label + "_fused.png";
         const QString rawDirectory = undistortion ? QDir(directory).filePath("raw") : directory;
         const QString correctedDirectory = QDir(directory).filePath("undistorted");
-        if (!QDir().mkpath(rawDirectory) || (undistortion && !QDir().mkpath(correctedDirectory)))
+        if ((saveOriginal && !QDir().mkpath(rawDirectory)) || (undistortion && !QDir().mkpath(correctedDirectory)))
             throw std::runtime_error("无法创建图片保存子目录");
         const QString rawPath = QDir(rawDirectory).filePath(filename);
         const QString correctedPath = QDir(correctedDirectory).filePath(
             filename.left(filename.size() - 4) + "_undistorted.png");
         checkCancelled();
-        result.path = saveCaptureImages(fused, corrected, rawPath, correctedPath);
-        result.message = undistortion ? "多曝光融合及去畸变完成，校正图与原始图已保存"
+        result.path = saveCaptureImages(fused, corrected, rawPath, correctedPath, saveOriginal);
+        result.message = undistortion ? (saveOriginal ? "多曝光融合及去畸变完成，校正图与原始图已保存"
+                                                      : "多曝光融合及去畸变完成，校正图已保存")
                                      : "多曝光融合完成，图片已保存";
         // Keep manual captures even when pose/metadata fails; automatic motion
         // may continue only when complete is true. Wait for the RPC before returning.
@@ -103,8 +107,10 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
             if (undistortion) {
                 const auto metadataError = saveUndistortionMetadata(result.path, undistortion->geometry());
                 if (!metadataError.isEmpty()) warnings << metadataError;
-                const auto rawError = saveFlangePoseRecords(rawPath, valid ? pose.data() : nullptr);
-                if (!rawError.isEmpty()) warnings << rawError;
+                if (saveOriginal) {
+                    const auto rawError = saveFlangePoseRecords(rawPath, valid ? pose.data() : nullptr);
+                    if (!rawError.isEmpty()) warnings << rawError;
+                }
             }
             if (!poseError.isEmpty()) warnings << poseError;
             result.complete = valid && warnings.isEmpty();
