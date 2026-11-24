@@ -80,6 +80,10 @@ target_link_directories(collection_controller PUBLIC ${CAITU_CAMERA_LIB_DIR})
 #  链接库
 # ============================================================
 set(QT_LIBS Qt5::Core Qt5::Quick Qt5::QuickControls2 Qt5::Widgets)
+if(WIN32)
+    find_package(Qt5 REQUIRED COMPONENTS Network)
+    list(APPEND QT_LIBS Qt5::Network)
+endif()
 
 target_link_libraries(collection_controller PUBLIC
     ${QT_LIBS}

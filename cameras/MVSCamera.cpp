@@ -8,6 +8,11 @@
 #include <cstdint>
 #include <limits>
 
+#ifdef _WIN32
+#include <QNetworkInterface>
+#include <QUdpSocket>
+#endif
+
 namespace {
 
 // GigE 心跳超时：调试断点期间不至于掉线，同时断线能在有限时间内被发现。
@@ -94,75 +99,58 @@ bool MVSCamera::open() {
         m_sdkVersion = buf;
     }
 
-    // ---- 阶段 2: 枚举设备 ----
-    MV_CC_DEVICE_INFO_LIST stDeviceList;
-    memset(&stDeviceList, 0, sizeof(stDeviceList));
-    nRet = MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, &stDeviceList);
-    if (MV_OK != nRet) {
-        setError("enumerate", nRet);
-        releaseResourcesLocked();
-        return false;
-    }
-
-    std::vector<mvsdiag::MvsDeviceDescriptor> devices;
-    devices.reserve(stDeviceList.nDeviceNum);
-    for (unsigned int i = 0; i < stDeviceList.nDeviceNum; ++i) {
-        const MV_CC_DEVICE_INFO* pInfo = stDeviceList.pDeviceInfo[i];
-        if (!pInfo) continue;
-        mvsdiag::MvsDeviceDescriptor d;
-        if (pInfo->nTLayerType == MV_GIGE_DEVICE) {
-            d.transport = mvsdiag::MvsTransport::kGigE;
-            d.serial = reinterpret_cast<const char*>(pInfo->SpecialInfo.stGigEInfo.chSerialNumber);
-            d.model = reinterpret_cast<const char*>(pInfo->SpecialInfo.stGigEInfo.chModelName);
-            d.ip = pInfo->SpecialInfo.stGigEInfo.nCurrentIp;
-        } else if (pInfo->nTLayerType == MV_USB_DEVICE) {
-            d.transport = mvsdiag::MvsTransport::kUsb;
-            d.serial = reinterpret_cast<const char*>(pInfo->SpecialInfo.stUsb3VInfo.chSerialNumber);
-            d.model = reinterpret_cast<const char*>(pInfo->SpecialInfo.stUsb3VInfo.chModelName);
-        } else {
-            d.transport = mvsdiag::MvsTransport::kOther;
+    const MV_CC_DEVICE_INFO* selectedInfo = nullptr;
+#ifdef _WIN32
+    MV_CC_DEVICE_INFO directInfo{};
+    if (m_config.cam_sn.empty() && !m_config.cam_ip.empty()) {
+        unsigned int cameraIp = 0;
+        if (!mvsdiag::ipv4ToInt(m_config.cam_ip, cameraIp) || cameraIp == 0 ||
+            cameraIp == 0xffffffff || QHostAddress(cameraIp).isMulticast()) {
+            setError("direct_address", MV_E_PARAMETER, "ip=" + m_config.cam_ip);
+            releaseResourcesLocked();
+            return false;
         }
-        devices.push_back(std::move(d));
+
+        // A connected UDP socket reports Windows' chosen source address without sending a packet.
+        const QHostAddress target(cameraIp);
+        QUdpSocket route;
+        route.connectToHost(target, 3956);
+        const QHostAddress local = route.localAddress();
+        const auto localIp = local.toIPv4Address();
+        if (route.state() != QAbstractSocket::ConnectedState || localIp == 0 || local == target) {
+            setError("direct_route", MV_E_NETER, "ip=" + m_config.cam_ip + " " +
+                     route.errorString().toStdString());
+            releaseResourcesLocked();
+            return false;
+        }
+
+        for (const auto& interface : QNetworkInterface::allInterfaces()) {
+            for (const auto& address : interface.addressEntries()) {
+                if (address.ip() == local && address.broadcast() == target) {
+                    setError("direct_address", MV_E_PARAMETER, "ip=" + m_config.cam_ip);
+                    releaseResourcesLocked();
+                    return false;
+                }
+            }
+        }
+
+        directInfo.nTLayerType = MV_GIGE_DEVICE;
+        directInfo.SpecialInfo.stGigEInfo.nCurrentIp = cameraIp;
+        directInfo.SpecialInfo.stGigEInfo.nNetExport = localIp;
+        selectedInfo = &directInfo;
+        m_transport = mvsdiag::MvsTransport::kGigE;
+        m_deviceIp = cameraIp;
+        APP_LOG_EVENT_INFO("camera.mvs", "select", "direct_ip",
+                           {{"ip", target.toString()}, {"local_ip", local.toString()}});
     }
-
-    // ---- 阶段 3: 固定策略选机（serial 精确 -> IP 精确 -> 唯一设备 -> 拒绝） ----
-    const mvsdiag::MvsSelectionOutcome selection =
-        mvsdiag::selectMvsDevice(m_config.cam_sn, m_config.cam_ip, devices);
-    if (selection.status != mvsdiag::MvsSelectionStatus::kSelected) {
-        m_lastError.stage = "select";
-        m_lastError.sdk_code = 0;
-        m_lastError.message = selection.message;
-        APP_LOG_EVENT_ERROR("camera.mvs",
-                            "select",
-                            "fail",
-                            {{"selection_mode", m_config.cam_sn.empty() ? "ip" : "serial"},
-                             {"configured_ip", QString::fromStdString(m_config.cam_ip)},
-                             {"enumerated", QString::number(devices.size())},
-                             {"detail", QString::fromStdString(selection.message)}});
-        std::cerr << "[MVSCamera] " << selection.message << std::endl;
-        releaseResourcesLocked();
-        return false;
+#endif
+    if (!selectedInfo) {
+        selectedInfo = selectEnumeratedDevice();
+        if (!selectedInfo) {
+            releaseResourcesLocked();
+            return false;
+        }
     }
-
-    const int nIndex = selection.index;
-    MV_CC_DEVICE_INFO* selectedInfo = stDeviceList.pDeviceInfo[nIndex];
-    const mvsdiag::MvsDeviceDescriptor& selectedDesc = devices[nIndex];
-    m_transport = selectedDesc.transport;
-    m_deviceSerial = selectedDesc.serial;
-    m_deviceModel = selectedDesc.model;
-    m_deviceIp = selectedDesc.ip;
-
-    APP_LOG_EVENT_INFO("camera.mvs",
-                       "select",
-                       "success",
-                       {{"index", QString::number(nIndex)},
-                        {"serial", QString::fromStdString(m_deviceSerial)},
-                        {"model", QString::fromStdString(m_deviceModel)},
-                        {"transport", QString::fromLatin1(mvsdiag::transportName(m_transport))},
-                        {"ip", QString::fromStdString(
-                             m_transport == mvsdiag::MvsTransport::kGigE
-                                 ? mvsdiag::ipv4ToString(m_deviceIp) : std::string())},
-                        {"enumerated", QString::number(devices.size())}});
 
     // ---- 阶段 4: 创建句柄 ----
     nRet = MV_CC_CreateHandle(&m_handle, selectedInfo);
@@ -184,10 +172,19 @@ bool MVSCamera::open() {
     }
     m_deviceOpened = true;
 
-    // 固件版本（尽力而为，失败不阻断）
-    MVCC_STRINGVALUE firmwareValue{};
-    if (MV_OK == MV_CC_GetStringValue(m_handle, "DeviceFirmwareVersion", &firmwareValue))
-        m_deviceFirmware = firmwareValue.chCurValue;
+    const auto deviceString = [this](const char* key) {
+        MVCC_STRINGVALUE value{};
+        if (MV_CC_GetStringValue(m_handle, key, &value) == MV_OK)
+            return std::string(value.chCurValue);
+        return std::string();
+    };
+#ifdef _WIN32
+    if (selectedInfo == &directInfo) {
+        m_deviceSerial = deviceString("DeviceSerialNumber");
+        m_deviceModel = deviceString("DeviceModelName");
+    }
+#endif
+    m_deviceFirmware = deviceString("DeviceFirmwareVersion");
 
     // ---- 阶段 6: 参数配置（取流前完成，取流后部分节点只读） ----
     if (!configureDeviceLocked()) {
@@ -246,6 +243,75 @@ bool MVSCamera::open() {
               << " model=" << m_deviceModel
               << " actual=" << m_width << "x" << m_height << std::endl;
     return true;
+}
+
+const MV_CC_DEVICE_INFO* MVSCamera::selectEnumeratedDevice() {
+    MV_CC_DEVICE_INFO_LIST stDeviceList{};
+    const int nRet = MV_CC_EnumDevices(MV_GIGE_DEVICE | MV_USB_DEVICE, &stDeviceList);
+    if (MV_OK != nRet) {
+        setError("enumerate", nRet);
+        return nullptr;
+    }
+
+    std::vector<mvsdiag::MvsDeviceDescriptor> devices;
+    devices.reserve(stDeviceList.nDeviceNum);
+    for (unsigned int i = 0; i < stDeviceList.nDeviceNum; ++i) {
+        const MV_CC_DEVICE_INFO* pInfo = stDeviceList.pDeviceInfo[i];
+        if (!pInfo) continue;
+        mvsdiag::MvsDeviceDescriptor d;
+        if (pInfo->nTLayerType == MV_GIGE_DEVICE) {
+            d.transport = mvsdiag::MvsTransport::kGigE;
+            d.serial = reinterpret_cast<const char*>(pInfo->SpecialInfo.stGigEInfo.chSerialNumber);
+            d.model = reinterpret_cast<const char*>(pInfo->SpecialInfo.stGigEInfo.chModelName);
+            d.ip = pInfo->SpecialInfo.stGigEInfo.nCurrentIp;
+        } else if (pInfo->nTLayerType == MV_USB_DEVICE) {
+            d.transport = mvsdiag::MvsTransport::kUsb;
+            d.serial = reinterpret_cast<const char*>(pInfo->SpecialInfo.stUsb3VInfo.chSerialNumber);
+            d.model = reinterpret_cast<const char*>(pInfo->SpecialInfo.stUsb3VInfo.chModelName);
+        } else {
+            d.transport = mvsdiag::MvsTransport::kOther;
+        }
+        stDeviceList.pDeviceInfo[devices.size()] = stDeviceList.pDeviceInfo[i];
+        devices.push_back(std::move(d));
+    }
+
+    // ---- 阶段 3: 固定策略选机（serial 精确 -> IP 精确 -> 唯一设备 -> 拒绝） ----
+    const mvsdiag::MvsSelectionOutcome selection =
+        mvsdiag::selectMvsDevice(m_config.cam_sn, m_config.cam_ip, devices);
+    if (selection.status != mvsdiag::MvsSelectionStatus::kSelected) {
+        m_lastError.stage = "select";
+        m_lastError.sdk_code = 0;
+        m_lastError.message = selection.message;
+        APP_LOG_EVENT_ERROR("camera.mvs",
+                            "select",
+                            "fail",
+                            {{"selection_mode", m_config.cam_sn.empty() ? "ip" : "serial"},
+                             {"configured_ip", QString::fromStdString(m_config.cam_ip)},
+                             {"enumerated", QString::number(devices.size())},
+                             {"detail", QString::fromStdString(selection.message)}});
+        std::cerr << "[MVSCamera] " << selection.message << std::endl;
+        return nullptr;
+    }
+
+    const int nIndex = selection.index;
+    const mvsdiag::MvsDeviceDescriptor& selectedDesc = devices[nIndex];
+    m_transport = selectedDesc.transport;
+    m_deviceSerial = selectedDesc.serial;
+    m_deviceModel = selectedDesc.model;
+    m_deviceIp = selectedDesc.ip;
+
+    APP_LOG_EVENT_INFO("camera.mvs",
+                       "select",
+                       "success",
+                       {{"index", QString::number(nIndex)},
+                        {"serial", QString::fromStdString(m_deviceSerial)},
+                        {"model", QString::fromStdString(m_deviceModel)},
+                        {"transport", QString::fromLatin1(mvsdiag::transportName(m_transport))},
+                        {"ip", QString::fromStdString(
+                             m_transport == mvsdiag::MvsTransport::kGigE
+                                 ? mvsdiag::ipv4ToString(m_deviceIp) : std::string())},
+                        {"enumerated", QString::number(devices.size())}});
+    return stDeviceList.pDeviceInfo[nIndex];
 }
 
 bool MVSCamera::configureDeviceLocked() {
