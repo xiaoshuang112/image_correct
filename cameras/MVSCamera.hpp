@@ -67,6 +67,7 @@ private:
     void setError(const char* stage, unsigned int sdkCode, const std::string& extra = "");
     void clearError();
     void releaseResourcesLocked();
+    const MV_CC_DEVICE_INFO* selectEnumeratedDevice();
     bool configureDeviceLocked();
     bool readbackActualParamsLocked();
     bool ensureBufferCapacityLocked(size_t required);
