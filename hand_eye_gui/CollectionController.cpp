@@ -7,6 +7,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QThread>
 #include <QPointer>
@@ -285,24 +286,40 @@ void CollectionController::releaseCameraPair()
 
 void CollectionController::loadConfigYaml()
 {
-    std::string cfg_file = m_appPath + "config.yaml";
-    if (!QFileInfo::exists(QString::fromStdString(cfg_file))) {
+    // m_appPath 保存的是 UTF-8（来自 exePath.toStdString()），必须按 UTF-8 还原成 Unicode
+    // 路径。cv::FileStorage 按文件名打开时走 ANSI fopen，非 ASCII 名字会被当前 ANSI 代码页
+    // 误解码，于是文件明明存在却按默认值启动。读字节后在内存里解析，避免按文件名打开。
+    const QString cfg_file = QString::fromUtf8(m_appPath.c_str()) + QStringLiteral("config.yaml");
+    if (!QFileInfo::exists(cfg_file)) {
         APP_LOG_EVENT_WARNING("config",
                               "config_load",
                               "skip",
                               {{"reason", "config_missing"},
-                               {"path", QString::fromStdString(cfg_file)},
+                               {"path", cfg_file},
                                {"using_defaults", "true"}});
         return;
     }
     try {
-    cv::FileStorage fs(cfg_file, cv::FileStorage::READ);
+    QFile file(cfg_file);
+    if (!file.open(QIODevice::ReadOnly)) {
+        APP_LOG_EVENT_ERROR("config",
+                            "config_load",
+                            "fail",
+                            {{"reason", "config_open_failed"},
+                             {"path", cfg_file},
+                             {"using_defaults", "true"}});
+        return;
+    }
+    const QByteArray contents = file.readAll();
+    file.close();
+    const std::string contentsUtf8(contents.constData(), contents.size());
+    cv::FileStorage fs(contentsUtf8, cv::FileStorage::READ | cv::FileStorage::MEMORY);
     if (!fs.isOpened()) {
         APP_LOG_EVENT_ERROR("config",
                             "config_load",
                             "fail",
                             {{"reason", "config_open_failed"},
-                             {"path", QString::fromStdString(cfg_file)},
+                             {"path", cfg_file},
                              {"using_defaults", "true"}});
         return;
     }
@@ -346,7 +363,7 @@ void CollectionController::loadConfigYaml()
                               "config_load",
                               "profile_missing",
                               {{"profile", m_cameraProfile},
-                               {"path", QString::fromStdString(cfg_file)}});
+                               {"path", cfg_file}});
     }
 
     m_camera2Ip = QString::fromStdString(camera2.cam_ip);
@@ -372,7 +389,7 @@ void CollectionController::loadConfigYaml()
     APP_LOG_EVENT_INFO("config",
                        "config_load",
                        "success",
-                       {{"path", QString::fromStdString(cfg_file)},
+                       {{"path", cfg_file},
                         {"camera", m_cameraIp},
                         {"camera_profile", m_cameraProfile},
                         {"resolution_w", QString::number(m_previewWidth)},
@@ -396,7 +413,7 @@ void CollectionController::loadConfigYaml()
     emit ninePointPlanChanged();
     } catch (const std::exception& error) {
         APP_LOG_EVENT_ERROR("config", "config_load", "fail",
-            {{"path", QString::fromStdString(cfg_file)}, {"error", QString::fromUtf8(error.what())},
+            {{"path", cfg_file}, {"error", QString::fromUtf8(error.what())},
              {"using_defaults", "true"}});
     }
 }

@@ -5,11 +5,13 @@
 #include "hand_eye_gui/config_resolver.hpp"
 
 #include <cstdio>
+#include <filesystem>
 #include <fstream>
 #include <sstream>
 #include <string>
 
 using config_resolver::ResolvedCameraConfig;
+namespace fpath = std::filesystem;
 
 namespace {
 
@@ -19,12 +21,23 @@ bool resolveCameraConfigFile(const std::string& path,
                             const CameraConfig& defaults,
                             ResolvedCameraConfig& out,
                             std::string& error) {
-    cv::FileStorage fs(path, cv::FileStorage::READ);
-    if (!fs.isOpened()) {
+    // 与生产读取路径一致：UTF-8 窄路径按 Unicode 解码成原生路径后读字节，
+    // 再交给 FileStorage 在内存中解析。按文件名打开时 OpenCV 用 ANSI fopen，
+    // 非 ASCII 名字会被当前 ANSI 代码页误解码。
+    std::ifstream input(fpath::u8path(path), std::ios::binary);
+    if (!input) {
         error = "无法打开配置文件: " + path;
         return false;
     }
-    out = config_resolver::resolveCameraConfig(fs, defaults);
+    std::ostringstream buffer;
+    buffer << input.rdbuf();
+    const std::string contents = buffer.str();
+    cv::FileStorage storage(contents, cv::FileStorage::READ | cv::FileStorage::MEMORY);
+    if (!storage.isOpened()) {
+        error = "无法打开配置文件: " + path;
+        return false;
+    }
+    out = config_resolver::resolveCameraConfig(storage, defaults);
     return true;
 }
 
@@ -38,15 +51,17 @@ CameraConfig makeDefaults() {
     return d;
 }
 
-std::string readFile() {
-    std::ifstream f(kCfgPath, std::ios::binary);
+std::string readFile(const fpath::path& path) {
+    std::ifstream f(path, std::ios::binary);
     std::ostringstream contents;
     contents << f.rdbuf();
     return contents.str();
 }
 
+std::string readFile() { return readFile(fpath::u8path(kCfgPath)); }
+
 void writeFile(const std::string& content) {
-    std::ofstream f(kCfgPath);
+    std::ofstream f(fpath::u8path(kCfgPath), std::ios::binary);
     f << content;
 }
 
@@ -323,6 +338,85 @@ int test_config_resolver() {
     const auto beforeInvalidString = readFile();
     TEST_CHECK(!config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "bad\ninjected: 1", err) &&
                readFile() == beforeInvalidString, "multiline_string_write_rejected");
+
+    // ---- Unicode 目录与文件名 ----
+    // 调用方传入的是 UTF-8 窄字符串（Qt 侧 exePath.toStdString()），
+    // std::filesystem::path 对窄字符串按 ANSI 代码页解码，因此 Unicode 名字
+    // 只有显式走 u8path 才能指向真正的文件。
+    {
+        const std::string unicodeDir = "caitu_测试配置_手眼目录";
+        const std::string utf8Path = unicodeDir + "/配置.yaml";
+        const fpath::path unicodePath = fpath::u8path(utf8Path);
+        std::error_code ec;
+        fpath::remove_all(fpath::u8path(unicodeDir), ec);
+        TEST_CHECK(fpath::create_directory(fpath::u8path(unicodeDir), ec),
+                   "unicode_directory_created");
+
+        // ANSI 代码页（此机器 936/GBK）解出的另一个名字：写入前先把诱饵放在那边，
+        // 保存后必须仍然只有 UTF-8 名字的文件被改动。
+        // 按 ANSI 代码页解码窄字符串是 OpenCV 按文件名打开时走的那条路径。
+        // 这段 UTF-8 字节未必能被当前代码页解出，解不出时连文件都打不开，
+        // 所以只有在真能解出并写出诱饵时才比较诱饵。
+        fpath::path ansiPath;
+        bool ansiDecoy = false;
+        try {
+            ansiPath = fpath::path(utf8Path);
+            ansiDecoy = ansiPath != unicodePath;
+        } catch (const std::exception&) {
+            ansiDecoy = false;
+        }
+        const std::string decoyContents = "%YAML:1.0\n---\nrobot_speed_mm_s: 300\n";
+        bool decoyWritten = false;
+        if (ansiDecoy) {
+            fpath::create_directory(ansiPath.parent_path(), ec);
+            std::ofstream decoy(ansiPath, std::ios::binary);
+            if (decoy) {
+                decoy << decoyContents;
+                decoy.close();
+                decoyWritten = true;
+            }
+        }
+
+        {
+            std::ofstream fixture(unicodePath, std::ios::binary);
+            fixture << "%YAML:1.0\n---\n# 中文注释\ncam_ip: \"192.168.1.11\"\nrobot_speed_mm_s: 12\n";
+        }
+        TEST_CHECK(config_resolver::updateFlatStringConfigFile(utf8Path, "cam_ip", "192.168.66.201", err) &&
+                   err.empty(), "unicode_path_save_accepts_utf8_name");
+        const std::string saved = readFile(unicodePath);
+        TEST_CHECK(saved.find("# 中文注释") != std::string::npos &&
+                   saved.find("cam_ip: \"192.168.66.201\"") != std::string::npos &&
+                   saved.find("robot_speed_mm_s: 12") != std::string::npos,
+                   "unicode_path_readback_matches_utf8_name");
+        TEST_CHECK(!fpath::exists(unicodePath.parent_path() / fpath::u8path("配置.yaml.tmp.runtime.yaml"), ec),
+                   "unicode_temporary_removed_after_save");
+        if (decoyWritten)
+            TEST_CHECK(readFile(ansiPath) == decoyContents,
+                       "unicode_save_does_not_write_ansi_decoded_name");
+        TEST_CHECK(resolveCameraConfigFile(utf8Path, makeDefaults(), out, err) &&
+                   out.cam_ip == "192.168.66.201", "unicode_path_readback_resolves");
+
+        // 报告错误时使用 UTF-8 名字，而不是 ANSI 代码页解出的乱码。
+        const std::string missingUnicodePath = "caitu_测试配置_手眼目录_不存在/配置.yaml";
+        err.clear();
+        TEST_CHECK(!config_resolver::updateFlatStringConfigFile(missingUnicodePath, "cam_ip", "10.0.0.1", err) &&
+                   err.find("测试配置") != std::string::npos,
+                   "unicode_error_message_keeps_utf8_name");
+
+        // 无法编码成 UTF-8 的名字只能报错，不能在报告路径时抛出。
+        const std::string invalidUtf8 = std::string("caitu_") + char('\xFF') + char('\xFE') + "_bad/配置.yaml";
+        bool rejectedWithoutThrow = false;
+        err.clear();
+        try {
+            rejectedWithoutThrow = !config_resolver::updateFlatStringConfigFile(invalidUtf8, "cam_ip", "10.0.0.1", err);
+        } catch (const std::exception&) {
+            rejectedWithoutThrow = false;
+        }
+        TEST_CHECK(rejectedWithoutThrow && !err.empty(), "invalid_utf8_path_reports_error_without_throw");
+
+        fpath::remove_all(fpath::u8path(unicodeDir), ec);
+    }
+
     std::remove(kCfgPath);
     TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", defaultExposures, err),
                "missing_config_created_with_exposures");
