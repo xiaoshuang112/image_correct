@@ -55,6 +55,7 @@ CaptureResult captureAndSave(AICamera& camera, const QString& outputDirectory,
         };
         std::vector<cv::Mat> frames;
         try {
+            checkCancelled();
             frames = camera.captureMultiExposureImages(exposures);
             resume();
         } catch (...) {

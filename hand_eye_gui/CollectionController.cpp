@@ -62,6 +62,11 @@ CollectionController::~CollectionController()
     ++m_tcpPoseGeneration;
     if (m_robotSession) m_robotSession->closing = true;
     m_cancelRequested = true;
+    {
+        std::lock_guard<std::mutex> lock(m_exposurePreviewMutex);
+        m_exposurePreviewClosing = true;
+    }
+    m_exposurePreviewChanged.notify_one();
     if (m_jogLease) m_jogLease->release();
     finishTeachPreferences();
     if (m_collectionThread.joinable())
@@ -525,21 +530,36 @@ void CollectionController::updatePreviewTimer()
 
 void CollectionController::suspendPreviewForExposure()
 {
-    QMetaObject::invokeMethod(this, [this] {
+    std::unique_lock<std::mutex> lock(m_exposurePreviewMutex);
+    if (m_exposurePreviewClosing) throw std::runtime_error("拍照已取消");
+    m_exposurePreviewReady = false;
+    const bool posted = QMetaObject::invokeMethod(this, [this] {
+        std::lock_guard<std::mutex> lock(m_exposurePreviewMutex);
         m_exposureCaptureActive = true;
         ++m_previewGeneration;
         updatePreviewTimer();
-    }, Qt::BlockingQueuedConnection);
-    if (m_previewFuture.valid()) m_previewFuture.wait();
+        m_exposurePreviewReady = true;
+        m_exposurePreviewChanged.notify_one();
+    }, Qt::QueuedConnection);
+    if (!posted) throw std::runtime_error("无法暂停预览");
+    // Destruction can wake the worker after the GUI event loop has stopped.
+    m_exposurePreviewChanged.wait(lock, [this] {
+        return m_exposurePreviewReady || m_exposurePreviewClosing;
+    });
+    if (m_exposurePreviewClosing) throw std::runtime_error("拍照已取消");
+    const auto pendingPreview = m_previewFuture;
+    lock.unlock();
+    if (pendingPreview.valid()) pendingPreview.wait();
 }
 
 void CollectionController::resumePreviewAfterExposure()
 {
+    // Resuming the UI is independent of the worker's remaining work and shutdown.
     QMetaObject::invokeMethod(this, [this] {
         m_exposureCaptureActive = false;
         updatePreviewTimer();
         if (m_previewTimer->isActive()) onPreviewTick();
-    }, Qt::BlockingQueuedConnection);
+    }, Qt::QueuedConnection);
 }
 
 void CollectionController::onPreviewTick()
