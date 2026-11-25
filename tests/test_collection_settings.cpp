@@ -1,4 +1,5 @@
 #include "hand_eye_gui/CollectionController.hpp"
+#include <QDir>
 #include <QFile>
 #include <QEventLoop>
 #include <QTimer>
@@ -67,6 +68,7 @@ struct CollectionSettingsTestAccess {
     }
     static void busy(CollectionController& c, bool value) { c.m_collectionBusy = value; }
     static void reload(CollectionController& c) { c.loadConfigYaml(); }
+    static const std::string& appPath(const CollectionController& c) { return c.m_appPath; }
 };
 
 void testCollectionSettings() {
@@ -153,4 +155,70 @@ void testCollectionSettings() {
     check(!apply(controller, {{"cameraExposureUs", 30000}}).isEmpty()
           && camera->exposure == 20000 && readFile(path) == duplicate, "no writes after invalid device readback");
     CollectionSettingsTestAccess::camera(controller, {});
+
+    // m_appPath 保存的是 UTF-8（生产里来自 exePath.toStdString()）。Unicode 目录必须按
+    // UTF-8 解码读取；按 ANSI 代码页（此机器 936/GBK）解码会指向另一个不存在的名字，
+    // 于是启动读取错误地回退到默认值。
+    const QString unicodeName = QStringLiteral("测试配置_手眼目录");
+    const QString unicodeDir = temporary.filePath(unicodeName);
+    check(QDir().mkpath(unicodeDir), "unicode settings directory");
+    const QString unicodeCfg = unicodeDir + QStringLiteral("/config.yaml");
+    const QByteArray unicodeOriginal = "%YAML:1.0\n---\n# 保留注释\nrobot_speed_mm_s: 250\ncam_ip: \"10.0.0.70\"\n";
+    writeFile(unicodeCfg, unicodeOriginal);
+
+    // 同一 UTF-8 名字按 ANSI 代码页解码后的诱饵：保存与读取都不能碰它。
+    const QString ansiName = QString::fromLocal8Bit(unicodeName.toUtf8());
+    const bool ansiDecoy = ansiName != unicodeName;
+    QString ansiCfg;
+    bool decoyWritten = false;
+    if (ansiDecoy) {
+        const QString ansiDir = temporary.filePath(ansiName);
+        ansiCfg = ansiDir + QStringLiteral("/config.yaml");
+        if (QDir().mkpath(ansiDir)) {
+            QFile decoy(ansiCfg);
+            if (decoy.open(QIODevice::WriteOnly) &&
+                decoy.write("%YAML:1.0\n---\n# ansi\nrobot_speed_mm_s: 300\n") > 0) {
+                decoy.close();
+                decoyWritten = true;
+            }
+        }
+    }
+
+    CollectionController unicode;
+    CollectionSettingsTestAccess::initialize(unicode, unicodeDir);
+    check(QString::fromUtf8(CollectionSettingsTestAccess::appPath(unicode).c_str()) ==
+          unicodeDir + QStringLiteral("/"), "m_app_path_round_trips_as_utf8");
+    CollectionSettingsTestAccess::reload(unicode);
+    check(unicode.robotSpeedMmS() == 250 && unicode.cameraIp() == "10.0.0.70",
+          "unicode config read through utf8 path");
+
+    check(apply(unicode, {{"robotSpeedMmS", 400}}).isEmpty(),
+          "unicode config save through utf8 path");
+    const QByteArray unicodeSaved = readFile(unicodeCfg);
+    check(unicodeSaved.contains("robot_speed_mm_s: 400") &&
+          unicodeSaved.contains("# 保留注释") &&
+          unicodeSaved.contains("cam_ip: \"10.0.0.70\""),
+          "unicode save keeps utf8 name, comment and other keys");
+    if (decoyWritten)
+        check(readFile(ansiCfg).contains("robot_speed_mm_s: 300"),
+              "unicode save does not write the ansi decoded name");
+
+    CollectionController restarted;
+    CollectionSettingsTestAccess::initialize(restarted, unicodeDir);
+    CollectionSettingsTestAccess::reload(restarted);
+    check(restarted.robotSpeedMmS() == 400, "unicode saved speed read back after restart");
+
+    // 缺失与格式非法仍然回退默认值，不能因为改用内存解析而改变。
+    check(QFile::remove(unicodeCfg), "remove unicode config for fallback");
+    CollectionController missing;
+    CollectionSettingsTestAccess::initialize(missing, unicodeDir);
+    CollectionSettingsTestAccess::reload(missing);
+    check(missing.robotSpeedMmS() == 10 && missing.robotIp() == "192.168.66.14",
+          "unicode missing config falls back to defaults");
+    writeFile(unicodeCfg, "not a YAML file : [");
+    CollectionController malformed;
+    CollectionSettingsTestAccess::initialize(malformed, unicodeDir);
+    CollectionSettingsTestAccess::reload(malformed);
+    check(malformed.robotSpeedMmS() == 10 && malformed.robotIp() == "192.168.66.14",
+          "unicode malformed config falls back to defaults");
 }

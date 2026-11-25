@@ -20,6 +20,20 @@ namespace config_resolver {
 
 namespace {
 
+// 报告路径时优先按 UTF-8 输出。名字无法编码成 UTF-8 时退化到当前代码页或占位文本，
+// 不能因为格式化错误信息而抛出。
+std::string displayPath(const std::filesystem::path& path) {
+    try {
+        return path.u8string();
+    } catch (const std::exception&) {
+        try {
+            return path.string();
+        } catch (const std::exception&) {
+            return "<path cannot be encoded as UTF-8>";
+        }
+    }
+}
+
 void resolveString(const cv::FileStorage& fs,
                    const cv::FileNode& profileNode,
                    const std::string& profile,
@@ -85,7 +99,7 @@ bool syncFile(const std::filesystem::path& path, std::string& error) {
 #if defined(__linux__)
     const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
     if (fd < 0) {
-        error = "cannot open temporary config for fsync: " + path.string() +
+        error = "cannot open temporary config for fsync: " + displayPath(path) +
                 ": " + std::strerror(errno);
         return false;
     }
@@ -96,7 +110,7 @@ bool syncFile(const std::filesystem::path& path, std::string& error) {
     const int savedErrno = errno;
     ::close(fd);
     if (result != 0) {
-        error = "cannot fsync temporary config: " + path.string() + ": " +
+        error = "cannot fsync temporary config: " + displayPath(path) + ": " +
                 std::strerror(savedErrno);
         return false;
     }
@@ -111,7 +125,7 @@ bool syncDirectory(const std::filesystem::path& path, std::string& error) {
 #if defined(__linux__)
     const int fd = ::open(path.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (fd < 0) {
-        error = "cannot open config directory for fsync: " + path.string() +
+        error = "cannot open config directory for fsync: " + displayPath(path) +
                 ": " + std::strerror(errno);
         return false;
     }
@@ -122,7 +136,7 @@ bool syncDirectory(const std::filesystem::path& path, std::string& error) {
     const int savedErrno = errno;
     ::close(fd);
     if (result != 0) {
-        error = "cannot fsync config directory: " + path.string() + ": " +
+        error = "cannot fsync config directory: " + displayPath(path) + ": " +
                 std::strerror(savedErrno);
         return false;
     }
@@ -337,12 +351,20 @@ bool updateFlatConfigValuesFile(const std::string& path,
     }
     if (updates.empty()) return true;
 
-    const fs::path destination(path);
+    // 调用方传入的是 UTF-8 窄字符串。窄字符串直接构造 fs::path 会按当前 ANSI 代码页
+    // 解码，因此必须显式按 UTF-8 解码；无法解码的名字只能报错，不能抛出。
+    fs::path destination;
+    try {
+        destination = fs::u8path(path);
+    } catch (const std::exception&) {
+        error = "config path is not valid UTF-8: " + path;
+        return false;
+    }
     const fs::path parent = destination.parent_path().empty()
         ? fs::path(".") : destination.parent_path();
     std::error_code ec;
     if (!fs::exists(parent, ec) || ec) {
-        error = "config directory does not exist: " + parent.string();
+        error = "config directory does not exist: " + displayPath(parent);
         return false;
     }
 
@@ -351,13 +373,13 @@ bool updateFlatConfigValuesFile(const std::string& path,
     if (fs::exists(destination, ec) && !ec) {
         std::ifstream input(destination, std::ios::binary);
         if (!input) {
-            error = "cannot open config for reading: " + destination.string();
+            error = "cannot open config for reading: " + displayPath(destination);
             return false;
         }
         std::ostringstream buffer;
         buffer << input.rdbuf();
         if (!input.eof() && input.fail()) {
-            error = "cannot read config: " + destination.string();
+            error = "cannot read config: " + displayPath(destination);
             return false;
         }
         contents = buffer.str();
@@ -435,19 +457,22 @@ bool updateFlatConfigValuesFile(const std::string& path,
     for (const std::string& updatedLine : lines)
         updated << updatedLine << newline;
 
-    const fs::path temporary = destination.string() + ".tmp.runtime.yaml";
+    // 在原生路径上直接追加后缀，不能先转成窄字符串再拼接（那会重新按代码页解码）。
+    fs::path temporary = destination;
+    temporary += ".tmp.runtime.yaml";
+    const std::string updatedContents = updated.str();
+
     {
         std::ofstream output(temporary, std::ios::binary | std::ios::trunc);
         if (!output) {
-            error = "cannot open temporary config: " + temporary.string();
+            error = "cannot open temporary config: " + displayPath(temporary);
             return false;
         }
-        const std::string updatedContents = updated.str();
         output.write(updatedContents.data(),
                      static_cast<std::streamsize>(updatedContents.size()));
         output.flush();
         if (!output) {
-            error = "cannot write temporary config: " + temporary.string();
+            error = "cannot write temporary config: " + displayPath(temporary);
             output.close();
             fs::remove(temporary, ec);
             return false;
@@ -457,7 +482,8 @@ bool updateFlatConfigValuesFile(const std::string& path,
         fs::permissions(temporary, originalPermissions, ec);
 
     try {
-        cv::FileStorage validation(temporary.string(), cv::FileStorage::READ);
+        // 校验用内存里刚生成的内容，不再按文件名打开临时文件。
+        cv::FileStorage validation(updatedContents, cv::FileStorage::READ | cv::FileStorage::MEMORY);
         if (!validation.isOpened()) {
             error = "updated config failed YAML validation";
             validation.release();

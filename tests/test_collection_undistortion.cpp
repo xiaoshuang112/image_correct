@@ -2,6 +2,7 @@
 #include "hand_eye_gui/CollectionImageRecord.hpp"
 #include "hand_eye_gui/CollectionPoseRecord.hpp"
 #include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -213,6 +214,55 @@ int main(int argc, char** argv) {
                 !fieldMaps.geometry().cropped, "field output was cropped or resized");
         require(cv::norm(fieldCorrected, fieldReference, cv::NORM_INF) == 0,
                 "field image differs from the production remap");
+
+        // Unicode 目录与文件名：调用方传入 UTF-8 窄字符串，加载器必须按 Unicode 解码。
+        // OpenCV 按文件名打开时使用 ANSI fopen，所以此前会把同一个名字解成另一个文件。
+        const QString unicodeName = QString::fromUtf8("手眼标定_测试目录");
+        const QString unicodeDir = temp.filePath(unicodeName);
+        require(QDir().mkpath(unicodeDir), "unicode hand-eye directory");
+        const QString unicodeFile = unicodeDir + QString::fromUtf8("/手眼结果.yaml");
+        require(QFile::copy(QString::fromUtf8(path.c_str()), unicodeFile),
+              "copy hand-eye fixture to unicode name");
+
+        // ANSI 代码页（此机器 936/GBK）解出的另一个名字，用不同序列号做诱饵。
+        const QString ansiName = QString::fromLocal8Bit(unicodeName.toUtf8());
+        const bool ansiDecoy = ansiName != unicodeName;
+        QString ansiFile;
+        if (ansiDecoy) {
+            const QString ansiDir = temp.filePath(ansiName);
+            std::string decoy = read(unicodeFile).toStdString();
+            const auto serialPosition = decoy.find("DB2650007");
+            if (serialPosition != std::string::npos)
+                decoy.replace(serialPosition, 9, "ANSI-DECOY");
+            if (QDir().mkpath(ansiDir) && serialPosition != std::string::npos) {
+                ansiFile = ansiDir + QString::fromUtf8("/手眼结果.yaml");
+                QFile out(ansiFile);
+                const QByteArray decoyBytes = QByteArray(decoy.c_str());
+                if (out.open(QIODevice::WriteOnly) && out.write(decoyBytes) == decoyBytes.size()) {
+                    out.close();
+                } else {
+                    ansiFile.clear();
+                }
+            }
+        }
+
+        const auto unicodeCalibration =
+            collection::UndistortionCalibration::load(unicodeFile.toUtf8().toStdString());
+        require(unicodeCalibration.cameraSerial == "DB2650007",
+                "unicode hand-eye file read through utf8 path");
+        require(unicodeCalibration.calibratedSize == fieldSize,
+                "unicode hand-eye calibration size lost");
+        collection::UndistortionMaps unicodeMaps(unicodeCalibration, fieldSize, "DB2650007");
+        require(cv::norm(unicodeMaps.apply(fieldRaw), fieldCorrected) == 0,
+                "unicode hand-eye correction differs from the fixture");
+        if (!ansiFile.isEmpty())
+            require(read(ansiFile).contains("ANSI-DECOY"),
+                    "unicode load did not read the utf8 named file");
+        rejects([&] {
+            collection::UndistortionCalibration::load(
+                temp.filePath(QString::fromUtf8("不存在的目录/手眼结果.yaml")).toUtf8().toStdString());
+        });
+
         std::vector<uchar> fieldPng;
         require(cv::imencode(".png", fieldCorrected, fieldPng), "field PNG encode failed");
         require(cv::norm(cv::imdecode(fieldPng, cv::IMREAD_COLOR), fieldCorrected) == 0,

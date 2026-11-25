@@ -8,6 +8,7 @@
 #include <cstring>
 #include <iostream>
 #include <limits>
+#include <optional>
 #include <stdexcept>
 #include <thread>
 #include <vector>
@@ -42,11 +43,13 @@ struct Robot {
     CRresult lineCode = sucess, stopCode = sucess, inverseCode = sucess, limitCode = sucess, poseCode = sucess;
     int sends = 0, stops = 0, polls = 0, lookups = 0, cancelOnPoll = 0, limitReads = 0;
     int slowPoseLookup = 0, poseDelayMs = 270, limitDelayMs = 0, cancelOnLimitRead = 0;
+    std::optional<std::chrono::steady_clock::time_point> firstStopped;
     std::function<void()> poseReadAction;
     void reset() {
         actual = {100, 200, 300, 0, 0, 0}; offset = {0, 0, 100, 0, 0, 0};
         ikPose = {}; ikJoints = {}; command = {}; cancelled = false;
         commands.clear(); slowPoseLookup = 0; poseDelayMs = 270;
+        firstStopped.reset();
         limitDelayMs = cancelOnLimitRead = 0; poseReadAction = {};
         inverseTargets.clear();
         inverseMaxX = jointLimitFromX = std::numeric_limits<double>::infinity();
@@ -105,6 +108,8 @@ extern "C" CRresult cr_get_robotMoveStatus(RobotHandle, BOOL* moving) {
     ++robot.polls;
     if (robot.cancelOnPoll && robot.polls >= robot.cancelOnPoll) robot.cancelled = true;
     *moving = robot.alwaysMoving || robot.polls < 2;
+    if (!*moving && !robot.firstStopped)
+        robot.firstStopped = std::chrono::steady_clock::now();
     if (robot.polls >= 2 && !robot.neverReach) {
         std::copy_n(robot.command.pose, ROB_AXIS_NUM, robot.actual.begin());
         robot.actual[0] += robot.arrivalPositionError;
@@ -287,7 +292,10 @@ int main(int argc, char** argv) {
         require(rejects([] { move({0, 60}); }).find("停止指令失败") != std::string::npos,
                 "manual stop failure concealed");
         robot.reset(); move({60, 400});
-        require(robot.polls >= 5, "settling interval was not confirmed");
+        // Timer resolution changes the poll count across platforms.
+        require(robot.firstStopped && robot.polls >= 3 &&
+                std::chrono::steady_clock::now() - *robot.firstStopped >= std::chrono::milliseconds(60),
+                "settling interval was not confirmed");
         using collection::TeachOrientation;
         // Each representation edits only its selected displayed component; XYZ
         // is held at the selected TCP center, even for an offset/rotated tool.

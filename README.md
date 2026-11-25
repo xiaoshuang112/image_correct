@@ -287,3 +287,26 @@ ctest --test-dir build_tests --output-on-failure
 计数减少时清除动画并重建基线，失败、取消及计数不变的共享通知不会再次闪光。
 UI 回归模拟真实 `collectionChanged` 共享 NOTIFY，包括开始采集时计数尚未变化的通知。
 这是消除绑定与通知顺序依赖的改进，不作为已复现“首张必不闪”的证明。
+
+## Windows 10 x64 构建与打包
+
+Windows 端用 MSVC 工具链编译，需要 Qt 5.15.2 msvc2019_64、OpenCV 4.13 vc17、CGXi 机器人 SDK、
+海康 MVS SDK 和 VS2022（提供 VC143 运行库）。构建目录与打包路径可在脚本参数中覆盖，默认值见脚本头部。
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File .\build_collect_win.ps1 -Jobs 4
+powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package_mvs_release_win.ps1
+```
+
+打包脚本输出 `dist/collect-mvs-win10-x64`：`collect-mvs.exe`、windeployqt 复制的 Qt 运行库与 QML 模块、
+OpenCV、CGXi、MVS DLL，`qt.conf`（固定读取 exe 旁的插件与 QML 模块）、`config.yaml`（从
+`config/collect.example.yaml` 初始化）、空 `param/` 目录、`BUILD_INFO.txt` 和 `SHA256SUMS`。缺少输入即报错退出。
+
+运行库规则：CGXi 与 MVS 自带的 `msvcp140*`、`vcruntime140*`、`ucrtbase`、`concrt140` 一律排除，
+改用 VS2022 的 `Microsoft.VC143.CRT`，这样脱离开发机的 Win10 也能独立运行；SDK 自带的旧 CRT 与
+OpenCV 4.13 vc17 运行库不兼容，同目录时加载器会挑到旧版导致 OpenCV 初始化失败（0xc0000142）。
+`msvcr100.dll` 和 `pthreadVC2.dll` 是 SDK 依赖，必须保留。
+
+脚本结束前用干净 PATH 和清空后的 Qt/QML 环境变量做一次冒烟启动，确认进程存活、日志记录 QML 加载，
+再关闭窗口等待退出，结果写入 `build-win/windows-package.log`。这仅验证启动，真实相机取图、曝光与机器人操作
+仍需设备验收。目标机必须真实安装海康 MVS 驱动，驱动不在发布包内。

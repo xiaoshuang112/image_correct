@@ -1,6 +1,13 @@
 #include "mvs_device_selector.hpp"
 
+#ifdef _WIN32
+// MSVC 没有 arpa/inet.h：inet_pton 在 ws2tcpip.h，ntohl 在 winsock2.h。
+// winsock2.h 必须在 windows.h 之前包含，否则 winsock.h 冲突。
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#else
 #include <arpa/inet.h>
+#endif
 
 #include <cstdio>
 
