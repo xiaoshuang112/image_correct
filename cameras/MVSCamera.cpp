@@ -1,4 +1,5 @@
 #include "MVSCamera.hpp"
+#include "mvs_sdk_lifecycle.hpp"
 #include "mvs_error.hpp"
 #include "hand_eye_gui/DiagnosticLogger.hpp"
 
@@ -83,14 +84,14 @@ bool MVSCamera::open() {
     clearError();
     releaseResourcesLocked();
 
-    // ---- 阶段 1: SDK 初始化 ----
-    int nRet = MV_CC_Initialize();
-    if (MV_OK != nRet) {
-        setError("initialize", nRet);
-        return false;
-    }
-    m_sdkInitialized = true;
+    // ---- 阶段 1: 共享 SDK 初始化（多实例引用计数） ----
     {
+        const auto acquired = mvs_sdk::acquire();
+        if (!acquired.ok) {
+            setError("initialize", acquired.sdk_code, acquired.message);
+            return false;
+        }
+        m_sdkInitialized = true;
         const unsigned int ver = MV_CC_GetSDKVersion();
         char buf[16];
         std::snprintf(buf, sizeof(buf), "%u.%u.%u.%u",
@@ -153,7 +154,7 @@ bool MVSCamera::open() {
     }
 
     // ---- 阶段 4: 创建句柄 ----
-    nRet = MV_CC_CreateHandle(&m_handle, selectedInfo);
+    int nRet = MV_CC_CreateHandle(&m_handle, selectedInfo);
     if (MV_OK != nRet) {
         setError("create_handle", nRet);
         releaseResourcesLocked();
@@ -486,7 +487,7 @@ void MVSCamera::releaseResourcesLocked() {
         m_handle = nullptr;
     }
     if (m_sdkInitialized) {
-        MV_CC_Finalize();
+        mvs_sdk::release();
         m_sdkInitialized = false;
     }
     m_buffer.clear();

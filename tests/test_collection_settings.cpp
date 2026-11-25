@@ -65,6 +65,9 @@ struct CollectionSettingsTestAccess {
     static void camera(CollectionController& c, const std::shared_ptr<SettingsCamera>& camera) {
         c.m_camera = camera; c.m_cameraOpened = bool(camera);
     }
+    static void camera2(CollectionController& c, const std::shared_ptr<SettingsCamera>& camera) {
+        c.m_camera2 = camera; c.m_camera2Opened = bool(camera);
+    }
     static void busy(CollectionController& c, bool value) { c.m_collectionBusy = value; }
     static void reload(CollectionController& c) { c.loadConfigYaml(); }
 };
@@ -153,4 +156,31 @@ void testCollectionSettings() {
     check(!apply(controller, {{"cameraExposureUs", 30000}}).isEmpty()
           && camera->exposure == 20000 && readFile(path) == duplicate, "no writes after invalid device readback");
     CollectionSettingsTestAccess::camera(controller, {});
+
+    writeFile(path, original);
+    CollectionController dualSettings;
+    CollectionSettingsTestAccess::initialize(dualSettings, temporary.path());
+    CollectionSettingsTestAccess::reload(dualSettings);
+    check(!apply(dualSettings, {{"camera2Ip", "10.0.0.40"}, {"cameraIp", "10.0.0.40"}}).isEmpty(),
+          "duplicate camera IP rejected");
+    check(apply(dualSettings, {{"camera2Ip", "10.0.0.41"}, {"camera2Sn", "ABC"}, {"preview2Width", "2000"},
+                              {"preview2Height", "1500"}, {"camera2ExposureUs", 11000}, {"camera2Gain", 4},
+                              {"exposure2List", "4000,8000"}}).isEmpty(),
+          "camera2 settings saved");
+    check(dualSettings.camera2Ip() == "10.0.0.41" && dualSettings.camera2Sn() == "ABC" &&
+          dualSettings.preview2Width() == 2000 && dualSettings.preview2Height() == 1500 &&
+          dualSettings.camera2Gain() == 4 && dualSettings.exposure2List() == "4000,8000" &&
+          readFile(path).contains("cam2_ip: \"10.0.0.41\""),
+          "camera2 yaml persisted");
+    auto cam2 = std::make_shared<SettingsCamera>();
+    CollectionSettingsTestAccess::camera2(dualSettings, cam2);
+    const auto beforeConnected2 = readFile(path);
+    check(!apply(dualSettings, {{"camera2Ip", "10.0.0.42"}}).isEmpty() && readFile(path) == beforeConnected2,
+          "connected camera2 IP locked");
+    check(!apply(dualSettings, {{"camera2Gain", 5}}).isEmpty() && readFile(path) == beforeConnected2,
+          "connected camera2 gain locked");
+    check(apply(dualSettings, {{"camera2ExposureUs", 15003}}).isEmpty() &&
+          dualSettings.camera2ExposureUs() == 15000 && dualSettings.camera2ActualExposureUs() == 15000,
+          "connected camera2 live exposure updated and read back");
+    CollectionSettingsTestAccess::camera2(dualSettings, {});
 }

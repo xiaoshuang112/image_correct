@@ -14,6 +14,12 @@ Item {
     property string previewWidth: ""
     property string previewHeight: ""
     property string previewExposure: ""
+    property string camera2Ip: ""
+    property string camera2Sn: ""
+    property string preview2Width: ""
+    property string preview2Height: ""
+    property string preview2Exposure: ""
+    property string camera2Gain: ""
     property var savedDraft: ({})
     property int revision: 0
     property bool loaded: false
@@ -25,8 +31,15 @@ Item {
             var value = exposureSlots.get(i).value.trim()
             if (value !== "") exposures.push(value)
         }
-        return {cameraIp: cameraIp, robotIp: robotIp, robotSpeedMmS: robotSpeed, previewWidth: previewWidth,
-            previewHeight: previewHeight, cameraExposureUs: previewExposure, exposureList: exposures.join(",")}
+        var exposures2 = []
+        for (var j = 0; j < exposure2Slots.count; ++j) {
+            var v2 = exposure2Slots.get(j).value.trim()
+            if (v2 !== "") exposures2.push(v2)
+        }
+        return {cameraIp: cameraIp, camera2Ip: camera2Ip, camera2Sn: camera2Sn, robotIp: robotIp, robotSpeedMmS: robotSpeed,
+            previewWidth: previewWidth, previewHeight: previewHeight, preview2Width: preview2Width, preview2Height: preview2Height,
+            cameraExposureUs: previewExposure, camera2ExposureUs: preview2Exposure, camera2Gain: camera2Gain,
+            exposureList: exposures.join(","), exposure2List: exposures2.join(",")}
     }
     readonly property int dirtyCount: {
         var count = 0
@@ -34,8 +47,8 @@ Item {
         return loaded ? count : 0
     }
     readonly property bool dirty: dirtyCount > 0
-    readonly property string exposureError: {
-        var values = draft.exposureList.split(",").filter(function(v) { return v !== "" })
+    function exposureListError(list) {
+        var values = list.split(",").filter(function(v) { return v !== "" })
         if (values.length < 2 || values.length > 5) return "融合曝光应包含 2～5 个数值，未写入配置"
         var seen = {}
         for (var i = 0; i < values.length; ++i) {
@@ -46,14 +59,24 @@ Item {
         }
         return ""
     }
+    readonly property string exposureError: exposureListError(draft.exposureList)
+    readonly property string exposure2Error: exposureListError(draft.exposure2List)
     function reload() {
         loaded = false
         cameraIp = controller.cameraIp; robotIp = controller.robotIp
         robotSpeed = String(controller.robotSpeedMmS)
         previewWidth = String(controller.previewWidth); previewHeight = String(controller.previewHeight)
         previewExposure = String(controller.cameraExposureUs)
+        camera2Ip = controller.camera2Ip
+        camera2Sn = controller.camera2Sn
+        preview2Width = String(controller.preview2Width)
+        preview2Height = String(controller.preview2Height)
+        preview2Exposure = String(controller.camera2ExposureUs)
+        camera2Gain = String(controller.camera2Gain)
         var values = controller.exposureList.split(/[,，;\s]+/).filter(function(v) { return v !== "" })
         for (var i = 0; i < exposureSlots.count; ++i) exposureSlots.setProperty(i, "value", i < values.length ? values[i] : "")
+        var values2 = controller.exposure2List.split(/[,，;\s]+/).filter(function(v) { return v !== "" })
+        for (var k = 0; k < exposure2Slots.count; ++k) exposure2Slots.setProperty(k, "value", k < values2.length ? values2[k] : "")
         ++revision
         savedDraft = JSON.parse(JSON.stringify(draft))
         loaded = true; feedback = "配置已载入，编辑后点击「保存配置」"
@@ -62,6 +85,7 @@ Item {
     function save() {
         if (locked) return
         if (exposureError) { feedback = exposureError; return }
+        if (exposure2Error) { feedback = "相机 2 " + exposure2Error; return }
         feedback = "正在保存配置…"
         controller.applySettings(draft)
     }
@@ -75,6 +99,14 @@ Item {
     Component.onCompleted: reload()
     ListModel {
         id: exposureSlots
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+        ListElement { value: "" }
+    }
+    ListModel {
+        id: exposure2Slots
         ListElement { value: "" }
         ListElement { value: "" }
         ListElement { value: "" }
@@ -144,28 +176,58 @@ Item {
                                     CollectField { objectName: "resolutionHeightInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.previewHeight; enabled: !page.locked && !page.controller.cameraOpened; onTextChanged: page.previewHeight = text }
                                 }
                                 HmiText { width: parent.width; text: "后端：" + page.controller.cameraBackend + " · " + page.controller.cameraModel; font.pixelSize: Theme.meta }
+                                HmiText { text: "相机 2"; topPadding: 16; font.pixelSize: Theme.body; font.weight: Font.DemiBold }
+                                HmiText { width: parent.width; text: "相机 2 IP（可选，与序列号二选一）" }
+                                CollectField { objectName: "camera2IpInput"; width: parent.width; text: page.camera2Ip; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.camera2Ip = text }
+                                HmiText { width: parent.width; text: "相机 2 序列号（可选）" }
+                                CollectField { objectName: "camera2SnInput"; width: parent.width; text: page.camera2Sn; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.camera2Sn = text }
+                                HmiText { visible: page.controller.camera2Opened; width: parent.width; text: "相机 2 已连接，断开后可编辑 IP、序列号、分辨率与增益"; font.pixelSize: Theme.meta }
+                                HmiText { width: parent.width; text: "相机 2 分辨率 · px"; topPadding: 8 }
+                                RowLayout {
+                                    width: parent.width; spacing: 8
+                                    CollectField { objectName: "resolution2WidthInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.preview2Width; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.preview2Width = text }
+                                    HmiText { text: "×" }
+                                    CollectField { objectName: "resolution2HeightInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.preview2Height; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.preview2Height = text }
+                                }
+                                HmiText { width: parent.width; text: "相机 2 增益"; font.pixelSize: Theme.meta }
+                                CollectField { objectName: "camera2GainInput"; width: parent.width; text: page.camera2Gain; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.camera2Gain = text }
                             }
                             Column {
                                 id: imagingSettings; visible: page.tab === 1; width: parent.width; spacing: 8
                                 HmiText { text: "预览曝光 · μs" }
                                 CollectField { objectName: "previewExposureInput"; width: parent.width; text: page.previewExposure; enabled: !page.locked; onTextChanged: page.previewExposure = text }
                                 HmiText { width: parent.width; text: "预览曝光独立于融合序列；保存后生效。范围 1～10000000 μs。"; font.pixelSize: Theme.meta }
+                                HmiText { text: "相机 2 预览曝光 · μs"; topPadding: 12 }
+                                CollectField { objectName: "preview2ExposureInput"; width: parent.width; text: page.preview2Exposure; enabled: !page.locked; onTextChanged: page.preview2Exposure = text }
                                 Item { width: 1; height: 8 }
                                 CollectButton {
                                     objectName: "undistortionButton"; width: parent.width
-                                    text: page.controller.undistortionEnabled ? "去畸变已启用" : "启用去畸变"
+                                    text: page.controller.undistortionEnabled ? "相机 1 去畸变已启用" : "启用相机 1 去畸变"
                                     enabled: !page.locked && page.controller.cameraOpened && (page.controller.undistortionReady || page.controller.undistortionEnabled)
                                     onClicked: page.controller.toggleUndistortion()
                                 }
                                 HmiText { objectName: "undistortionStatus"; width: parent.width; text: page.controller.undistortionStatus; font.pixelSize: Theme.meta }
+                                CollectButton {
+                                    objectName: "undistortion2Button"; width: parent.width
+                                    text: page.controller.undistortion2Enabled ? "相机 2 去畸变已启用" : "启用相机 2 去畸变"
+                                    enabled: !page.locked && page.controller.camera2Opened && (page.controller.undistortion2Ready || page.controller.undistortion2Enabled)
+                                    onClicked: page.controller.toggleUndistortion2()
+                                }
+                                HmiText { objectName: "undistortion2Status"; width: parent.width; text: page.controller.undistortion2Status; font.pixelSize: Theme.meta }
                                 HmiText { width: parent.width; text: "校正开关即时生效于预览 / 拍照；曝光配置需要保存。"; font.pixelSize: Theme.meta }
                             }
                             Column {
                                 id: storageSettings; visible: page.tab === 2; width: parent.width; spacing: 16
-                                HmiText { text: "图片 " + page.controller.savedImageCount + "   TCP 点位 " + page.controller.savedPoseCount; color: Theme.ink; font.family: Theme.mono }
+                                HmiText {
+                                    width: parent.width; color: Theme.ink; font.family: Theme.mono
+                                    text: "图片 " + page.controller.savedImageCount +
+                                        (page.controller.savedGroupCount > 0 ? "（" + page.controller.savedGroupCount + " 组）" : "") +
+                                        "   TCP 点位 " + page.controller.savedPoseCount
+                                }
                                 HmiText { width: parent.width; text: page.controller.outputDirectory; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
                                 CollectButton { objectName: "collectionFolderButton"; text: "打开图片目录"; onClicked: page.controller.openCollectionFolder() }
                                 HmiText { width: parent.width; text: page.controller.lastCapturePath || "尚未保存图片"; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                                HmiText { visible: page.controller.lastCapturePath2 !== ""; width: parent.width; text: "相机 2：" + page.controller.lastCapturePath2; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
                                 HmiText { width: parent.width; text: "保存仍保留现有原图、融合图、校正图及位姿数据。预览十字线不会写入图片。"; font.pixelSize: Theme.meta }
                             }
                         }
@@ -208,11 +270,27 @@ Item {
                                     }
                                 }
                                 HmiText { objectName: "exposureError"; width: parent.width; text: page.exposureError; color: Theme.danger; font.pixelSize: Theme.meta }
+                                HmiText { text: "相机 2 融合曝光序列"; topPadding: 12; font.weight: Font.DemiBold }
+                                Repeater {
+                                    model: exposure2Slots
+                                    RowLayout {
+                                        width: parent.width; spacing: 8
+                                        HmiText { text: String(index + 1); font.family: Theme.mono; Layout.preferredWidth: 20 }
+                                        CollectField {
+                                            objectName: index === 0 ? "exposure2Input" : "exposure2Input" + (index + 1)
+                                            Layout.fillWidth: true; Layout.minimumWidth: 0; text: value; placeholderText: "可选"; enabled: !page.locked
+                                            invalid: page.exposure2Error !== ""
+                                            onTextChanged: { if (page.loaded) { exposure2Slots.setProperty(index, "value", text); ++page.revision } }
+                                        }
+                                    }
+                                }
+                                HmiText { objectName: "exposure2Error"; width: parent.width; text: page.exposure2Error; color: Theme.danger; font.pixelSize: Theme.meta }
                             }
                             Column {
                                 id: diagnosticSettings; visible: page.tab === 2; width: parent.width; spacing: 16
                                 HmiText { text: "版本 " + appVersion + " · " + appGitCommit; font.family: Theme.mono; width: parent.width }
-                                HmiText { width: parent.width; text: "校正参数\n" + page.controller.handEyePath; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                                HmiText { width: parent.width; text: "相机 1 校正参数\n" + page.controller.handEyePath; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
+                                HmiText { width: parent.width; text: "相机 2 校正参数\n" + page.controller.handEyePath2; font.family: Theme.mono; font.pixelSize: Theme.meta; wrapMode: Text.WrapAnywhere }
                                 CollectButton { objectName: "diagnosticFolderButton"; text: "打开日志目录"; onClicked: page.controller.openDiagnosticFolder() }
                                 HmiText { width: parent.width; text: "完整运行日志保留在诊断目录，主页面显示任务、进度与最近结果。"; font.pixelSize: Theme.meta }
                             }

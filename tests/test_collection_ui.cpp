@@ -101,6 +101,13 @@ import CollectTest 1.0
 SharedCollectionState {
     id: mockController
     property bool cameraOpened: false
+    property bool camera2Opened: false
+    property bool dualCameraMode: false
+    property bool dualCameraReady: false
+    property int activePreviewCamera: 1
+    property bool camera1Healthy: false
+    property bool camera2Healthy: false
+    property string camera2StatusMessage: "相机 2 未连接"
     property bool previewActive: false
     property bool previewVisible: true
     property size previewDisplaySize: Qt.size(1280, 960)
@@ -108,6 +115,9 @@ SharedCollectionState {
     property bool undistortionReady: false
     property bool undistortionEnabled: false
     property string undistortionStatus: "未找到手眼文件，去畸变不可用"
+    property bool undistortion2Ready: true
+    property bool undistortion2Enabled: false
+    property string undistortion2Status: "相机 2 去畸变参数已加载，标定分辨率 4024×3036"
     property string cameraBackend: "mvs"
     property string cameraIp: "192.168.66.253"
     property int previewWidth: 4024
@@ -117,10 +127,24 @@ SharedCollectionState {
     property int cameraActualHeight: 3036
     property int cameraExposureUs: 12000
     property int cameraActualExposureUs: 12000
+    property string camera2Ip: ""
+    property string camera2Sn: ""
+    property int preview2Width: 4024
+    property int preview2Height: 3036
+    property string camera2Model: "MVS-2"
+    property int camera2ActualWidth: 4024
+    property int camera2ActualHeight: 3036
+    property int camera2ExposureUs: 12000
+    property int camera2ActualExposureUs: 12000
+    property int camera2Gain: 3
     property string handEyePath: "/tmp/calibration.yaml"
+    property string handEyePath2: "/tmp/cam2_calibration.yaml"
     property string outputDirectory: "/tmp/collect-ui-check"
     property string exposureList: "5000,8500,14500,25000"
+    property string exposure2List: "5000,8500,14500,25000"
     property string lastCapturePath: ""
+    property string lastCapturePath2: ""
+    property int savedGroupCount: 0
     property string lastCaptureTime: ""
     property int savedPoseCount: 0
     property string pointName: ""
@@ -147,10 +171,41 @@ SharedCollectionState {
     property int robotSpeedMmS: 10
     property string statusMessage: "界面检查"
     signal frameUpdated()
-    function openCamera() { cameraOpened = true }
-    function closeCamera() { previewActive = false; cameraOpened = false; undistortionEnabled = false }
-    function startPreview() { previewActive = true; frameUpdated() }
-    function stopPreview() { previewActive = false }
+    signal frameCleared()
+    function openCamera() {
+        cameraOpened = true
+        camera1Healthy = true
+        if (dualCameraMode) {
+            camera2Opened = true
+            camera2Healthy = true
+            camera2StatusMessage = "相机 2 就绪"
+        }
+    }
+    function closeCamera() {
+        previewActive = false
+        cameraOpened = false
+        camera2Opened = false
+        dualCameraReady = false
+        camera1Healthy = false
+        camera2Healthy = false
+        undistortionEnabled = false
+        undistortion2Enabled = false
+        frameCleared()
+    }
+    function startPreview() {
+        previewActive = true
+        if (dualCameraMode && cameraOpened && camera2Opened) dualCameraReady = true
+        frameUpdated()
+    }
+    function stopPreview() { previewActive = false; dualCameraReady = false }
+    function togglePreviewCamera() {
+        if (!dualCameraMode) return
+        activePreviewCamera = activePreviewCamera === 1 ? 2 : 1
+        frameCleared()
+        frameUpdated()
+    }
+    onActivePreviewCameraChanged: { frameCleared(); if (previewActive) frameUpdated() }
+    function toggleUndistortion2() { undistortion2Enabled = !undistortion2Enabled }
     property bool captureFailure: false
     property bool captureCancelled: false
     function capturePhoto() {
@@ -251,10 +306,13 @@ SharedCollectionState {
         if (!error && (!/^\d+$/.test(String(values.robotSpeedMmS)) || Number(values.robotSpeedMmS) < 1 || Number(values.robotSpeedMmS) > 1000))
             error = "移动速度须为 1～1000 mm/s 范围内的整数"
         if (!error) {
-            cameraIp = values.cameraIp; robotIp = values.robotIp
-            robotSpeedMmS = Number(values.robotSpeedMmS)
+            cameraIp = values.cameraIp; camera2Ip = values.camera2Ip; camera2Sn = values.camera2Sn
+            robotIp = values.robotIp; robotSpeedMmS = Number(values.robotSpeedMmS)
             previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
-            cameraExposureUs = Number(values.cameraExposureUs); exposureList = values.exposureList
+            preview2Width = Number(values.preview2Width); preview2Height = Number(values.preview2Height)
+            cameraExposureUs = Number(values.cameraExposureUs); camera2ExposureUs = Number(values.camera2ExposureUs)
+            camera2Gain = Number(values.camera2Gain)
+            exposureList = values.exposureList; exposure2List = values.exposure2List
         }
         settingsSaving = false; collectionBusy = false
         settingsFinished(error)
@@ -600,6 +658,40 @@ SharedCollectionState {
         controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); QTest::qWait(10);
         require(text("stopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "main fault did not preserve stop/connection lock");
         controller->setProperty("motionFault", false); QTest::qWait(10);
+
+        // Dual-camera mode toggle, one-click preview switching (button + Tab) & cam2 settings
+        click(item("singleModeButton"));
+        click(item("openCameraButton")); // disconnect first
+        require(!controller->property("cameraOpened").toBool(), "disconnect before dual switch failed");
+        click(item("dualCameraModeButton"));
+        require(controller->property("dualCameraMode").toBool(), "dual camera mode toggle failed");
+        click(item("openCameraButton"));
+        require(controller->property("dualCameraReady").toBool() && !item("dualCameraModeButton")->isEnabled(),
+                "connected dual mode did not lock mode switch or become ready");
+        require(item("previewCam1Button")->isVisible() && item("previewCam2Button")->isVisible(),
+                "dual preview switcher buttons hidden");
+        require(text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible(),
+                "cam1 dual preview missing label or direction gizmo");
+        click(item("previewCam2Button"));
+        require(controller->property("activePreviewCamera").toInt() == 2 &&
+                text("frameMetadata").contains("相机 2") && !item("previewDirectionGizmo")->isVisible(),
+                "switching to cam2 did not hide cam1 direction gizmo or update label");
+        window->contentItem()->forceActiveFocus();
+        QTest::keyClick(window, Qt::Key_Tab); QTest::qWait(20);
+        require(controller->property("activePreviewCamera").toInt() == 1 &&
+                text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible(),
+                "Tab shortcut did not switch back to cam1");
+        click(item("settingsButton"));
+        require(!item("camera2IpInput")->isEnabled() && !item("camera2GainInput")->isEnabled(),
+                "connected camera2 settings were editable");
+        click(item("settingsTab1"));
+        click(item("undistortion2Button"));
+        require(controller->property("undistortion2Enabled").toBool(), "cam2 undistortion button did not toggle");
+        click(item("settingsBackButton"));
+        click(item("openCameraButton")); // disconnect and restore single mode for baseline checks
+        click(item("singleCameraModeButton"));
+        click(item("openCameraButton"));
+        click(item("ninePointModeButton"));
 
         for (const QSize size : {QSize(1280,850), QSize(1280,800), QSize(1024,740), QSize(760,600)}) {
             window->resize(size); QTest::qWait(100);

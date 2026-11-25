@@ -13,16 +13,20 @@ ApplicationWindow {
     property string captureMode: "single"
     readonly property bool ninePointMode: captureMode === "nine"
     readonly property bool configuredPointMode: captureMode === "configured"
+    readonly property bool dualMode: controller.dualCameraMode
+    readonly property int activeCam: dualMode ? controller.activePreviewCamera : 1
     property var configuredPoints: ({count: 0, error: ""})
     property bool gridAnglesValid: false
     property bool poseEditorOpen: false
     readonly property bool busy: controller.collectionBusy || controller.manualMoveActive || controller.jogActive || controller.motionFault
-    readonly property bool ready: controller.cameraOpened && controller.previewActive && !busy
+    readonly property bool ready: dualMode ? controller.dualCameraReady && !busy
+                                          : controller.cameraOpened && controller.previewActive && !busy
     readonly property bool compact: width < 1100 || height < (ninePointMode ? 840 : 740) || teach.targetDraft
     readonly property bool tcpReady: controller.robotConnected && controller.selectedTcp !== ""
     readonly property bool gridOffsetValid: offsetX.acceptableInput && offsetY.acceptableInput && Number(offsetX.text) >= 0.1 && Number(offsetY.text) >= 0.1 && Math.sqrt(Math.pow(Number(offsetX.text), 2) + Math.pow(Number(offsetY.text), 2)) <= 50
     readonly property bool editing: activeFocusItem !== null && (activeFocusItem.cursorPosition !== undefined || activeFocusItem.hasOwnProperty("currentIndex"))
     readonly property bool shortcutReady: page === "main" && ready && captureMode === "single" && !editing && !poseEditorOpen && !teach.targetDraft && !teach.jogHeld && !tcpSelector.activeFocus && !tcpSelector.popup.visible
+    readonly property bool switchShortcutReady: page === "main" && dualMode && !editing && !poseEditorOpen && !teach.targetDraft && !teach.jogHeld && !tcpSelector.activeFocus && !tcpSelector.popup.visible
     property string frameMetadata: ""
     property bool hasFrame: false
     property int seenCount: controller.savedImageCount
@@ -62,6 +66,16 @@ ApplicationWindow {
         value: Qt.size(Math.max(1, Math.round(cameraImage.width * root.screen.devicePixelRatio)),
                        Math.max(1, Math.round(cameraImage.height * root.screen.devicePixelRatio)))
     }
+    function updateFrameMetadataText() {
+        const cam = root.dualMode ? root.controller.activePreviewCamera : 1
+        if (!root.dualMode) {
+            root.frameMetadata = root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
+        } else if (cam === 2) {
+            root.frameMetadata = "相机 2 · " + root.controller.camera2Model + " · " + root.controller.camera2ActualWidth + " × " + root.controller.camera2ActualHeight + " · " + root.controller.camera2ActualExposureUs + " μs" + (root.controller.undistortion2Enabled ? " · 去畸变" : "")
+        } else {
+            root.frameMetadata = "相机 1 · " + root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
+        }
+    }
     onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = "" }
     onClosing: function(event) {
         teach.stopJog()
@@ -73,14 +87,35 @@ ApplicationWindow {
     Shortcut { sequence: "Space"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
     Shortcut { sequence: "S"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
     Shortcut { sequence: "Ctrl+S"; autoRepeat: false; enabled: root.shortcutReady; onActivated: root.takePhoto() }
+    Shortcut { sequence: "Tab"; autoRepeat: false; enabled: root.switchShortcutReady; onActivated: root.controller.togglePreviewCamera() }
     Connections {
         target: root.controller
-        function onCollectionChanged() { root.syncHistory() }
+        function onCollectionChanged() {
+            root.syncHistory()
+            if (root.hasFrame) root.updateFrameMetadataText()
+        }
         function onFrameUpdated() {
             if (root.page !== "main") return
             cameraImage.source = "image://camera/current#" + Date.now()
             root.hasFrame = true
-            root.frameMetadata = root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
+            root.updateFrameMetadataText()
+        }
+        function onFrameCleared() {
+            root.hasFrame = false
+            root.frameMetadata = ""
+        }
+        function onCameraOpenedChanged() {
+            if (!root.controller.cameraOpened && !root.controller.camera2Opened) {
+                root.hasFrame = false
+                root.frameMetadata = ""
+            }
+        }
+        function onDualCameraModeChanged() {
+            root.hasFrame = false
+            root.frameMetadata = ""
+        }
+        function onActivePreviewCameraChanged() {
+            if (root.hasFrame) root.updateFrameMetadataText()
         }
         function onStatusMessageChanged() {
             if (root.poseEditorOpen && root.controller.statusMessage.indexOf("TCP 坐标已保存：") === 0) poseDialog.close()
@@ -103,9 +138,36 @@ ApplicationWindow {
                         color: Qt.rgba(tone.r,tone.g,tone.b,0.12); border.color: Qt.rgba(tone.r,tone.g,tone.b,0.35)
                         HmiText { objectName: "globalStatus"; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; text: root.controller.statusMessage; color: parent.tone; elide: Text.ElideRight; wrapMode: Text.NoWrap; verticalAlignment: Text.AlignVCenter }
                     }
+                    RowLayout {
+                        spacing: 4
+                        CollectButton {
+                            objectName: "singleCameraModeButton"; small: true; text: "单相机"
+                            selected: !root.dualMode
+                            enabled: !root.interactionLocked && !root.controller.cameraOpened && !root.controller.camera2Opened
+                            onClicked: root.controller.dualCameraMode = false
+                        }
+                        CollectButton {
+                            objectName: "dualCameraModeButton"; small: true; text: "双相机"
+                            selected: root.dualMode
+                            enabled: !root.interactionLocked && !root.controller.cameraOpened && !root.controller.camera2Opened
+                            onClicked: root.controller.dualCameraMode = true
+                        }
+                    }
                     CollectButton {
-                        objectName: "openCameraButton"; small: true; text: root.controller.cameraOpened ? "断开相机" : "连接相机"; enabled: !root.interactionLocked
-                        onClicked: { if (root.controller.cameraOpened) root.controller.closeCamera(); else { root.controller.openCamera(); if (root.controller.cameraOpened) root.controller.startPreview() } }
+                        objectName: "openCameraButton"; small: true
+                        text: (root.controller.cameraOpened || root.controller.camera2Opened) ? "断开相机" : "连接相机"
+                        enabled: !root.interactionLocked
+                        onClicked: {
+                            if (root.controller.cameraOpened || root.controller.camera2Opened) {
+                                root.controller.closeCamera()
+                            } else {
+                                root.controller.openCamera()
+                                const linksReady = root.dualMode
+                                    ? root.controller.cameraOpened && root.controller.camera2Opened
+                                    : root.controller.cameraOpened
+                                if (linksReady) root.controller.startPreview()
+                            }
+                        }
                     }
                     CollectButton { objectName: "connectRobotButton"; small: true; text: root.controller.robotConnected ? "断开机器人" : "连接机器人"; enabled: !root.interactionLocked; onClicked: root.controller.robotConnected ? root.controller.disconnectRobot() : root.controller.connectRobot() }
                     HmiText { visible: root.width >= 1100; text: appGitCommit; font.family: Theme.mono; font.pixelSize: Theme.meta }
@@ -178,14 +240,19 @@ ApplicationWindow {
                                 id: saveConfiguredRaw; objectName: "saveConfiguredRaw"
                                 Layout.fillWidth: true; Layout.minimumWidth: 0; Layout.preferredHeight: root.compact ? 28 : 34
                                 text: "同时保存原始融合图（RAW）"
-                                enabled: !root.interactionLocked && root.controller.undistortionEnabled
+                                enabled: !root.interactionLocked && (root.dualMode
+                                    ? (root.controller.undistortionEnabled || root.controller.undistortion2Enabled)
+                                    : root.controller.undistortionEnabled)
                                 font.pixelSize: Theme.meta; palette.windowText: Theme.ink
                             }
                         }
                         CollectButton {
                             objectName: root.busy ? "stopButton" : root.ninePointMode ? "ninePointButton" : root.configuredPointMode ? "configuredCaptureButton" : "captureButton"
                             Layout.fillWidth: true; Layout.preferredHeight: root.compact ? 44 : 56
-                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集" : root.ninePointMode ? "开始九点采集" : root.configuredPointMode ? "开始按配置采图" : "采集图片"
+                            text: root.busy ? root.controller.motionFault ? "重试停止" : "停止采集"
+                                  : root.ninePointMode ? (root.dualMode ? "开始双相机九点" : "开始九点采集")
+                                  : root.configuredPointMode ? (root.dualMode ? "开始双相机按配置" : "开始按配置采图")
+                                  : (root.dualMode ? "采集双相机图片" : "采集图片")
                             primary: !root.interactionLocked; danger: root.busy
                             enabled: root.busy || root.ready && !teach.jogHeld &&
                                      (root.captureMode === "single" || root.controller.robotConnected &&
@@ -193,7 +260,7 @@ ApplicationWindow {
                             onClicked: {
                                 if (root.busy) root.controller.cancelCollectionOperation()
                                 else if (root.ninePointMode) root.controller.captureNinePoints(Number(offsetX.text), Number(offsetY.text), root.ninePointAngles())
-                                else if (root.configuredPointMode) root.controller.captureConfiguredPoints(saveConfiguredRaw.checked && root.controller.undistortionEnabled)
+                                else if (root.configuredPointMode) root.controller.captureConfiguredPoints(saveConfiguredRaw.checked && (root.dualMode ? (root.controller.undistortionEnabled || root.controller.undistortion2Enabled) : root.controller.undistortionEnabled))
                                 else root.takePhoto()
                             }
                         }
@@ -212,7 +279,12 @@ ApplicationWindow {
                             HmiText { visible: !root.compact; text: "运行信息"; font.pixelSize: Theme.meta }
                             HmiText { objectName: "taskSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta; text: "当前任务  " + (root.controller.motionFault ? "等待停止确认" : root.controller.jogActive ? "长按微调" : root.controller.manualMoveActive ? "目标移动" : root.controller.collectionBusy ? "采集中" : "待机") }
                             HmiText { objectName: "ninePointProgress"; Layout.fillWidth: true; font.pixelSize: Theme.meta; maximumLineCount: root.compact ? 1 : 2; elide: Text.ElideRight; text: "采集进度  " + (root.controller.ninePointProgress || "—") }
-                            HmiText { objectName: "savedCountSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta; text: "已保存  " + root.controller.savedImageCount + " 张   ·   " + (root.controller.lastCaptureTime || "—") }
+                            HmiText {
+                                objectName: "savedCountSummary"; Layout.fillWidth: true; font.pixelSize: Theme.meta
+                                text: root.dualMode && root.controller.savedGroupCount > 0
+                                    ? "已保存  " + root.controller.savedGroupCount + " 组（" + root.controller.savedImageCount + " 张）   ·   " + (root.controller.lastCaptureTime || "—")
+                                    : "已保存  " + root.controller.savedImageCount + " 张   ·   " + (root.controller.lastCaptureTime || "—")
+                            }
                             HmiText { objectName: "latestResult"; Layout.fillWidth: true; font.pixelSize: Theme.meta; maximumLineCount: root.compact ? 2 : 3; elide: Text.ElideRight; text: !teach.poseReady || root.busy || teach.targetDraft && !teach.parsed.valid ? teach.reason : teach.feedback || teach.reason; color: root.controller.motionFault ? Theme.danger : teach.targetDraft ? Theme.warning : Theme.ink2 }
                             HmiText {
                                 objectName: "actualPoseWhileEditing"; visible: teach.targetDraft; Layout.fillWidth: true; font.pixelSize: Theme.meta; font.family: Theme.mono
@@ -235,6 +307,33 @@ ApplicationWindow {
                                 HmiText { text: "Y+"; font.family: Theme.mono; font.pixelSize: Theme.meta }
                                 DirectionSelector { objectName: "previewDirectionY"; direction: root.controller.previewPositiveY; perpendicularTo: root.controller.previewPositiveX; restrictPerpendicular: true; onChosen: root.controller.setPreviewDirections(root.controller.previewPositiveX, value) }
                                 Item { Layout.fillWidth: true }
+                                RowLayout {
+                                    visible: root.dualMode; spacing: 4
+                                    CollectButton {
+                                        objectName: "previewCam1Button"; small: true
+                                        text: "相机 1"
+                                        selected: root.activeCam === 1
+                                        leftPadding: 18; rightPadding: 10
+                                        onClicked: root.controller.activePreviewCamera = 1
+                                        Rectangle {
+                                            anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter
+                                            width: 7; height: 7; radius: 3.5
+                                            color: !root.controller.cameraOpened ? Theme.ink3 : root.controller.camera1Healthy ? Theme.ok : Theme.danger
+                                        }
+                                    }
+                                    CollectButton {
+                                        objectName: "previewCam2Button"; small: true
+                                        text: "相机 2"
+                                        selected: root.activeCam === 2
+                                        leftPadding: 18; rightPadding: 10
+                                        onClicked: root.controller.activePreviewCamera = 2
+                                        Rectangle {
+                                            anchors.left: parent.left; anchors.leftMargin: 6; anchors.verticalCenter: parent.verticalCenter
+                                            width: 7; height: 7; radius: 3.5
+                                            color: !root.controller.camera2Opened ? Theme.ink3 : root.controller.camera2Healthy ? Theme.ok : Theme.danger
+                                        }
+                                    }
+                                }
                                 HmiText { visible: root.width >= 1024; text: "相机预览"; color: Theme.ink; font.pixelSize: Theme.body }
                                 HmiText { visible: root.width >= 1100; text: "标记仅预览"; font.pixelSize: Theme.meta }
                             }
@@ -242,20 +341,32 @@ ApplicationWindow {
                                 objectName: "captureImageArea"; Layout.fillWidth: true; Layout.fillHeight: true; color: Theme.viewfinder; clip: true
                                 property int seenCount: root.seenCount
                                 Image { id: cameraImage; anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false; asynchronous: false; visible: root.hasFrame }
-                                Rectangle { anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: Theme.hairline }
-                                Rectangle { anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: Theme.hairline }
-                                Rectangle { anchors.centerIn: parent; width: 120; height: 3; color: Theme.danger; opacity: 0.8 }
-                                Rectangle { anchors.centerIn: parent; width: 3; height: 120; color: Theme.danger; opacity: 0.8 }
-                                HmiText { visible: !root.hasFrame; anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 16; text: "等待画面 · 点击「连接相机」"; font.pixelSize: Theme.meta }
+                                Rectangle { visible: !root.dualMode || root.activeCam === 1; anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: Theme.hairline }
+                                Rectangle { visible: !root.dualMode || root.activeCam === 1; anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: Theme.hairline }
+                                Rectangle { visible: !root.dualMode || root.activeCam === 1; anchors.centerIn: parent; width: 120; height: 3; color: Theme.danger; opacity: 0.8 }
+                                Rectangle { visible: !root.dualMode || root.activeCam === 1; anchors.centerIn: parent; width: 3; height: 120; color: Theme.danger; opacity: 0.8 }
+                                HmiText {
+                                    visible: !root.hasFrame
+                                    anchors.horizontalCenter: parent.horizontalCenter; anchors.bottom: parent.bottom; anchors.bottomMargin: 16
+                                    width: parent.width - 32; horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+                                    text: !root.dualMode ? "等待画面 · 点击「连接相机」"
+                                          : root.activeCam === 2 ? root.controller.camera2StatusMessage
+                                          : (root.controller.cameraOpened && root.controller.previewActive && !root.controller.camera1Healthy
+                                              ? "相机 1 等待画面或取帧异常，请检查连接"
+                                              : "等待相机 1 画面 · 点击「连接相机」")
+                                    font.pixelSize: Theme.meta
+                                }
                                 Rectangle {
                                     visible: root.hasFrame; x: 12; y: 12; height: 28; width: Math.min(parent.width - 24, frameLabel.implicitWidth + 24); radius: 14; color: Theme.chip
+                                    border.width: root.dualMode ? 1 : 0
+                                    border.color: root.activeCam === 2 ? Theme.warning : Theme.accent
                                     HmiText { id: frameLabel; objectName: "frameMetadata"; anchors.fill: parent; anchors.leftMargin: 12; anchors.rightMargin: 12; text: root.frameMetadata; font.pixelSize: Theme.meta; font.family: Theme.mono; verticalAlignment: Text.AlignVCenter; elide: Text.ElideRight; wrapMode: Text.NoWrap }
                                 }
                                 DirectionGizmo {
                                     objectName: "previewDirectionGizmo"
                                     x: (cameraImage.width - cameraImage.paintedWidth) / 2 + 8
                                     y: (cameraImage.height + cameraImage.paintedHeight) / 2 - height - 8
-                                    visible: root.hasFrame && root.controller.previewPositiveX !== "none"
+                                    visible: (!root.dualMode || root.activeCam === 1) && root.hasFrame && root.controller.previewPositiveX !== "none"
                                     directionX: root.controller.previewPositiveX; directionY: root.controller.previewPositiveY
                                     width: Math.max(0, Math.min(112, cameraImage.paintedWidth - 16, cameraImage.paintedHeight - 16)); height: width
                                 }

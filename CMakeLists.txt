@@ -122,6 +122,7 @@ if(NOT EXISTS "${CMAKE_CURRENT_BINARY_DIR}/config.yaml")
 endif()
 set(CAITU_CAMERA_SOURCES
     ${CMAKE_CURRENT_SOURCE_DIR}/cameras/MVSCamera.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_sdk_lifecycle.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_device_selector.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/cameras/mvs_error.cpp
 )

@@ -327,6 +327,47 @@ int test_config_resolver() {
     TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", defaultExposures, err),
                "missing_config_created_with_exposures");
 
+    writeFile(
+        "%YAML:1.0\n---\n"
+        "cam2_ip: \"10.0.0.88\"\n"
+        "cam2_sn: \"SN-CAM2\"\n"
+        "cam2_width: 2000\n"
+        "cam2_height: 1500\n"
+        "camera2_exposure_us: 9000\n"
+        "camera2_gain: 2\n"
+        "camera2_fusion_exposures_us: [3000, 6000, 12000]\n");
+    {
+        cv::FileStorage storage(kCfgPath, cv::FileStorage::READ);
+        config_resolver::ResolvedCamera2Config defaults;
+        const auto cam2 = config_resolver::resolveCamera2Config(storage, defaults);
+        TEST_CHECK(cam2.cam_ip == "10.0.0.88" && cam2.cam_sn == "SN-CAM2" &&
+                       cam2.cam_width == 2000 && cam2.cam_height == 1500 &&
+                       cam2.exposure_us == 9000 && cam2.gain == 2 &&
+                       cam2.fusion_exposures_us == std::vector<int>({3000, 6000, 12000}) &&
+                       cam2.warnings.empty(),
+                   "camera2_flat_resolve");
+    }
+
+    writeFile("%YAML:1.0\n---\ncam2_ip: \"\"\ncam2_sn: \"\"\n");
+    {
+        cv::FileStorage storage(kCfgPath, cv::FileStorage::READ);
+        const auto cam2 = config_resolver::resolveCamera2Config(storage);
+        TEST_CHECK(cam2.cam_ip.empty() && cam2.cam_sn.empty() && cam2.warnings.empty(),
+                   "camera2_empty_identity_allowed");
+    }
+
+    writeFile("%YAML:1.0\n---\ncam2_width: -10\ncamera2_gain: -1\ncamera2_fusion_exposures_us: [1,1,2]\n");
+    {
+        cv::FileStorage storage(kCfgPath, cv::FileStorage::READ);
+        config_resolver::ResolvedCamera2Config defaults;
+        const auto cam2 = config_resolver::resolveCamera2Config(storage, defaults);
+        TEST_CHECK(cam2.cam_width == defaults.cam_width &&
+                       cam2.gain == defaults.gain &&
+                       cam2.fusion_exposures_us == defaults.fusion_exposures_us &&
+                       cam2.warnings.size() == 3,
+                   "camera2_invalid_fields_fallback");
+    }
+
     // ---- 非法/缺失文件 ----
     TEST_CHECK(!resolveCameraConfigFile(
                    "nonexistent_config.yaml", makeDefaults(), out, err),

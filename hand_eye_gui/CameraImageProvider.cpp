@@ -23,6 +23,12 @@ void CameraImageProvider::setImage(const QImage& img)
     m_image = img;
 }
 
+void CameraImageProvider::clearImage()
+{
+    QMutexLocker lock(&m_mutex);
+    setPlaceholder(640, 480);
+}
+
 void CameraImageProvider::setPlaceholder(int width, int height)
 {
     QImage placeholder(width, height, QImage::Format_RGB888);
