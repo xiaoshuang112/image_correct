@@ -21,6 +21,9 @@ public:
     /// 共享持有已拥有像素内存的图像；借用外部缓冲区的 QImage 须先 copy()。
     void setImage(const QImage& img);
 
+    /// 清除当前画面为占位背景（断开、切路或故障时使用）
+    void clearImage();
+
     /// 设置一个占位图像（"等待视频流..."）
     void setPlaceholder(int width, int height);
 

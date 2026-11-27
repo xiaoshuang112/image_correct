@@ -34,6 +34,23 @@ struct ResolvedCameraConfig : CameraConfig {
 ResolvedCameraConfig resolveCameraConfig(const cv::FileStorage& fs,
                                         const CameraConfig& defaults);
 
+// Camera 2 uses independent top-level keys only (no camera_profile fallback).
+// Empty cam2_ip / cam2_sn means "not configured yet" and is a valid startup state.
+struct ResolvedCamera2Config {
+    std::string cam_ip;
+    std::string cam_sn;
+    int cam_width = 4024;
+    int cam_height = 3036;
+    int exposure_us = 12000;
+    int gain = 3;
+    std::vector<int> fusion_exposures_us{5000, 8500, 14500, 25000};
+    std::vector<std::string> sources;
+    std::vector<std::string> warnings;
+};
+
+ResolvedCamera2Config resolveCamera2Config(const cv::FileStorage& fs,
+                                           const ResolvedCamera2Config& defaults = {});
+
 struct CollectionConfig {
     std::string robot_ip = "192.168.66.14";
     int robot_speed_mm_s = collection::defaultRobotSpeedMmS;

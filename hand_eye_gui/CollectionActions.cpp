@@ -99,52 +99,81 @@ std::array<double, 6> readFlangePose(RobotHandle handle) {
 
 void CollectionController::initializeCollection() {
     m_outputDirectory = QDir::homePath() + "/Pictures/caitu-collect";
-    m_handEyePath = QString::fromStdString(m_paramPath) + "hand_eye_result.yaml";
+    const QString paramDir = QString::fromStdString(m_paramPath);
+    const QString cam1Path = paramDir + "cam1_hand_eye_result.yaml";
+    const QString legacyPath = paramDir + "hand_eye_result.yaml";
+    m_handEyePath = QFileInfo::exists(cam1Path) ? cam1Path : legacyPath;
+    m_handEyePath2 = paramDir + "cam2_hand_eye_result.yaml";
     loadCollectionUndistortion();
 }
 
 void CollectionController::loadCollectionUndistortion() {
     m_undistortionCalibration.reset();
     m_undistortionMaps.reset();
-    try {
-        if (!QFileInfo::exists(m_handEyePath))
-            throw std::runtime_error("未找到手眼文件，去畸变不可用");
-        auto calibration = std::make_shared<collection::UndistortionCalibration>(
-            collection::UndistortionCalibration::load(m_handEyePath.toStdString()));
-        m_undistortionStatus = calibration->calibratedSize.empty()
-            ? "去畸变参数已加载；文件未记录标定分辨率，请确认与当前相机一致"
-            : "去畸变参数已加载，标定分辨率 " + QString::number(calibration->calibratedSize.width) +
-                "×" + QString::number(calibration->calibratedSize.height);
-        m_undistortionCalibration = calibration;
-        APP_LOG_EVENT_INFO("collection", "undistortion_load", "success",
-            {{"path", m_handEyePath}, {"message", m_undistortionStatus}});
-    } catch (const std::exception& error) {
-        m_undistortionStatus = QString::fromUtf8(error.what());
-        APP_LOG_EVENT_WARNING("collection", "undistortion_load", "unavailable",
-            {{"path", m_handEyePath}, {"message", m_undistortionStatus}});
-    }
+    m_undistortionCalibration2.reset();
+    m_undistortionMaps2.reset();
+
+    auto loadOne = [](const QString& path, const QString& prefix, const QString& missingMessage,
+                      std::shared_ptr<const collection::UndistortionCalibration>& target,
+                      QString& statusOut) {
+        try {
+            if (!QFileInfo::exists(path))
+                throw std::runtime_error(missingMessage.toStdString());
+            auto calibration = std::make_shared<collection::UndistortionCalibration>(
+                collection::UndistortionCalibration::load(path.toStdString()));
+            statusOut = calibration->calibratedSize.empty()
+                ? prefix + "去畸变参数已加载；文件未记录标定分辨率，请确认与当前相机一致"
+                : prefix + "去畸变参数已加载，标定分辨率 " + QString::number(calibration->calibratedSize.width) +
+                    "×" + QString::number(calibration->calibratedSize.height);
+            target = calibration;
+            APP_LOG_EVENT_INFO("collection", "undistortion_load", "success",
+                {{"path", path}, {"message", statusOut}});
+        } catch (const std::exception& error) {
+            statusOut = QString::fromUtf8(error.what());
+            APP_LOG_EVENT_WARNING("collection", "undistortion_load", "unavailable",
+                {{"path", path}, {"message", statusOut}});
+        }
+    };
+
+    loadOne(m_handEyePath, QString{}, "未找到手眼文件，去畸变不可用",
+            m_undistortionCalibration, m_undistortionStatus);
+    loadOne(m_handEyePath2, "相机 2 ", "未找到相机 2 手眼文件（param/cam2_hand_eye_result.yaml），去畸变不可用",
+            m_undistortionCalibration2, m_undistortion2Status);
     emit collectionChanged();
 }
 
-void CollectionController::toggleUndistortion() {
+void CollectionController::toggleCameraUndistortion(int cameraIndex) {
     if (m_collectionBusy) return;
+    const bool isCam2 = (cameraIndex == 2);
+    auto& maps = isCam2 ? m_undistortionMaps2 : m_undistortionMaps;
+    const auto& calibration = isCam2 ? m_undistortionCalibration2 : m_undistortionCalibration;
+    const QString& statusText = isCam2 ? m_undistortion2Status : m_undistortionStatus;
+    const bool opened = isCam2 ? m_camera2Opened : m_cameraOpened;
+    const int actualW = isCam2 ? m_cam2ActualWidth : m_camActualWidth;
+    const int actualH = isCam2 ? m_cam2ActualHeight : m_camActualHeight;
+    const QString& serial = isCam2 ? m_cam2DeviceSerial : m_camDeviceSerial;
+    const QString label = isCam2 ? QStringLiteral("相机 2 ") : QStringLiteral("相机 1 ");
+
     ++m_previewGeneration;
-    if (m_undistortionMaps) {
-        m_undistortionMaps.reset();
+    if (maps) {
+        maps.reset();
         emit collectionChanged();
-        setStatus("去畸变已关闭，预览和拍照恢复原始图像");
+        setStatus((m_dualCameraMode ? label : QString{}) + "去畸变已关闭，预览和拍照恢复原始图像");
         return;
     }
-    if (!m_undistortionCalibration) { setStatus(m_undistortionStatus); return; }
-    if (!m_cameraOpened) { setStatus("请先连接相机再启用去畸变"); return; }
+    if (!calibration) { setStatus(statusText); return; }
+    if (!opened) {
+        setStatus(isCam2 ? "请先连接相机 2 再启用去畸变" : "请先连接相机再启用去畸变");
+        return;
+    }
     try {
-        m_undistortionMaps = std::make_shared<collection::UndistortionMaps>(
-            *m_undistortionCalibration, cv::Size(m_camActualWidth, m_camActualHeight),
-            m_camDeviceSerial.toStdString());
-        const auto& geometry = m_undistortionMaps->geometry();
+        maps = std::make_shared<collection::UndistortionMaps>(
+            *calibration, cv::Size(actualW, actualH), serial.toStdString());
+        const auto& geometry = maps->geometry();
         const cv::Mat& output = geometry.outputCameraMatrix;
         APP_LOG_EVENT_INFO("collection", "undistortion_map", "ready",
-            {{"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
+            {{"camera", QString::number(cameraIndex)},
+             {"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
              {"alpha", QString::number(geometry.alpha, 'f', 1)},
              {"input", QString("%1x%2").arg(geometry.inputSize.width).arg(geometry.inputSize.height)},
              {"output", QString("%1x%2").arg(geometry.outputSize.width).arg(geometry.outputSize.height)},
@@ -158,10 +187,18 @@ void CollectionController::toggleUndistortion() {
              {"cx", QString::number(output.at<double>(0, 2), 'g', 17)},
              {"cy", QString::number(output.at<double>(1, 2), 'g', 17)}});
         emit collectionChanged();
-        setStatus("去畸变已启用，后续预览和拍照使用校正图像，并保留原始融合图");
+        setStatus((m_dualCameraMode ? label : QString{}) + "去畸变已启用，后续预览和拍照使用校正图像，并保留原始融合图");
     } catch (const std::exception& error) {
-        setStatus("启用去畸变失败：" + QString::fromUtf8(error.what()));
+        setStatus((m_dualCameraMode ? label : QString{}) + "启用去畸变失败：" + QString::fromUtf8(error.what()));
     }
+}
+
+void CollectionController::toggleUndistortion() {
+    toggleCameraUndistortion(1);
+}
+
+void CollectionController::toggleUndistortion2() {
+    toggleCameraUndistortion(2);
 }
 
 void CollectionController::openCollectionFolder() {
@@ -208,7 +245,8 @@ bool CollectionController::persistNinePointPlan(double xMm, double yMm,
     return true;
 }
 
-void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath) {
+void CollectionController::finishCollectionOperation(const QString& message, const QString& savedPath,
+                                                   const QString& savedPath2) {
     if (!m_manualMoveProgress.isEmpty()) m_manualMoveProgress = message;
     m_manualMoveActive = false;
     if (m_jogLease) m_jogLease->release();
@@ -218,11 +256,21 @@ void CollectionController::finishCollectionOperation(const QString& message, con
     m_stopRetrying = false;
     m_previewHeld = false;
     m_exposureCaptureActive = false;
-    if (!savedPath.isEmpty()) recordCapture(savedPath);
+    if (!savedPath.isEmpty() || !savedPath2.isEmpty()) recordCapture(savedPath, savedPath2);
     updatePreviewTimer();
-    QString status = savedPath.isEmpty() ? message : QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
-    if (!savedPath.isEmpty() && message != "多曝光融合完成，图片已保存")
-        status += "；" + message;
+    QString status;
+    if (savedPath.isEmpty() && savedPath2.isEmpty()) {
+        status = message;
+    } else if (!savedPath.isEmpty() && !savedPath2.isEmpty()) {
+        status = QString("已保存第 %1 组双相机图片（共 %2 张）").arg(m_savedGroupCount).arg(m_savedImageCount);
+        if (message != "双相机多曝光融合完成，图片已保存" &&
+            message != "双相机多曝光融合及去畸变完成，图片已保存")
+            status += "；" + message;
+    } else {
+        status = QString("已保存第 %1 张融合图片").arg(m_savedImageCount);
+        if (message != "多曝光融合完成，图片已保存")
+            status += "；" + message;
+    }
     if (m_motionFault) {
         status += "；未确认机器人停止，操作已锁定，请点击“重试停止”";
         m_ninePointProgress = status;
@@ -231,7 +279,7 @@ void CollectionController::finishCollectionOperation(const QString& message, con
     emit collectionChanged();
     setStatus(status);
     APP_LOG_EVENT_INFO("collection", "operation", m_motionFault ? "motion_locked" : "finished",
-        {{"message", status}, {"image", savedPath}});
+        {{"message", status}, {"image", savedPath}, {"image2", savedPath2}});
 }
 
 void CollectionController::confirmMotionStopped() {
@@ -291,10 +339,13 @@ void CollectionController::cancelCollectionOperation() {
     }
 }
 
-void CollectionController::recordCapture(const QString& path) {
-    m_lastCapturePath = path;
+void CollectionController::recordCapture(const QString& path, const QString& path2) {
+    if (!path.isEmpty()) m_lastCapturePath = path;
+    if (!path2.isEmpty()) m_lastCapturePath2 = path2;
     m_lastCaptureTime = QDateTime::currentDateTime().toString("HH:mm:ss");
-    ++m_savedImageCount;
+    if (!path.isEmpty()) ++m_savedImageCount;
+    if (!path2.isEmpty()) ++m_savedImageCount;
+    if (!path.isEmpty() && !path2.isEmpty()) ++m_savedGroupCount;
     emit collectionChanged();
 }
 
@@ -327,14 +378,21 @@ QVariantList CollectionController::ninePointYawOffsets() const {
 void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm,
                                         const QVariantList& yawValues, bool saveOriginal) {
     if (m_collectionBusy) return;
-    if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
+    const bool dual = m_dualCameraMode;
+    if (dual) {
+        if (!m_dualCameraReady) {
+            setStatus("请连接双相机并等待两路就绪后拍照");
+            return;
+        }
+    } else if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
         setStatus("请打开相机并等待预览画面后拍照");
         return;
     }
     const bool ninePoints = mode == CaptureMode::NinePoints;
     const bool configured = mode == CaptureMode::Configured;
     const bool automatic = mode != CaptureMode::Single;
-    const QString task = configured ? "按配置采图" : "九点采图";
+    const QString task = configured ? (dual ? "双相机按配置采图" : "按配置采图")
+                                    : (dual ? "双相机九点采图" : "九点采图");
     if (automatic && !m_robotConnected) {
         setStatus(task + "需要连接机器人");
         return;
@@ -372,10 +430,25 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
         setStatus("每次拍照至少需要 2 个、最多 5 个曝光值");
         return;
     }
+    std::vector<int> exposures2;
+    if (dual) {
+        const auto error2 = collection::parseExposureList(m_exposure2List, exposures2);
+        if (error2 == collection::ExposureListError::InvalidValue) {
+            setStatus("相机 2 曝光列表应包含 2～5 个不同的正整数，单位 μs，最大 1000000");
+            return;
+        }
+        if (error2 == collection::ExposureListError::InvalidCount) {
+            setStatus("相机 2 每次拍照至少需要 2 个、最多 5 个曝光值");
+            return;
+        }
+    }
     const auto camera = m_camera;
+    const auto camera2 = m_camera2;
     const auto pendingPreview = m_previewFuture;
+    const auto pendingHealthProbe = m_healthProbeFuture;
     const int speed = m_robotSpeedMmS;
     const auto undistortion = m_undistortionMaps;
+    const auto undistortion2 = m_undistortionMaps2;
     const auto handle = m_robotHandle;
     const auto session = robotSession();
     std::function<std::array<double, 6>()> readPose;
@@ -385,21 +458,23 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
     beginCollectionOperation(false);
     const auto sampleTcp = tcpSamplingCallback(session);
     setStatus(automatic ? task + "：正在检查当前基准位及目标…"
-                        : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
+                        : dual ? QString("正在双路采集 %1/%2 个曝光并融合…").arg(exposures.size()).arg(exposures2.size())
+                               : QString("正在采集 %1 个曝光并融合…").arg(exposures.size()));
     try {
-        m_collectionThread = std::thread([this, camera, undistortion, handle, readPose, shutterTime,
-                                         output, exposures, ninePoints, automatic, configured, task, xMm, yMm, yawOffsets,
+        m_collectionThread = std::thread([this, camera, camera2, undistortion, undistortion2, handle, readPose, shutterTime,
+                                         output, exposures, exposures2, ninePoints, automatic, configured, dual, task, xMm, yMm, yawOffsets,
                                          angleToleranceDeg, offsets = std::move(offsets), saveOriginal,
-                                         session, sampleTcp, speed, pendingPreview] {
-            // Drain the one in-flight frame on this worker before using the camera for capture.
+                                         session, sampleTcp, speed, pendingPreview, pendingHealthProbe] {
+            // Drain any in-flight preview or health probe before using the cameras for capture.
             if (pendingPreview.valid()) pendingPreview.wait();
+            if (pendingHealthProbe.valid()) pendingHealthProbe.wait();
             std::unique_lock<std::mutex> robotLock;
             if (session) robotLock = session->acquire(m_cancelRequested);
             if (session && !robotLock.owns_lock()) {
                 QMetaObject::invokeMethod(this, [this] { finishCollectionOperation("操作已取消"); }, Qt::QueuedConnection);
                 return;
             }
-            QString message, path;
+            QString message, path, path2;
             int saved = 0;
             auto progress = [this, task](const QString& text) {
                 QMetaObject::invokeMethod(this, [this, text, task] {
@@ -415,10 +490,20 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
             if (automatic) m_robotStopUnconfirmed = true;
             try {
                 if (!automatic) {
-                    const auto result = collection::captureAndSave(*camera, output, shutterTime,
-                        exposures, undistortion, readPose, m_cancelRequested, gate);
-                    message = result.message;
-                    path = result.path;
+                    if (dual) {
+                        if (!camera2) throw std::runtime_error("相机 2 未连接");
+                        const auto result = collection::captureDualAndSave(
+                            *camera, *camera2, output, shutterTime, exposures, exposures2,
+                            undistortion, undistortion2, readPose, m_cancelRequested, gate);
+                        message = result.message;
+                        path = result.path1;
+                        path2 = result.path2;
+                    } else {
+                        const auto result = collection::captureAndSave(*camera, output, shutterTime,
+                            exposures, undistortion, readPose, m_cancelRequested, gate);
+                        message = result.message;
+                        path = result.path;
+                    }
                 } else {
                     if (ninePoints) {
                         QString configError;
@@ -426,6 +511,10 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
                             throw std::runtime_error(configError.toStdString());
                     }
                     collection::checkCaptureExposures(*camera, exposures);
+                    if (dual) {
+                        if (!camera2) throw std::runtime_error("相机 2 未连接");
+                        collection::checkCaptureExposures(*camera2, exposures2);
+                    }
                     const auto origin = collection::readStationaryFlange(handle);
                     std::vector<collection::FlangePose> targets;
                     std::vector<std::vector<collection::FlangePose>> route;
@@ -498,19 +587,45 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
                                 throw std::runtime_error("实际位姿偏离本次拍摄目标");
                             progress(pointProgress(point) + " · 正在采集及保存");
                             const auto shotTime = QDateTime::currentDateTime();
-                            const auto result = collection::captureAndSave(*camera, output, configured ? shutterTime : shotTime,
-                                exposures, undistortion, readPose, m_cancelRequested, gate,
-                                configured ? collection::CaptureNaming{fileLabels[point], saveOriginal} : collection::CaptureNaming{});
-                            if (!result.path.isEmpty()) {
-                                ++saved;
-                                QMetaObject::invokeMethod(this, [this, image = result.path] { recordCapture(image); }, Qt::QueuedConnection);
-                                APP_LOG_EVENT_INFO("collection", configured ? "configured_point_image" : "nine_point_image", "saved",
-                                    {{"index", QString::number(point + 1)}, {"point", names[point]},
-                                     {"euler_rz_offset_deg", QString::number(configured ? offsets[point].offset[5] : yawOffsets[point])},
-                                     {"shot_time", shotTime.toString(Qt::ISODateWithMs)},
-                                     {"image", result.path}, {"complete", result.complete ? "true" : "false"}});
+                            if (dual) {
+                                const QString label = configured ? fileLabels[point] : QString{};
+                                const auto result = collection::captureDualAndSave(
+                                    *camera, *camera2, output, configured ? shutterTime : shotTime,
+                                    exposures, exposures2, undistortion, undistortion2, readPose,
+                                    m_cancelRequested, gate,
+                                    configured ? collection::CaptureNaming{label, saveOriginal}
+                                               : collection::CaptureNaming{});
+                                if (!result.path1.isEmpty() && !result.path2.isEmpty()) {
+                                    ++saved;
+                                    QMetaObject::invokeMethod(this, [this, p1 = result.path1, p2 = result.path2] {
+                                        recordCapture(p1, p2);
+                                    }, Qt::QueuedConnection);
+                                    APP_LOG_EVENT_INFO("collection",
+                                        configured ? "configured_point_image" : "nine_point_image", "saved",
+                                        {{"index", QString::number(point + 1)}, {"point", names[point]},
+                                         {"dual", "true"},
+                                         {"euler_rz_offset_deg", QString::number(
+                                             configured ? offsets[point].offset[5] : yawOffsets[point])},
+                                         {"shot_time", shotTime.toString(Qt::ISODateWithMs)},
+                                         {"image", result.path1}, {"image2", result.path2},
+                                         {"complete", result.complete ? "true" : "false"}});
+                                }
+                                if (!result.complete) throw std::runtime_error(result.message.toStdString());
+                            } else {
+                                const auto result = collection::captureAndSave(*camera, output, configured ? shutterTime : shotTime,
+                                    exposures, undistortion, readPose, m_cancelRequested, gate,
+                                    configured ? collection::CaptureNaming{fileLabels[point], saveOriginal} : collection::CaptureNaming{});
+                                if (!result.path.isEmpty()) {
+                                    ++saved;
+                                    QMetaObject::invokeMethod(this, [this, image = result.path] { recordCapture(image); }, Qt::QueuedConnection);
+                                    APP_LOG_EVENT_INFO("collection", configured ? "configured_point_image" : "nine_point_image", "saved",
+                                        {{"index", QString::number(point + 1)}, {"point", names[point]},
+                                         {"euler_rz_offset_deg", QString::number(configured ? offsets[point].offset[5] : yawOffsets[point])},
+                                         {"shot_time", shotTime.toString(Qt::ISODateWithMs)},
+                                         {"image", result.path}, {"complete", result.complete ? "true" : "false"}});
+                                }
+                                if (!result.complete) throw std::runtime_error(result.message.toStdString());
                             }
-                            if (!result.complete) throw std::runtime_error(result.message.toStdString());
                             if (!collection::flangeAtTarget(collection::readStationaryFlange(handle), targets[point], arrivalAngle))
                                 throw std::runtime_error("采图后检测到机器人位姿变化，已停止后续动作");
                         }, m_cancelRequested);
@@ -524,9 +639,9 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
                 try { confirmMotionStopped(); }
                 catch (const std::exception& error) { message += "；" + QString::fromUtf8(error.what()); }
             }
-            QMetaObject::invokeMethod(this, [this, message, path, automatic] {
+            QMetaObject::invokeMethod(this, [this, message, path, path2, automatic] {
                 if (automatic) m_ninePointProgress = message;
-                finishCollectionOperation(message, path);
+                finishCollectionOperation(message, path, path2);
             }, Qt::QueuedConnection);
         });
     } catch (const std::exception& error) {

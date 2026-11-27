@@ -169,6 +169,120 @@ int main(int argc, char** argv) {
         require(!gatedError.complete && gatedError.path.isEmpty() && stage == 2 && gatedError.message.contains("exposure failed"),
                 "exposure exception left preview suspended");
         camera.acquiring = {};
+
+        // Dual-camera parallel capture & paired saving under <date>/cam1 and <date>/cam2
+        Camera cam1, cam2;
+        std::atomic<int> inFlight{0};
+        std::atomic<bool> overlapped{false};
+        cam1.acquiring = [&] {
+            ++inFlight;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (inFlight.load() < 2 && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            if (inFlight.load() >= 2) overlapped = true;
+            --inFlight;
+        };
+        cam2.acquiring = [&] {
+            ++inFlight;
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+            while (!overlapped.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(2));
+            --inFlight;
+        };
+        collection::UndistortionCalibration cal2;
+        cal2.cameraMatrix = (cv::Mat_<double>(3, 3) << 28, 0, 16, 0, 28, 16, 0, 0, 1);
+        cal2.distortion = cv::Mat::zeros(1, 5, CV_64F);
+        cal2.calibratedSize = {32, 32};
+        const auto maps2 = std::make_shared<collection::UndistortionMaps>(cal2, cv::Size(32, 32), "");
+
+        const QString dualRoot = temp.filePath("dual-out");
+        const auto dualBoth = collection::captureDualAndSave(
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            maps, maps2, readPose, cancelled, {}, {"P01", true});
+        const QDir dualDay(QDir(dualRoot).filePath("2026-11-03"));
+        const QString expectedCam1 = dualDay.filePath("cam1/undistorted/capture_20261103_235959_999_P01_fused_undistorted.png");
+        const QString expectedCam2 = dualDay.filePath("cam2/undistorted/capture_20261103_235959_999_P01_fused_undistorted.png");
+        const QString expectedRaw1 = dualDay.filePath("cam1/raw/capture_20261103_235959_999_P01_fused.png");
+        const QString expectedRaw2 = dualDay.filePath("cam2/raw/capture_20261103_235959_999_P01_fused.png");
+        require(overlapped.load(), "dual cameras did not acquire in parallel");
+        require(dualBoth.complete && dualBoth.path1 == expectedCam1 && dualBoth.path2 == expectedCam2 &&
+                QFileInfo::exists(expectedCam1) && QFileInfo::exists(expectedCam2) &&
+                QFileInfo::exists(expectedRaw1) && QFileInfo::exists(expectedRaw2) &&
+                record(jsonPath(expectedCam1)) == record(jsonPath(expectedCam2)) &&
+                QFileInfo::exists(expectedCam1.left(expectedCam1.size() - 4) + ".pixel_frame.json") &&
+                QFileInfo::exists(expectedCam2.left(expectedCam2.size() - 4) + ".pixel_frame.json"),
+                "dual paired output layout or metadata mismatch");
+        cam1.acquiring = {};
+        cam2.acquiring = {};
+
+        // Camera 2 failure rolls back/avoids saving Camera 1 half-pair
+        cam2.incomplete = true;
+        const QString rollbackRoot = temp.filePath("dual-rollback");
+        const auto dualIncomplete = collection::captureDualAndSave(
+            cam1, cam2, rollbackRoot, time, {5000, 8500}, {6000, 9500},
+            maps, {}, readPose, cancelled, {}, {"P02", true});
+        require(!dualIncomplete.complete && dualIncomplete.path1.isEmpty() && dualIncomplete.path2.isEmpty() &&
+                !QDir(rollbackRoot).exists("2026-11-03/cam1/undistorted"),
+                "incomplete cam2 saved half pair");
+        cam2.incomplete = false;
+
+        const auto pathForPoint = [](QString path, const QString& label) {
+            return path.replace("_P01_fused", "_" + label + "_fused");
+        };
+
+        // The destination directories already exist, so cam1 commits both PNGs
+        // before cam2 detects its conflicting corrected image.
+        const auto conflictingCam2 = pathForPoint(expectedCam2, "P03");
+        require(QFile::copy(expectedCam1, conflictingCam2), "cannot create conflicting cam2 PNG");
+        QFile conflict(conflictingCam2);
+        require(conflict.open(QIODevice::ReadOnly), "cannot read conflicting cam2 PNG");
+        const auto originalBytes = conflict.readAll();
+        require(!originalBytes.isEmpty(), "conflicting cam2 PNG is empty");
+        conflict.close();
+        const auto dualWriteFail = collection::captureDualAndSave(
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            maps, maps2, readPose, cancelled, {}, {"P03", true});
+        require(!dualWriteFail.complete && dualWriteFail.path1.isEmpty() && dualWriteFail.path2.isEmpty() &&
+                dualWriteFail.message.contains("图片文件已存在"),
+                "cam2 PNG collision did not report an incomplete pair");
+        require(!QFileInfo::exists(pathForPoint(expectedCam1, "P03")) &&
+                !QFileInfo::exists(pathForPoint(expectedRaw1, "P03")) &&
+                !QFileInfo::exists(pathForPoint(expectedRaw2, "P03")),
+                "cam2 PNG collision left new PNGs behind");
+        require(conflict.open(QIODevice::ReadOnly) && conflict.readAll() == originalBytes,
+                "cam2 PNG collision removed or changed the existing image");
+        conflict.close();
+
+        // Pose RPC failure produces null poses and complete=false
+        const auto dualNoPose = collection::captureDualAndSave(
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            {}, {}, []() -> std::array<double, 6> { throw std::runtime_error("RPC timeout"); },
+            cancelled, {}, {"P04", false});
+        require(!dualNoPose.complete && !dualNoPose.path1.isEmpty() && !dualNoPose.path2.isEmpty() &&
+                record(jsonPath(dualNoPose.path1))["x"].isNull() &&
+                record(jsonPath(dualNoPose.path2))["x"].isNull(),
+                "dual pose RPC failure did not degrade to null or reported complete");
+
+        // A directory at cam2's pose path blocks the sidecar write after all PNGs commit.
+        const auto poseFailureCam1 = pathForPoint(expectedCam1, "P05");
+        const auto poseFailureCam2 = pathForPoint(expectedCam2, "P05");
+        const auto blockedPose = jsonPath(poseFailureCam2);
+        require(QDir().mkdir(blockedPose), "cannot block cam2 pose sidecar");
+        const auto dualPoseWriteFail = collection::captureDualAndSave(
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            maps, maps2, readPose, cancelled, {}, {"P05", true});
+        require(!dualPoseWriteFail.complete && dualPoseWriteFail.path1 == poseFailureCam1 &&
+                dualPoseWriteFail.path2 == poseFailureCam2 &&
+                dualPoseWriteFail.message.contains("相机 2：法兰位姿文件保存失败"),
+                "cam2 pose sidecar failure was not reported for the committed pair");
+        require(QFileInfo(poseFailureCam1).isFile() && QFileInfo(poseFailureCam2).isFile() &&
+                QFileInfo(pathForPoint(expectedRaw1, "P05")).isFile() &&
+                QFileInfo(pathForPoint(expectedRaw2, "P05")).isFile(),
+                "cam2 pose sidecar failure discarded images");
+        require(record(jsonPath(poseFailureCam1)) == json &&
+                record(jsonPath(pathForPoint(expectedRaw2, "P05"))) == json &&
+                QFileInfo(blockedPose).isDir(), "cam2 pose sidecar failure affected other pose records");
+
         std::cout << "Capture format, pose degradation, cancellation, commit barriers and undistorted pairs passed\n";
         return 0;
     } catch (const std::exception& error) { std::cerr << error.what() << '\n'; return 1; }

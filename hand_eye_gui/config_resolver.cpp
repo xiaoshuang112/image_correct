@@ -204,6 +204,74 @@ ResolvedCameraConfig resolveCameraConfig(const cv::FileStorage& fs,
     return out;
 }
 
+ResolvedCamera2Config resolveCamera2Config(const cv::FileStorage& fs,
+                                           const ResolvedCamera2Config& defaults) {
+    ResolvedCamera2Config out = defaults;
+    out.sources.clear();
+    out.warnings.clear();
+
+    auto readOptionalString = [&](const char* key, std::string& target) {
+        const auto node = fs[key];
+        if (node.empty()) return;
+        if (!node.isString()) {
+            out.warnings.push_back(std::string(key) + " 应为字符串，使用默认值");
+            return;
+        }
+        target = node.string();
+        out.sources.push_back(std::string(key) + "=" + target + "(flat)");
+    };
+    auto readPositiveInt = [&](const char* key, int& target) {
+        const auto node = fs[key];
+        if (node.empty()) return;
+        if (!node.isInt() || static_cast<int>(node) <= 0) {
+            out.warnings.push_back(std::string(key) + " 应为正整数，使用默认值");
+            return;
+        }
+        target = static_cast<int>(node);
+        out.sources.push_back(std::string(key) + "=" + std::to_string(target) + "(flat)");
+    };
+    auto readNonNegativeInt = [&](const char* key, int& target) {
+        const auto node = fs[key];
+        if (node.empty()) return;
+        if (!node.isInt() || static_cast<int>(node) < 0) {
+            out.warnings.push_back(std::string(key) + " 应为非负整数，使用默认值");
+            return;
+        }
+        target = static_cast<int>(node);
+        out.sources.push_back(std::string(key) + "=" + std::to_string(target) + "(flat)");
+    };
+
+    readOptionalString("cam2_ip", out.cam_ip);
+    readOptionalString("cam2_sn", out.cam_sn);
+    readPositiveInt("cam2_width", out.cam_width);
+    readPositiveInt("cam2_height", out.cam_height);
+    readPositiveInt("camera2_exposure_us", out.exposure_us);
+    readNonNegativeInt("camera2_gain", out.gain);
+
+    const auto exposures = fs["camera2_fusion_exposures_us"];
+    if (!exposures.empty()) {
+        std::vector<int> values;
+        std::set<int> distinct;
+        bool valid = exposures.isSeq() && exposures.size() >= 2 && exposures.size() <= 5;
+        if (valid) for (const auto& node : exposures) {
+            const int value = node.isInt() ? static_cast<int>(node) : 0;
+            if (value < 1 || value > 1000000 || !distinct.insert(value).second) {
+                valid = false;
+                break;
+            }
+            values.push_back(value);
+        }
+        if (valid) {
+            out.fusion_exposures_us = values;
+            out.sources.push_back("camera2_fusion_exposures_us=(flat)");
+        } else {
+            out.warnings.push_back(
+                "camera2_fusion_exposures_us 应为 2～5 个不同的正整数（1～1000000 μs），使用默认序列");
+        }
+    }
+    return out;
+}
+
 CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
                                          const CollectionConfig& defaults) {
     CollectionConfig out = defaults;

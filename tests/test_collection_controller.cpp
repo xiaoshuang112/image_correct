@@ -68,8 +68,13 @@ public:
     std::atomic<bool> blockPreview{false}, releasePreview{false}, previewOnGui{false}, captureOverlapped{false};
     std::atomic<bool> exposureRangeRead{false}, blockCapture{false}, releaseCapture{false}, captureEntered{false};
     const std::thread::id guiThread = std::this_thread::get_id();
+    std::mutex previewMutex;
     cv::Mat previewFrame;
     Camera() : AICamera(CameraConfig{}) {}
+    void setPreviewFrame(const cv::Mat& frame) {
+        std::lock_guard<std::mutex> lock(previewMutex);
+        previewFrame = frame.clone();
+    }
     bool open() override { return true; }
     void close() override {}
     bool isOpened() const override { return true; }
@@ -80,8 +85,13 @@ public:
         const auto until = std::chrono::steady_clock::now() + std::chrono::seconds(1);
         while (blockPreview && !releasePreview && std::chrono::steady_clock::now() < until)
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        cv::Mat frame;
+        {
+            std::lock_guard<std::mutex> lock(previewMutex);
+            frame = previewFrame.clone();
+        }
         --activePreviewReads;
-        return previewFrame;
+        return frame;
     }
     bool setColorExposureTime(int) override { return true; }
     int getColorExposureTime() override { return 5000; }
@@ -354,6 +364,118 @@ struct CollectionControllerTestAccess {
     static void tools(CollectionController& controller) {
         controller.m_tcpNames = QStringList{"ToolA", "ToolB"};
     }
+    static void verifyDualCameraWorkflow(const QString& root) {
+        const QString paramDir = QDir(root).filePath("dual-param");
+        require(QDir().mkpath(paramDir), "cannot create dual param directory");
+        auto writeCal = [&](const QString& filename, double fx) {
+            cv::FileStorage fs(QDir(paramDir).filePath(filename).toStdString(), cv::FileStorage::WRITE);
+            fs << "camera_matrix" << (cv::Mat_<double>(3, 3) << fx, 0, 16, 0, fx, 16, 0, 0, 1);
+            fs << "distortion_coefficients" << cv::Mat::zeros(1, 5, CV_64F);
+            fs << "image_width" << 32 << "image_height" << 32;
+        };
+        // 1. Legacy hand_eye_result.yaml fallback for camera 1 + independent cam2_hand_eye_result.yaml
+        writeCal("hand_eye_result.yaml", 30.0);
+        writeCal("cam2_hand_eye_result.yaml", 25.0);
+        {
+            CollectionController legacyController;
+            legacyController.m_paramPath = paramDir.toStdString() + "/";
+            legacyController.initializeCollection();
+            require(legacyController.undistortionReady() && legacyController.undistortion2Ready() &&
+                    legacyController.handEyePath().endsWith("hand_eye_result.yaml") &&
+                    legacyController.handEyePath2().endsWith("cam2_hand_eye_result.yaml"),
+                    "legacy cam1 fallback or cam2 calibration load failed");
+        }
+        // 2. Distinguished cam1_hand_eye_result.yaml takes precedence over hand_eye_result.yaml
+        writeCal("cam1_hand_eye_result.yaml", 32.0);
+        CameraImageProvider provider;
+        CollectionController controller;
+        controller.m_imageProvider = &provider;
+        controller.m_paramPath = paramDir.toStdString() + "/";
+        controller.m_outputDirectory = QDir(root).filePath("dual-output");
+        controller.m_exposureList = "5000,8500";
+        controller.m_exposure2List = "6000,9500";
+        controller.initializeCollection();
+        require(controller.handEyePath().endsWith("cam1_hand_eye_result.yaml") &&
+                controller.handEyePath2().endsWith("cam2_hand_eye_result.yaml") &&
+                controller.undistortionReady() && controller.undistortion2Ready(),
+                "distinguished cam1/cam2 calibration files not loaded");
+
+        auto cam1 = std::make_shared<Camera>();
+        auto cam2 = std::make_shared<Camera>();
+        cam1->previewFrame = cv::Mat(32, 32, CV_8UC3, cv::Scalar(10, 20, 30));
+        cam2->previewFrame = cv::Mat(32, 32, CV_8UC3, cv::Scalar(40, 50, 60));
+        controller.setDualCameraMode(true);
+        controller.m_camera = cam1;
+        controller.m_camera2 = cam2;
+        controller.m_camActualWidth = controller.m_camActualHeight = 32;
+        controller.m_cam2ActualWidth = controller.m_cam2ActualHeight = 32;
+        controller.m_cameraOpened = controller.m_camera2Opened = true;
+        controller.toggleUndistortion();
+        require(controller.undistortionEnabled() && !controller.undistortion2Enabled(),
+                "toggling cam1 undistortion affected cam2");
+        controller.toggleUndistortion2();
+        require(controller.undistortionEnabled() && controller.undistortion2Enabled(),
+                "cam2 undistortion could not enable independently");
+
+        controller.startPreview();
+        waitFor([&] { return controller.dualCameraReady(); });
+        require(controller.activePreviewCamera() == 1 && controller.camera1Healthy() && controller.camera2Healthy(),
+                "dual preview did not verify both channels while showing cam1");
+        require(provider.requestImage({}, nullptr, {}).pixelColor(0, 0) == QColor(30, 20, 10),
+                "initial dual preview did not display cam1");
+
+        // Switch preview to cam2 and back
+        controller.togglePreviewCamera();
+        require(controller.activePreviewCamera() == 2, "togglePreviewCamera did not switch to cam2");
+        waitFor([&] {
+            return provider.requestImage({}, nullptr, {}).pixelColor(0, 0) == QColor(60, 50, 40);
+        });
+        controller.setActivePreviewCamera(1);
+        require(controller.activePreviewCamera() == 1, "setActivePreviewCamera did not switch back to cam1");
+
+        // Pausing preview must disable dualCameraReady and block capture
+        controller.stopPreview();
+        require(!controller.dualCameraReady(), "stopPreview left dualCameraReady enabled");
+        controller.capturePhoto();
+        require(!controller.collectionBusy() && controller.savedImageCount() == 0,
+                "paused dual preview allowed capture");
+        controller.startPreview();
+        waitFor([&] { return controller.dualCameraReady(); });
+
+        // Single-shot dual capture
+        controller.capturePhoto();
+        waitFor([&] { return !controller.collectionBusy(); });
+        require(controller.savedGroupCount() == 1 && controller.savedImageCount() == 2 &&
+                controller.lastCapturePath().contains("/cam1/") &&
+                controller.lastCapturePath2().contains("/cam2/"),
+                "dual single-shot did not save paired outputs");
+
+        // Dual configured-point capture must NOT double-count on completion
+        const QString pointsFile = QDir(paramDir).filePath("move_tcp_points.json");
+        QFile pf(pointsFile);
+        require(pf.open(QIODevice::WriteOnly), "cannot create dual move_tcp_points.json");
+        pf.write(R"({"p1":{"x":1,"y":0,"z":0,"rx":0,"ry":0,"rz":0},"p2":{"x":0,"y":1,"z":0,"rx":0,"ry":0,"rz":0}})");
+        pf.close();
+        controller.m_robotHandle = 42;
+        controller.m_robotConnected = true;
+        controller.m_robotSpeedMmS = 50;
+        controller.captureConfiguredPoints(true);
+        waitFor([&] { return !controller.collectionBusy(); }, 20000);
+        require(!controller.motionFault() && controller.savedGroupCount() == 3 &&
+                controller.savedImageCount() == 6 &&
+                controller.statusMessage().contains("双相机按配置采图完成 · 已保存 2/2"),
+                "dual configured capture double-counted or lost completion status");
+
+        // Simulated cam2 failure on active cam2 preview marks cam2 unhealthy and clears ready state
+        controller.setActivePreviewCamera(2);
+        waitFor([&] {
+            return provider.requestImage({}, nullptr, {}).pixelColor(0, 0) == QColor(60, 50, 40);
+        });
+        cam2->setPreviewFrame(cv::Mat());
+        waitFor([&] { return !controller.camera2Healthy() && !controller.dualCameraReady(); }, 8000);
+        require(controller.camera1Healthy() && !controller.camera2Healthy() && !controller.dualCameraReady(),
+                "cam2 stream drop did not revoke dual readiness");
+    }
     static void verifyConfiguredCapture(const QString& root) {
         CollectionController controller;
         const auto output = QDir(root).filePath("configured-output");
@@ -522,6 +644,9 @@ int main(int argc, char** argv) {
         CollectionControllerTestAccess::verifyCoordinateImport(temp.path());
         CollectionControllerTestAccess::verifyResponsivePreview(temp.path());
         CollectionControllerTestAccess::verifyPreviewVisibility(temp.path());
+        robot.reset(); robot.failLine = false; robot.stopWorks = true; robot.stopCode = sucess;
+        CollectionControllerTestAccess::verifyDualCameraWorkflow(temp.path());
+        waitFor([&] { return robot.destroys == 1; });
         robot.reset(); robot.failLine = false;
         CollectionControllerTestAccess::verifyConfiguredCapture(temp.path());
         waitFor([&] { return robot.destroys == 1; });
