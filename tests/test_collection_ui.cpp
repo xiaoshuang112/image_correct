@@ -655,9 +655,25 @@ SharedCollectionState {
             require(!item(("ninePointAngle" + std::to_string(point)).c_str())->isEnabled(), "angle editor remained enabled during capture");
         }
         require(!item("openCameraButton")->isEnabled() && !item("connectRobotButton")->isEnabled() && item("stopButton")->isEnabled(), "nine-point operation left connections enabled");
+        // Verify progress bar does not falsely reach 100% before nine-point completion
+        controller->setProperty("ninePointProgress", "第 9/9 点 · X+ / Y− · 欧拉 Rz 0° · 移动及稳定等待"); QTest::qWait(10);
+        require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
+                "progress reached 100% while moving to point 9");
+        controller->setProperty("ninePointProgress", "第 9/9 点 · X+ / Y− · 正在采集及保存"); QTest::qWait(10);
+        require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
+                "progress reached 100% while capturing point 9");
+        controller->setProperty("ninePointProgress", "已保存 9/9 · 返回基准位"); QTest::qWait(10);
+        require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
+                "progress reached 100% while returning to origin");
         controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); QTest::qWait(10);
         require(text("stopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "main fault did not preserve stop/connection lock");
         controller->setProperty("motionFault", false); QTest::qWait(10);
+        controller->setProperty("ninePointProgress", "九点采集停止 · 已保存 9/9：返回失败；未继续移动"); QTest::qWait(10);
+        require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
+                "stopped nine-point run displayed 100% finished");
+        controller->setProperty("ninePointProgress", "九点采集完成 · 已保存 9/9，已回到基准位"); QTest::qWait(10);
+        require(window->property("progressRatio").toDouble() == 1.0 && window->property("progressFinished").toBool(),
+                "completed nine-point run did not reach 100%");
 
         // Dual-camera mode toggle, one-click preview switching (button + Tab) & cam2 settings
         click(item("singleModeButton"));
@@ -670,17 +686,20 @@ SharedCollectionState {
                 "connected dual mode did not lock mode switch or become ready");
         require(item("previewCam1Button")->isVisible() && item("previewCam2Button")->isVisible(),
                 "dual preview switcher buttons hidden");
-        require(text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible(),
-                "cam1 dual preview missing label or direction gizmo");
+        require(text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible() &&
+                item("crosshairToggle")->isEnabled() && window->property("crosshairVisibleOnPreview").toBool(),
+                "cam1 dual preview missing label, direction gizmo, or active crosshair switch");
         click(item("previewCam2Button"));
         require(controller->property("activePreviewCamera").toInt() == 2 &&
-                text("frameMetadata").contains("相机 2") && !item("previewDirectionGizmo")->isVisible(),
-                "switching to cam2 did not hide cam1 direction gizmo or update label");
+                text("frameMetadata").contains("相机 2") && !item("previewDirectionGizmo")->isVisible() &&
+                !item("crosshairToggle")->isEnabled() && !window->property("crosshairVisibleOnPreview").toBool(),
+                "switching to cam2 left crosshair switch active or cam1 gizmo visible");
         window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Tab); QTest::qWait(20);
         require(controller->property("activePreviewCamera").toInt() == 1 &&
-                text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible(),
-                "Tab shortcut did not switch back to cam1");
+                text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible() &&
+                item("crosshairToggle")->isEnabled() && window->property("crosshairVisibleOnPreview").toBool(),
+                "Tab shortcut did not restore cam1 crosshair switch and gizmo");
         click(item("settingsButton"));
         click(item("settingsTab0"));
         click(item("settingsCam2SubTab"));
@@ -735,6 +754,32 @@ SharedCollectionState {
             click(item("useCurrentPoseButton"));
             if (argc > 1 && size == QSize(1280,850)) require(screenshot(argv[1]), "main screenshot failed");
             if (argc > 4 && size == QSize(760,600)) require(screenshot(argv[4]), "compact screenshot failed");
+            if (size == QSize(760,600)) {
+                const auto previousTcps = controller->property("tcpNames");
+                const auto previousSelected = controller->property("selectedTcp");
+                controller->setProperty("tcpNames", QStringList{"夹具探针_长头_A", "夹具探针_长头_B"});
+                controller->setProperty("selectedTcp", "夹具探针_长头_A"); QTest::qWait(10);
+                auto* selector = item("tcpSelector");
+                auto* popup = selector->property("popup").value<QObject*>();
+                require(popup && QMetaObject::invokeMethod(popup, "open"), "cannot open TCP selector popup");
+                QTest::qWait(30);
+                auto* listView = popup->property("contentItem").value<QQuickItem*>();
+                require(listView && listView->width() >= 180, "TCP selector popup did not widen for narrow window");
+                QQuickItem* firstDelegate = nullptr;
+                for (auto* child : listView->childItems()) {
+                    for (auto* itemChild : child->childItems()) {
+                        if (itemChild->width() > 0 && itemChild->property("text").toString().contains("夹具探针")) {
+                            firstDelegate = itemChild;
+                            break;
+                        }
+                    }
+                    if (firstDelegate) break;
+                }
+                require(firstDelegate && firstDelegate->width() >= 180, "TCP selector delegate truncated to narrow control width");
+                QMetaObject::invokeMethod(popup, "close"); QTest::qWait(20);
+                controller->setProperty("tcpNames", previousTcps);
+                controller->setProperty("selectedTcp", previousSelected); QTest::qWait(10);
+            }
             click(item("settingsButton"));
             auto* leftCard = item("settingsLeftCard");
             auto* rightCard = item("settingsRightCard");

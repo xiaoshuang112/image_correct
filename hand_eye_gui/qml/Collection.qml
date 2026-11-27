@@ -37,10 +37,29 @@ ApplicationWindow {
         ? (controller.camera2Opened && (controller.undistortion2Ready || controller.undistortion2Enabled))
         : (controller.cameraOpened && (controller.undistortionReady || controller.undistortionEnabled))
     readonly property string activeUndistortStatus: (dualMode && activeCam === 2) ? controller.undistortion2Status : controller.undistortionStatus
-    readonly property var progressMatch: /第\s*(\d+)\s*\/\s*(\d+)/.exec(controller.ninePointProgress || "")
-    readonly property int progressStep: progressMatch ? Number(progressMatch[1]) : 0
-    readonly property int progressTotal: progressMatch ? Number(progressMatch[2]) : 0
-    readonly property real progressRatio: progressTotal > 0 ? Math.min(1, Math.max(0, progressStep / progressTotal)) : (busy ? 0.35 : 0)
+    readonly property bool crosshairSupported: !root.dualMode || root.activeCam === 1
+    readonly property bool crosshairVisibleOnPreview: root.showCrosshair && root.crosshairSupported
+    readonly property string progressText: controller.ninePointProgress || ""
+    readonly property var pointStageMatch: /第\s*(\d+)\s*\/\s*(\d+)\s*点/.exec(progressText)
+    readonly property var savedStageMatch: /已保存\s*(\d+)\s*\/\s*(\d+)/.exec(progressText)
+    readonly property int progressTotal: pointStageMatch ? Number(pointStageMatch[2]) : savedStageMatch ? Number(savedStageMatch[2]) : 0
+    readonly property int activeStep: pointStageMatch ? Number(pointStageMatch[1]) : 0
+    readonly property int completedSteps: pointStageMatch ? Math.max(0, Number(pointStageMatch[1]) - 1)
+                                        : savedStageMatch ? Number(savedStageMatch[1])
+                                        : 0
+    readonly property bool progressFinished: progressText.indexOf("完成") >= 0 && progressTotal > 0 && completedSteps >= progressTotal && !busy
+    readonly property real progressRatio: {
+        if (progressFinished) return 1.0
+        if (pointStageMatch && progressTotal > 0) {
+            var capturing = progressText.indexOf("采集") >= 0
+            var units = Math.max(0, activeStep - (capturing ? 0.5 : 1.0))
+            return Math.min(0.95, Math.max(0.04, units / (progressTotal + 1)))
+        }
+        if (savedStageMatch && progressTotal > 0) {
+            return Math.min(0.95, Math.max(0, completedSteps / (progressTotal + 1)))
+        }
+        return busy ? 0.08 : 0
+    }
     property string frameMetadata: ""
     property bool hasFrame: false
     property int seenCount: controller.savedImageCount
@@ -425,8 +444,8 @@ ApplicationWindow {
                                                 onItemRemoved: root.gridAnglesValid = root.ninePointAngles().length === 9
                                                 CollectField {
                                                     id: angleField; objectName: "ninePointAngle" + index
-                                                    readonly property bool stepActive: root.busy && root.progressTotal === 9 && root.progressStep === (index + 1)
-                                                    readonly property bool stepDone: root.progressTotal === 9 && root.progressStep > (index + 1)
+                                                    readonly property bool stepActive: root.busy && root.progressTotal === 9 && root.activeStep === (index + 1)
+                                                    readonly property bool stepDone: root.progressTotal === 9 && root.completedSteps >= (index + 1)
                                                     Layout.fillWidth: true; Layout.minimumWidth: 0; implicitHeight: root.compact ? 28 : 34
                                                     text: (modelData > 0 ? "+" : "") + modelData; enabled: !root.interactionLocked
                                                     leftPadding: 14; rightPadding: 11; font.pixelSize: root.compact ? Theme.micro : Theme.meta
@@ -518,9 +537,10 @@ ApplicationWindow {
                             Layout.fillWidth: true; Layout.preferredHeight: 4; radius: 2
                             color: Theme.raised; clip: true
                             Rectangle {
+                                objectName: "captureProgressFill"
                                 height: parent.height; radius: 2
                                 width: Math.round(parent.width * root.progressRatio)
-                                color: root.controller.motionFault ? Theme.danger : root.progressRatio >= 1 && !root.busy ? Theme.ok : Theme.accent
+                                color: root.controller.motionFault ? Theme.danger : root.progressFinished ? Theme.ok : Theme.accent
                             }
                         }
 
@@ -647,30 +667,33 @@ ApplicationWindow {
                                             else root.controller.toggleUndistortion()
                                         }
                                     }
-                                    // Crosshair Switch
+                                    // Crosshair Switch (Camera 1 overlay only in dual mode)
                                     RowLayout {
                                         spacing: 5
+                                        opacity: root.crosshairSupported ? 1 : 0.4
                                         Rectangle {
                                             objectName: "crosshairToggle"
+                                            enabled: root.crosshairSupported
                                             Layout.preferredWidth: 30; Layout.preferredHeight: 17; radius: 8.5
-                                            color: root.showCrosshair ? Theme.accent : Theme.raised
-                                            border.width: 1; border.color: root.showCrosshair ? Theme.accent : Theme.hairlineStrong
+                                            color: root.crosshairVisibleOnPreview ? Theme.accent : Theme.raised
+                                            border.width: 1; border.color: root.crosshairVisibleOnPreview ? Theme.accent : Theme.hairlineStrong
                                             Rectangle {
                                                 width: 13; height: 13; radius: 6.5; anchors.verticalCenter: parent.verticalCenter
-                                                x: root.showCrosshair ? parent.width - width - 2 : 2
+                                                x: root.crosshairVisibleOnPreview ? parent.width - width - 2 : 2
                                                 color: Theme.white
                                             }
                                             MouseArea {
-                                                anchors.fill: parent; cursorShape: Qt.PointingHandCursor
+                                                anchors.fill: parent; enabled: root.crosshairSupported; cursorShape: Qt.PointingHandCursor
                                                 onClicked: root.showCrosshair = !root.showCrosshair
                                             }
-                                            ToolTip.visible: crosshairHover.hovered; ToolTip.text: "显示或隐藏预览中心十字线（仅预览有效）"
+                                            ToolTip.visible: crosshairHover.hovered
+                                            ToolTip.text: root.crosshairSupported ? "显示或隐藏预览中心十字线（仅预览有效）" : "相机 2 预览不显示中心十字线（仅相机 1 支持）"
                                             HoverHandler { id: crosshairHover }
                                         }
                                         HmiText {
                                             visible: !viewfinderBar.tight
-                                            text: "十字线"; font.pixelSize: Theme.meta; color: root.showCrosshair ? Theme.ink : Theme.ink3
-                                            MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.showCrosshair = !root.showCrosshair }
+                                            text: "十字线"; font.pixelSize: Theme.meta; color: root.crosshairVisibleOnPreview ? Theme.ink : Theme.ink3
+                                            MouseArea { anchors.fill: parent; enabled: root.crosshairSupported; cursorShape: Qt.PointingHandCursor; onClicked: root.showCrosshair = !root.showCrosshair }
                                         }
                                     }
                                     Item { Layout.fillWidth: true }
@@ -688,10 +711,10 @@ ApplicationWindow {
                                 property int seenCount: root.seenCount
                                 Image { id: cameraImage; anchors.fill: parent; fillMode: Image.PreserveAspectFit; cache: false; asynchronous: false; visible: root.hasFrame }
                                 // Toggleable Crosshair (only on Cam 1 in dual mode)
-                                Rectangle { visible: root.showCrosshair && (!root.dualMode || root.activeCam === 1); anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: "#28FFFFFF" }
-                                Rectangle { visible: root.showCrosshair && (!root.dualMode || root.activeCam === 1); anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: "#28FFFFFF" }
-                                Rectangle { visible: root.showCrosshair && (!root.dualMode || root.activeCam === 1); anchors.centerIn: parent; width: 120; height: 3; color: Theme.danger; opacity: 0.85 }
-                                Rectangle { visible: root.showCrosshair && (!root.dualMode || root.activeCam === 1); anchors.centerIn: parent; width: 3; height: 120; color: Theme.danger; opacity: 0.85 }
+                                Rectangle { visible: root.crosshairVisibleOnPreview; anchors.verticalCenter: parent.verticalCenter; width: parent.width; height: 1; color: "#28FFFFFF" }
+                                Rectangle { visible: root.crosshairVisibleOnPreview; anchors.horizontalCenter: parent.horizontalCenter; height: parent.height; width: 1; color: "#28FFFFFF" }
+                                Rectangle { visible: root.crosshairVisibleOnPreview; anchors.centerIn: parent; width: 120; height: 3; color: Theme.danger; opacity: 0.85 }
+                                Rectangle { visible: root.crosshairVisibleOnPreview; anchors.centerIn: parent; width: 3; height: 120; color: Theme.danger; opacity: 0.85 }
                                 // Centered Empty State Prompt
                                 Column {
                                     visible: !root.hasFrame
