@@ -21,7 +21,7 @@ param(
     [string]$MvsSdkDir = 'C:\Program Files (x86)\MVS',
     # 留空时按 MVS 安装目录推导 Common Files\MVS\Runtime\Win64_x64。
     [string]$MvsRuntimeDir = '',
-    [string]$BuildDir = 'build-win',
+    [string]$BuildDir = 'win-build\build',
     [ValidateSet('Ninja', 'Ninja Multi-Config')]
     [string]$Generator = 'Ninja',
     [ValidateSet('Release', 'Debug', 'RelWithDebInfo', 'MinSizeRel')]

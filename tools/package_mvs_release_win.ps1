@@ -4,7 +4,7 @@
 #
 #  用法:
 #    powershell -File tools/package_mvs_release_win.ps1
-#    powershell -File tools/package_mvs_release_win.ps1 -BuildDir build-win -Output dist/collect-mvs-win10-x64
+#    powershell -File tools/package_mvs_release_win.ps1 -BuildDir win-build/build -Output win-build/release
 #    powershell -File tools/package_mvs_release_win.ps1 -SkipSmoke
 #
 #  产物布局（exe 与运行库同目录）:
@@ -40,8 +40,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $Repo = Split-Path -Parent $PSScriptRoot
-if (-not $BuildDir) { $BuildDir = Join-Path $Repo 'build-win' }
-if (-not $Output)   { $Output   = Join-Path $Repo 'dist\collect-mvs-win10-x64' }
+if (-not $BuildDir) { $BuildDir = Join-Path $Repo 'win-build\build' }
+if (-not $Output)   { $Output   = Join-Path $Repo 'win-build\release' }
 $BuildDir = [System.IO.Path]::GetFullPath($BuildDir)
 if (-not $Log) { $Log = Join-Path $BuildDir 'windows-package.log' }
 $Log = [System.IO.Path]::GetFullPath($Log)

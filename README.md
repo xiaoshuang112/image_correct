@@ -316,7 +316,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File .\build_collect_win.ps1 -Job
 powershell -NoProfile -ExecutionPolicy Bypass -File .\tools\package_mvs_release_win.ps1
 ```
 
-打包脚本输出 `dist/collect-mvs-win10-x64`：`collect-mvs.exe`、windeployqt 复制的 Qt 运行库与 QML 模块、
+CMake 默认构建在 `win-build/build`，打包脚本输出 `win-build/release`：`collect-mvs.exe`、windeployqt 复制的 Qt 运行库与 QML 模块、
 OpenCV、CGXi、MVS DLL，`qt.conf`（固定读取 exe 旁的插件与 QML 模块）、`config.yaml`（从
 `config/collect.example.yaml` 初始化）、空 `param/` 目录、`BUILD_INFO.txt` 和 `SHA256SUMS`。缺少输入即报错退出。
 
@@ -326,5 +326,5 @@ OpenCV 4.13 vc17 运行库不兼容，同目录时加载器会挑到旧版导致
 `msvcr100.dll` 和 `pthreadVC2.dll` 是 SDK 依赖，必须保留。
 
 脚本结束前用干净 PATH 和清空后的 Qt/QML 环境变量做一次冒烟启动，确认进程存活、日志记录 QML 加载，
-再关闭窗口等待退出，结果写入 `build-win/windows-package.log`。这仅验证启动，真实相机取图、曝光与机器人操作
+再关闭窗口等待退出，结果写入 `win-build/build/windows-package.log`。这仅验证启动，真实相机取图、曝光与机器人操作
 仍需设备验收。目标机必须真实安装海康 MVS 驱动，驱动不在发布包内。

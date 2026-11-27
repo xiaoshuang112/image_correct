@@ -1,5 +1,6 @@
 # Build output, SDKs and release packages
 /build*/
+/win-build/
 /cmake-build*/
 /libs/
 /dist/
