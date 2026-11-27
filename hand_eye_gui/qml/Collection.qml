@@ -117,14 +117,17 @@ ApplicationWindow {
                        Math.max(1, Math.round(cameraImage.height * root.screen.devicePixelRatio)))
     }
     function updateFrameMetadataText() {
-        const cam = root.dualMode ? root.controller.activePreviewCamera : 1
-        if (!root.dualMode) {
-            root.frameMetadata = root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
-        } else if (cam === 2) {
-            root.frameMetadata = "相机 2 · " + root.controller.camera2Model + " · " + root.controller.camera2ActualWidth + " × " + root.controller.camera2ActualHeight + " · " + root.controller.camera2ActualExposureUs + " μs" + (root.controller.undistortion2Enabled ? " · 去畸变" : "")
-        } else {
-            root.frameMetadata = "相机 1 · " + root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
-        }
+        const second = root.dualMode && root.controller.activePreviewCamera === 2
+        const prefix = root.dualMode ? (second ? "相机 2 · " : "相机 1 · ") : ""
+        const model = second ? root.controller.camera2Model : root.controller.cameraModel
+        const width = second ? root.controller.camera2ActualWidth : root.controller.cameraActualWidth
+        const height = second ? root.controller.camera2ActualHeight : root.controller.cameraActualHeight
+        const exposure = second ? root.controller.camera2ActualExposureUs : root.controller.cameraActualExposureUs
+        const production = root.controller.undistortionProjection === "square_pixels_v1"
+        const projection = production
+            ? (root.activeUndistortEnabled ? " · 方形像素" : " · 原图预览")
+            : (root.activeUndistortEnabled ? " · 去畸变" : "")
+        root.frameMetadata = prefix + model + " · " + width + " × " + height + " · " + exposure + " μs" + projection
     }
     onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = ""; latchedProgressRatio = 0 }
     onClosing: function(event) {

@@ -74,6 +74,13 @@ CameraDeviceAuditInfo MVSCamera::getDeviceAuditInfo() const {
     info.gain = m_gain;
     info.trigger_mode = m_triggerOn ? "on" : "off";
     info.sdk_version = m_sdkVersion;
+    if (m_handle) {
+        bool reversed = false;
+        if (MV_CC_GetBoolValue(m_handle, "ReverseX", &reversed) == MV_OK)
+            info.orientation.reverseX = reversed;
+        if (MV_CC_GetBoolValue(m_handle, "ReverseY", &reversed) == MV_OK)
+            info.orientation.reverseY = reversed;
+    }
     return info;
 }
 

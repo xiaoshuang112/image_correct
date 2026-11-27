@@ -115,6 +115,7 @@ SharedCollectionState {
     property bool undistortionReady: false
     property bool undistortionEnabled: false
     property string undistortionStatus: "未找到手眼文件，去畸变不可用"
+    property string undistortionProjection: "opencv_alpha1_v1"
     property bool undistortion2Ready: true
     property bool undistortion2Enabled: false
     property string undistortion2Status: "相机 2 去畸变参数已加载，标定分辨率 4024×3036"
@@ -313,6 +314,7 @@ SharedCollectionState {
             robotIp = values.robotIp; robotSpeedMmS = Number(values.robotSpeedMmS)
             previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
             cameraExposureUs = Number(values.cameraExposureUs)
+            undistortionProjection = values.undistortionProjection
             exposureList = values.exposureList
             if (dualCameraMode) {
                 camera2Ip = values.camera2Ip; camera2Sn = values.camera2Sn
@@ -538,6 +540,13 @@ SharedCollectionState {
         controller->setProperty("collectionBusy", false);
         require(!item("cameraIpInput")->isEnabled() && !item("robotIpInput")->isEnabled(), "connected device IP remains editable");
         click(item("settingsTab1"));
+        auto* projection = item("undistortionProjectionSelector");
+        require(projection->isVisible() && projection->property("currentIndex").toInt() == 0,
+                "projection setting did not load the historical default");
+        require(QMetaObject::invokeMethod(projection, "activated", Q_ARG(int, 1)) &&
+                settingsPage->property("undistortionProjection").toString() == "square_pixels_v1" &&
+                controller->property("undistortionProjection").toString() == "opencv_alpha1_v1",
+                "production projection should be a draft until saved");
         require(!item("preview2ExposureInput")->isVisible() && !item("exposure2Input")->isVisible() &&
                 !item("undistortion2Button")->isVisible() && settingsPage->property("exposure2Error").toString().isEmpty(),
                 "single mode exposed camera2 imaging settings or validation");
@@ -589,6 +598,8 @@ SharedCollectionState {
         click(item("saveSettingsButton"));
         require(!settingsPage->property("dirty").toBool() && controller->property("exposureList").toString() == "25000,5000,8500", "settings save sorted exposures or retained dirty draft");
         require(controller->property("robotSpeedMmS").toInt() == 1000 && text("robotSpeedInput") == "1000", "saved speed not reflected in input");
+        require(controller->property("undistortionProjection").toString() == "square_pixels_v1",
+                "production projection was not submitted when saving settings");
         require(!controller->property("submittedCamera2Settings").toBool() &&
                 controller->property("exposure2List").toString() == legacyExposure2List,
                 "single mode submitted or rewrote saved camera2 settings");

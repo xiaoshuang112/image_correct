@@ -1,5 +1,6 @@
 #pragma once
 
+#include "pixel_projection.hpp"
 #include <opencv2/core.hpp>
 #include <opencv2/imgproc.hpp>
 #include <string>
@@ -40,10 +41,12 @@ struct UndistortionGeometry {
     bool flipHorizontal = false;
     bool flipVertical = false;
     const char* pixelFrame = kProductionAlpha1PixelFrame;
+    PixelProjection projection = PixelProjection::Alpha1;
+    CameraOrientation cameraOrientation;
 };
 
 // Immutable maps shared by preview and the capture worker. Output size equals
-// the input size. The map uses production alpha=1 new intrinsics.
+// the input size. Both projections use alpha=1 without cropping.
 class UndistortionMaps {
 public:
     static constexpr int kMapType = CV_16SC2;
@@ -51,7 +54,9 @@ public:
     static constexpr int kBorder = cv::BORDER_CONSTANT;
 
     UndistortionMaps(const UndistortionCalibration& calibration,
-                     cv::Size size, const std::string& serial);
+                     cv::Size size, const std::string& serial,
+                     PixelProjection projection = PixelProjection::Alpha1,
+                     CameraOrientation cameraOrientation = {});
     cv::Mat apply(const cv::Mat& image) const;
     const UndistortionGeometry& geometry() const { return m_geometry; }
     int fixedPointMapType() const { return m_map1.type(); }

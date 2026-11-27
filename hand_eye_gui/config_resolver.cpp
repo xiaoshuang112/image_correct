@@ -276,6 +276,12 @@ CollectionConfig resolveCollectionConfig(const cv::FileStorage& fs,
                                          const CollectionConfig& defaults) {
     CollectionConfig out = defaults;
     out.warnings.clear();
+    const auto projection = fs["undistortion_projection"];
+    if (!projection.empty()) {
+        out.projection = collection::parsePixelProjection(projection.isString() ? projection.string() : "");
+        if (out.projection == collection::PixelProjection::Invalid)
+            out.warnings.push_back("undistortion_projection 无效，请在成像与曝光中选择投影模式");
+    }
     const auto robot = fs["robot_ip"];
     if (!robot.empty()) {
         if (robot.isString() && !robot.string().empty()) out.robot_ip = robot.string();

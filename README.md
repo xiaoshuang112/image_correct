@@ -264,19 +264,21 @@ Euler 俯仰绝对值 ≥89° 时拒绝角度转换/示教，提示切回轴角�
 仅暂停预览会保留开关。预览画面标注去畸变状态，设置页显示参数校验结果及不可用原因。
 启用后，实时预览与后续每次拍照都使用同一组映射；拍照先完成多曝光融合，再去畸变。
 输出尺寸等于融合图尺寸，不按 `validPixROI` 裁剪，也不额外缩放或平移。边缘可能出现黑边。
-计算与当前生产算法一致：原始内参先按 float 精度往返。畸变系数全部恰好为 0 时直接使用该内参和完整画面；
-否则以 `alpha=1`、`centerPrincipalPoint=false` 得到新内参，并用完整精度的新内参建立 `CV_16SC2` 映射。
-彩色图使用线性插值，边界填黑。采集程序不额外翻转图像。
+在「设置 → 成像与曝光」选择投影并保存，或修改 `config.yaml` 的 `undistortion_projection`。一个设置应用到所有采集相机，各路仍使用各自的标定文件和实际尺寸：
+
+- **生产 · 方形像素**（`square_pixels_v1`）。使用完整精度的标定内参和畸变系数，以 `alpha=1` 求新内参，把输出 `fx`、`fy` 统一为两者的较小值，保留主点，再做一次全幅映射。单次、九点和按配置采集前，必须为所有参与的相机启用去畸变。
+- **历史全视野**（`opencv_alpha1_v1`）。旧配置缺少该字段时沿用此模式。原始内参按 float 精度往返，畸变系数全为零时使用原内参，否则使用 `alpha=1` 的输出内参。
+
+两种模式均使用 `CV_16SC2` 映射、线性插值和黑色边界，Collect 不额外翻转图像。生产采集前，用不对称标记确认相机实际图像方向与标定及生产检测一致。
 去畸变不依赖机器人，也不执行机器人运动或静止检查。
 
 启用时，当天目录下分开保存两种图片：`raw/capture_…_fused.png` 为原始融合图，
 `undistorted/capture_…_fused_undistorted.png` 为去畸变图；各自的法兰位姿 JSON 与图片同目录，
 去畸变图的 `.pixel_frame.json` 也位于 `undistorted/`。未开启去畸变时仍直接保存到当天目录。最近图片路径指向校正图；一次拍照计数增加一张。
 两张图各有同名 JSON，使用同一次读取的六维法兰位姿；读取失败仍保存图片并记录六个 `null`。
-去畸变图另有 `capture_…_fused_undistorted.pixel_frame.json`，记录
-`pixel_frame=production_alpha1_undistorted_full_frame`、原始内参、float 往返后的计算内参、
-畸变系数、输出内参、输入/输出尺寸、`alpha`、`validPixROI`、未裁剪和未翻转。
-此文件缺失的旧去畸变图属于 `collect_original_k_undistorted_full_frame`，像素坐标不能直接当作生产坐标。
+去畸变图另有 `capture_…_fused_undistorted.pixel_frame.json`，记录原始及计算内参、原始畸变系数、输出内参和尺寸。
+方形像素图的 `pixel_frame` 为 `square_pixels_v1`，另外记录生产协议的 `pixel_geometry`（投影、标定标识、输出内参和零畸变系数）及 `opencv_version`。`camera_reverse_x`、`camera_reverse_y` 记录相机方向回读，设备未返回时为 `null`。生产回放以 `detector_input` 传入校正图，并用 `pixel_geometry.identity` 作为 `input_pixel_geometry_id`。
+标注和训练时按随图记录核对投影。历史图优先从对应的原始融合图重算，再转换和复核标注。
 初始 `T_base_flange.json` 继续仅保存一次。关闭去畸变后沿用原来的单张融合图保存方式。
 
 自动检查覆盖配置事务与硬件曝光回滚、融合与图片/位姿格式、重名保护、首次矩阵保留、失败不写假位姿、TCP 输入与移动前检查、停止故障锁、遥测时效和连接生命周期，以及界面导航、快捷键、点位命名、草稿保留和窗口布局。真实取帧、曝光恢复、位姿与运动需连接设备验收。

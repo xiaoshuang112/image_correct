@@ -340,6 +340,7 @@ void CollectionController::loadConfigYaml()
     fs.release();
 
     m_robotIp = QString::fromStdString(collectionConfig.robot_ip);
+    m_projection = collectionConfig.projection;
     m_robotSpeedMmS = collectionConfig.robot_speed_mm_s;
     m_ninePointOffsetXMm = collectionConfig.nine_point_offset_x_mm;
     m_ninePointOffsetYMm = collectionConfig.nine_point_offset_y_mm;
@@ -392,6 +393,7 @@ void CollectionController::loadConfigYaml()
                        {{"path", cfg_file},
                         {"camera", m_cameraIp},
                         {"camera_profile", m_cameraProfile},
+                        {"undistortion_projection", undistortionProjection()},
                         {"resolution_w", QString::number(m_previewWidth)},
                         {"resolution_h", QString::number(m_previewHeight)},
                         {"camera_exposure_us", QString::number(m_cameraExposureUs)},
@@ -448,6 +450,7 @@ void CollectionController::openCamera()
         if (second) {
             m_cam2DeviceModel = QString::fromStdString(audit.model);
             m_cam2DeviceSerial = QString::fromStdString(audit.serial);
+            m_cam2Orientation = audit.orientation;
             m_cam2ActualWidth = audit.actual_width;
             m_cam2ActualHeight = audit.actual_height;
             m_camera2ActualExposureUs = resolvedExposure;
@@ -456,6 +459,7 @@ void CollectionController::openCamera()
         } else {
             m_camDeviceModel = QString::fromStdString(audit.model);
             m_camDeviceSerial = QString::fromStdString(audit.serial);
+            m_camOrientation = audit.orientation;
             m_camActualWidth = audit.actual_width;
             m_camActualHeight = audit.actual_height;
             m_cameraActualExposureUs = resolvedExposure;

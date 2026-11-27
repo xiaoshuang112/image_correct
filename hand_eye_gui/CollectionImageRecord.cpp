@@ -1,4 +1,5 @@
 #include "CollectionImageRecord.hpp"
+#include "third_party/nlohmann/json.hpp"
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -23,6 +24,18 @@ void write(const QString& path, const std::vector<uchar>& bytes) {
         file.write(reinterpret_cast<const char*>(bytes.data()), bytes.size()) != static_cast<qint64>(bytes.size()) ||
         !file.commit())
         throw std::runtime_error(("图片保存失败：" + file.errorString()).toStdString());
+}
+
+QString productionGeometryIdentity(const UndistortionGeometry& geometry) {
+    // The detector compares the JSON string verbatim, including the formatting of doubles.
+    const cv::Mat rawK = geometry.originalCameraMatrix.reshape(1, 1);
+    const cv::Mat distortion = geometry.distortion.reshape(1, 1);
+    return QString::fromStdString(nlohmann::json{
+        {"policy", kSquarePixelsProjection},
+        {"size", {geometry.inputSize.width, geometry.inputSize.height}},
+        {"raw_K", std::vector<double>(rawK.begin<double>(), rawK.end<double>())},
+        {"distortion", std::vector<double>(distortion.begin<double>(), distortion.end<double>())}
+    }.dump());
 }
 }
 
@@ -82,7 +95,7 @@ QString saveUndistortionMetadata(const QString& correctedImagePath,
             line.append(values.at<double>(0, col));
         return line;
     };
-    const QJsonObject record{
+    QJsonObject record{
         {"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
         {"original_camera_matrix", matrix(geometry.originalCameraMatrix)},
         {"computation_camera_matrix", matrix(geometry.computationCameraMatrix)},
@@ -97,6 +110,22 @@ QString saveUndistortionMetadata(const QString& correctedImagePath,
         {"flip_horizontal", geometry.flipHorizontal},
         {"flip_vertical", geometry.flipVertical},
     };
+    if (geometry.projection == PixelProjection::SquarePixels) {
+        const auto flag = [](std::optional<bool> value) {
+            return value.has_value() ? QJsonValue(*value) : QJsonValue(QJsonValue::Null);
+        };
+        record["camera_reverse_x"] = flag(geometry.cameraOrientation.reverseX);
+        record["camera_reverse_y"] = flag(geometry.cameraOrientation.reverseY);
+        record["opencv_version"] = CV_VERSION;
+        record["valid_pix_roi_xywh"] = QJsonValue(QJsonValue::Null);
+        record["pixel_geometry"] = QJsonObject{
+            {"policy", kSquarePixelsProjection},
+            {"identity", productionGeometryIdentity(geometry)},
+            {"size", record.value("output_size_wh")},
+            {"camera_matrix", record.value("output_camera_matrix")},
+            {"distortion_coefficients", QJsonArray{0, 0, 0, 0, 0}}
+        };
+    }
     const QByteArray bytes = QJsonDocument(record).toJson(QJsonDocument::Indented);
     QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly) || file.write(bytes) != bytes.size() || !file.commit())

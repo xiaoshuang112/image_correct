@@ -142,54 +142,90 @@ void CollectionController::loadCollectionUndistortion() {
     emit collectionChanged();
 }
 
+QString CollectionController::undistortionDescription(int cameraIndex) const {
+    const bool second = cameraIndex == 2;
+    const auto& maps = second ? m_undistortionMaps2 : m_undistortionMaps;
+    const QString fileName = QFileInfo(second ? m_handEyePath2 : m_handEyePath).fileName();
+    QString description = maps
+        ? QString("%1 · %2×%3").arg(undistortionProjection())
+              .arg(maps->geometry().outputSize.width).arg(maps->geometry().outputSize.height)
+        : (second ? m_undistortion2Status : m_undistortionStatus);
+    if (!fileName.isEmpty()) description += " · " + fileName;
+    if (m_projection == collection::PixelProjection::Invalid)
+        description += " · 请先保存有效的投影模式";
+    return description;
+}
+
+std::shared_ptr<const collection::UndistortionMaps> CollectionController::buildCameraUndistortion(
+    int cameraIndex, collection::PixelProjection projection) const {
+    const bool second = cameraIndex == 2;
+    const auto& calibration = second ? m_undistortionCalibration2 : m_undistortionCalibration;
+    const cv::Size size = second ? cv::Size(m_cam2ActualWidth, m_cam2ActualHeight)
+                                 : cv::Size(m_camActualWidth, m_camActualHeight);
+    const auto& serial = second ? m_cam2DeviceSerial : m_camDeviceSerial;
+    if (!calibration) throw std::runtime_error(undistortionDescription(cameraIndex).toStdString());
+    return std::make_shared<collection::UndistortionMaps>(
+        *calibration, size, serial.toStdString(), projection, second ? m_cam2Orientation : m_camOrientation);
+}
+
+void CollectionController::logUndistortionMap(int cameraIndex) const {
+    const bool second = cameraIndex == 2;
+    const auto& geometry = (second ? m_undistortionMaps2 : m_undistortionMaps)->geometry();
+    const cv::Mat& output = geometry.outputCameraMatrix;
+    const auto flag = [](std::optional<bool> value) -> QString {
+        return value ? (*value ? "true" : "false") : "unknown";
+    };
+    APP_LOG_EVENT_INFO("collection", "undistortion_map", "ready",
+        {{"camera", QString::number(cameraIndex)},
+         {"calibration", second ? m_handEyePath2 : m_handEyePath},
+         {"projection", undistortionProjection()},
+         {"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
+         {"alpha", QString::number(geometry.alpha, 'f', 1)},
+         {"input", QString("%1x%2").arg(geometry.inputSize.width).arg(geometry.inputSize.height)},
+         {"output", QString("%1x%2").arg(geometry.outputSize.width).arg(geometry.outputSize.height)},
+         {"cropped", geometry.cropped ? "true" : "false"},
+         {"flip_horizontal", geometry.flipHorizontal ? "true" : "false"},
+         {"flip_vertical", geometry.flipVertical ? "true" : "false"},
+         {"camera_reverse_x", flag(geometry.cameraOrientation.reverseX)},
+         {"camera_reverse_y", flag(geometry.cameraOrientation.reverseY)},
+         {"valid_roi", geometry.projection == collection::PixelProjection::SquarePixels ? QStringLiteral("unused")
+             : QString("%1,%2,%3,%4").arg(geometry.validPixROI.x).arg(geometry.validPixROI.y)
+                 .arg(geometry.validPixROI.width).arg(geometry.validPixROI.height)},
+         {"fx", QString::number(output.at<double>(0, 0), 'g', 17)},
+         {"fy", QString::number(output.at<double>(1, 1), 'g', 17)},
+         {"cx", QString::number(output.at<double>(0, 2), 'g', 17)},
+         {"cy", QString::number(output.at<double>(1, 2), 'g', 17)}});
+}
+
 void CollectionController::toggleCameraUndistortion(int cameraIndex) {
     if (m_collectionBusy) return;
-    const bool isCam2 = (cameraIndex == 2);
-    auto& maps = isCam2 ? m_undistortionMaps2 : m_undistortionMaps;
-    const auto& calibration = isCam2 ? m_undistortionCalibration2 : m_undistortionCalibration;
-    const QString& statusText = isCam2 ? m_undistortion2Status : m_undistortionStatus;
-    const bool opened = isCam2 ? m_camera2Opened : m_cameraOpened;
-    const int actualW = isCam2 ? m_cam2ActualWidth : m_camActualWidth;
-    const int actualH = isCam2 ? m_cam2ActualHeight : m_camActualHeight;
-    const QString& serial = isCam2 ? m_cam2DeviceSerial : m_camDeviceSerial;
-    const QString label = isCam2 ? QStringLiteral("相机 2 ") : QStringLiteral("相机 1 ");
+    const bool second = cameraIndex == 2;
+    auto& maps = second ? m_undistortionMaps2 : m_undistortionMaps;
+    const QString label = m_dualCameraMode ? QString("相机 %1 ").arg(cameraIndex) : QString{};
 
-    ++m_previewGeneration;
     if (maps) {
+        ++m_previewGeneration;
         maps.reset();
         emit collectionChanged();
-        setStatus((m_dualCameraMode ? label : QString{}) + "去畸变已关闭，预览和拍照恢复原始图像");
+        setStatus(label + "去畸变已关闭");
         return;
     }
-    if (!calibration) { setStatus(statusText); return; }
-    if (!opened) {
-        setStatus(isCam2 ? "请先连接相机 2 再启用去畸变" : "请先连接相机再启用去畸变");
+    if (!(second ? m_camera2Opened : m_cameraOpened)) {
+        setStatus("请先连接相机，再启用去畸变");
         return;
     }
     try {
-        maps = std::make_shared<collection::UndistortionMaps>(
-            *calibration, cv::Size(actualW, actualH), serial.toStdString());
-        const auto& geometry = maps->geometry();
-        const cv::Mat& output = geometry.outputCameraMatrix;
-        APP_LOG_EVENT_INFO("collection", "undistortion_map", "ready",
-            {{"camera", QString::number(cameraIndex)},
-             {"pixel_frame", QString::fromLatin1(geometry.pixelFrame)},
-             {"alpha", QString::number(geometry.alpha, 'f', 1)},
-             {"input", QString("%1x%2").arg(geometry.inputSize.width).arg(geometry.inputSize.height)},
-             {"output", QString("%1x%2").arg(geometry.outputSize.width).arg(geometry.outputSize.height)},
-             {"cropped", geometry.cropped ? "true" : "false"},
-             {"flip_horizontal", geometry.flipHorizontal ? "true" : "false"},
-             {"flip_vertical", geometry.flipVertical ? "true" : "false"},
-             {"valid_roi", QString("%1,%2,%3,%4").arg(geometry.validPixROI.x).arg(geometry.validPixROI.y)
-                  .arg(geometry.validPixROI.width).arg(geometry.validPixROI.height)},
-             {"fx", QString::number(output.at<double>(0, 0), 'g', 17)},
-             {"fy", QString::number(output.at<double>(1, 1), 'g', 17)},
-             {"cx", QString::number(output.at<double>(0, 2), 'g', 17)},
-             {"cy", QString::number(output.at<double>(1, 2), 'g', 17)}});
+        maps = buildCameraUndistortion(cameraIndex, m_projection);
+        ++m_previewGeneration;
+        logUndistortionMap(cameraIndex);
         emit collectionChanged();
-        setStatus((m_dualCameraMode ? label : QString{}) + "去畸变已启用，后续预览和拍照使用校正图像，并保留原始融合图");
+        setStatus(label + "去畸变已启用 · " + undistortionDescription(cameraIndex));
     } catch (const std::exception& error) {
-        setStatus((m_dualCameraMode ? label : QString{}) + "启用去畸变失败：" + QString::fromUtf8(error.what()));
+        const QString reason = QString::fromUtf8(error.what());
+        APP_LOG_EVENT_WARNING("collection", "undistortion_map", "failed",
+            {{"camera", QString::number(cameraIndex)}, {"projection", undistortionProjection()},
+             {"calibration", second ? m_handEyePath2 : m_handEyePath}, {"message", reason}});
+        setStatus(label + "启用去畸变失败：" + reason);
     }
 }
 
@@ -386,6 +422,16 @@ void CollectionController::startCapture(CaptureMode mode, double xMm, double yMm
         }
     } else if (!m_cameraOpened || !m_previewActive || m_previewFrameCount == 0) {
         setStatus("请打开相机并等待预览画面后拍照");
+        return;
+    }
+    if (m_projection == collection::PixelProjection::Invalid) {
+        setStatus("投影模式无效，请在成像与曝光中选择并保存");
+        return;
+    }
+    if (m_projection == collection::PixelProjection::SquarePixels &&
+        (!m_undistortionMaps || (dual && !m_undistortionMaps2))) {
+        setStatus(dual ? "生产采集需要先启用两路相机的去畸变"
+                       : "生产采集需要先启用相机去畸变");
         return;
     }
     const bool ninePoints = mode == CaptureMode::NinePoints;

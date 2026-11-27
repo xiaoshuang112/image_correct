@@ -19,6 +19,8 @@ Item {
     property string previewWidth: ""
     property string previewHeight: ""
     property string previewExposure: ""
+    property string undistortionProjection: ""
+    readonly property var projectionPolicies: ["opencv_alpha1_v1", "square_pixels_v1"]
     property string camera2Ip: ""
     property string camera2Sn: ""
     property string preview2Width: ""
@@ -38,7 +40,8 @@ Item {
         }
         return {cameraIp: cameraIp, robotIp: robotIp, robotSpeedMmS: robotSpeed,
             previewWidth: previewWidth, previewHeight: previewHeight,
-            cameraExposureUs: previewExposure, exposureList: exposures.join(",")}
+            cameraExposureUs: previewExposure, exposureList: exposures.join(","),
+            undistortionProjection: undistortionProjection}
     }
     readonly property var camera2Draft: {
         var dependency = revision
@@ -87,6 +90,7 @@ Item {
         robotSpeed = String(controller.robotSpeedMmS)
         previewWidth = String(controller.previewWidth); previewHeight = String(controller.previewHeight)
         previewExposure = String(controller.cameraExposureUs)
+        undistortionProjection = controller.undistortionProjection
         camera2Ip = controller.camera2Ip
         camera2Sn = controller.camera2Sn
         preview2Width = String(controller.preview2Width)
@@ -307,6 +311,15 @@ Item {
                                 }
                                 HmiText { width: parent.width; text: "预览曝光独立于融合序列，保存后生效（1～10000000 μs）。"; font.pixelSize: Theme.micro; color: Theme.ink3 }
                                 Rectangle { width: parent.width; height: 1; color: Theme.hairline }
+                                HmiText { text: "去畸变投影"; font.pixelSize: Theme.meta }
+                                CompactSelector {
+                                    objectName: "undistortionProjectionSelector"
+                                    width: parent.width
+                                    enabled: !page.locked
+                                    model: ["历史全视野", "生产 · 方形像素"]
+                                    currentIndex: page.projectionPolicies.indexOf(page.undistortionProjection)
+                                    onActivated: page.undistortionProjection = page.projectionPolicies[index]
+                                }
                                 CollectButton {
                                     objectName: "undistortionButton"; width: parent.width; small: true; implicitHeight: 36
                                     positive: page.controller.undistortionEnabled
@@ -324,7 +337,12 @@ Item {
                                     onClicked: page.controller.toggleUndistortion2()
                                 }
                                 HmiText { objectName: "undistortion2Status"; visible: page.dualMode; width: parent.width; text: page.controller.undistortion2Status; font.pixelSize: Theme.micro; color: page.controller.undistortion2Ready ? Theme.okText : Theme.ink3 }
-                                HmiText { width: parent.width; text: "校正开关即时生效（也可在主页预览栏一键切换）；曝光需保存。"; font.pixelSize: Theme.micro; color: Theme.ink3 }
+                                HmiText {
+                                    width: parent.width; wrapMode: Text.WordWrap; font.pixelSize: Theme.micro; color: Theme.ink3
+                                    text: page.undistortionProjection === "square_pixels_v1"
+                                        ? "投影保存后应用到所有相机。生产采集前需启用各路去畸变。"
+                                        : "投影和曝光保存后生效。去畸变开关即时生效。"
+                                }
                             }
 
                             // TAB 2 - Storage

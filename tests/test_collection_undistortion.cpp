@@ -11,6 +11,7 @@
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <iostream>
 #include <limits>
 #include <stdexcept>
@@ -214,6 +215,54 @@ int main(int argc, char** argv) {
                 !fieldMaps.geometry().cropped, "field output was cropped or resized");
         require(cv::norm(fieldCorrected, fieldReference, cv::NORM_INF) == 0,
                 "field image differs from the production remap");
+
+        // xike-lib's 2448x2048 production geometry, including its verbatim JSON identity.
+        const cv::Mat squareK = (cv::Mat_<double>(3, 3) <<
+            1014.5314866587811, 0, 1220.6232446590507, 0, 1014.0868860512105, 1019.8297194716779, 0, 0, 1);
+        const cv::Mat squareD = (cv::Mat_<double>(1, 5) <<
+            -0.1208660846259944, 0.06268151807693963, 0.0008785042400708264,
+            0.000606394986651896, 0.0005010223761770032);
+        const cv::Size squareSize(2448, 2048);
+        const collection::UndistortionCalibration squareCalibration{squareK, squareD, squareSize, "CAM-SQUARE"};
+        using collection::PixelProjection;
+        const collection::UndistortionMaps squareMaps(squareCalibration, squareSize, "CAM-SQUARE",
+            PixelProjection::SquarePixels, {true, std::nullopt});
+        rejects([&] { collection::UndistortionMaps bad(squareCalibration, {2448, 2047},
+            "CAM-SQUARE", PixelProjection::SquarePixels); });
+        rejects([&] { collection::UndistortionMaps bad(squareCalibration, squareSize,
+            "WRONG", PixelProjection::SquarePixels); });
+        cv::Mat squareReferenceK = cv::getOptimalNewCameraMatrix(squareK, squareD, squareSize, 1.0, squareSize);
+        squareReferenceK.at<double>(0, 0) = squareReferenceK.at<double>(1, 1) =
+            std::min(squareReferenceK.at<double>(0, 0), squareReferenceK.at<double>(1, 1));
+        require(cv::norm(squareMaps.geometry().computationCameraMatrix, squareK) == 0 &&
+                cv::norm(squareMaps.geometry().outputCameraMatrix, squareReferenceK) == 0,
+                "square projection must match the full-precision production K");
+        cv::Mat squareRaw(squareSize, CV_8UC3);
+        fieldRandom.fill(squareRaw, cv::RNG::UNIFORM, 0, 256);
+        cv::initUndistortRectifyMap(squareK, squareD, cv::Mat(), squareReferenceK, squareSize, CV_16SC2, map1, map2);
+        cv::remap(squareRaw, reference, map1, map2, cv::INTER_LINEAR, cv::BORDER_CONSTANT, cv::Scalar::all(0));
+        const QString squarePng = temp.filePath("square_undistorted.png");
+        const QString squareRawPng = temp.filePath("square_raw.png");
+        require(collection::saveCaptureImages(squareRaw, squareMaps.apply(squareRaw), squareRawPng, squarePng) == squarePng &&
+                cv::norm(cv::imread(squarePng.toStdString()), reference, cv::NORM_INF) == 0 &&
+                cv::norm(cv::imread(squareRawPng.toStdString()), squareRaw, cv::NORM_INF) == 0,
+                "saved square PNG or original differs from its reference");
+        require(collection::saveUndistortionMetadata(squarePng, squareMaps.geometry()).isEmpty(),
+                "could not save production pixel geometry");
+        const auto squareRecord = QJsonDocument::fromJson(read(temp.filePath("square_undistorted.pixel_frame.json"))).object();
+        const auto production = squareRecord["pixel_geometry"].toObject();
+        const QString expectedIdentity = QStringLiteral(
+            R"({"distortion":[-0.1208660846259944,0.06268151807693963,0.0008785042400708264,0.000606394986651896,0.0005010223761770032],"policy":"square_pixels_v1","raw_K":[1014.5314866587811,0.0,1220.6232446590507,0.0,1014.0868860512105,1019.8297194716779,0.0,0.0,1.0],"size":[2448,2048]})");
+        require(squareRecord["pixel_frame"] == QJsonValue("square_pixels_v1") &&
+                production["policy"] == QJsonValue("square_pixels_v1") &&
+                production["identity"].toString() == expectedIdentity &&
+                production["size"] == QJsonArray{2448, 2048} &&
+                production["camera_matrix"] == squareRecord["output_camera_matrix"] &&
+                production["distortion_coefficients"] == QJsonArray{0, 0, 0, 0, 0},
+                "sidecar does not match the production pixel_geometry contract");
+        require(squareRecord["camera_reverse_x"].toBool() && squareRecord["camera_reverse_y"].isNull() &&
+                frame.value("pixel_geometry").isUndefined(),
+                "sidecar must distinguish read-back orientation from unknown orientation and retain legacy schema");
 
         // Unicode 目录与文件名：调用方传入 UTF-8 窄字符串，加载器必须按 Unicode 解码。
         // OpenCV 按文件名打开时使用 ANSI fopen，所以此前会把同一个名字解成另一个文件。
