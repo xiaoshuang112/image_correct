@@ -267,7 +267,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
 }
 
 void CollectionController::openDiagnosticFolder() {
-    const QString directory = QFileInfo(diagnosticLogPath()).absolutePath();
+    const QString directory = QFileInfo(DiagnosticLogger::instance().logFilePath()).absolutePath();
     if (!QDesktopServices::openUrl(QUrl::fromLocalFile(directory)))
         setStatus("无法打开诊断日志目录：" + directory);
 }

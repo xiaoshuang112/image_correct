@@ -397,9 +397,10 @@ std::string yamlValue(const ConfigValue& value) {
     return text.str();
 }
 
-bool updateFlatConfigValuesFile(const std::string& path,
-                               const ConfigUpdates& updates,
-                               std::string& error) {
+}  // namespace
+
+bool updateFlatConfigFile(const std::string& path, const ConfigUpdates& updates,
+                          std::string& error) {
     namespace fs = std::filesystem;
     error.clear();
     if (path.empty()) { error = "invalid config path"; return false; }
@@ -604,27 +605,6 @@ bool updateFlatConfigValuesFile(const std::string& path,
         return false;
     }
     return syncDirectory(parent, error);
-}
-} // namespace
-
-bool updateFlatConfigFile(const std::string& path, const ConfigUpdates& updates,
-                          std::string& error) {
-    return updateFlatConfigValuesFile(path, updates, error);
-}
-
-bool updateFlatIntegerConfigFile(const std::string& path, const std::string& key,
-                                 int value, std::string& error) {
-    return updateFlatConfigFile(path, {{key, value}}, error);
-}
-
-bool updateFlatStringConfigFile(const std::string& path, const std::string& key,
-                                const std::string& value, std::string& error) {
-    return updateFlatConfigFile(path, {{key, value}}, error);
-}
-
-bool updateFlatIntegerSequenceConfigFile(const std::string& path, const std::string& key,
-                                         const std::vector<int>& values, std::string& error) {
-    return updateFlatConfigFile(path, {{key, values}}, error);
 }
 
 }  // namespace config_resolver

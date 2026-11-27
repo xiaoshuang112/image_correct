@@ -15,7 +15,6 @@ struct AcquireResult {
 
 AcquireResult acquire();
 void release();
-unsigned int referenceCount();
 
 }  // namespace mvs_sdk
 

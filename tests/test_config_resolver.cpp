@@ -169,8 +169,8 @@ int test_config_resolver() {
         "%YAML:1.0\n---\n"
         "camera_exposure_us: 30000 # production default\n"
         "cam_ip: \"192.168.3.10\"\n");
-    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(
-                   kCfgPath, "camera_exposure_us", 45000, err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(
+                   kCfgPath, {{"camera_exposure_us", 45000}}, err),
                "update_existing_exposure");
     TEST_CHECK(readFile().find("camera_exposure_us: 45000 # production default") !=
                    std::string::npos &&
@@ -187,8 +187,8 @@ int test_config_resolver() {
         "camera_profile: \"cam_mvs_a\"\n"
         "cam_mvs_a:\n"
         "  camera_exposure_us: 32000\n");
-    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(
-                   kCfgPath, "camera_exposure_us", 51000, err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(
+                   kCfgPath, {{"camera_exposure_us", 51000}}, err),
                "insert_missing_exposure");
     TEST_CHECK(resolveCameraConfigFile(kCfgPath,
                                        makeDefaults(), out, err) &&
@@ -202,8 +202,8 @@ int test_config_resolver() {
         "camera_exposure_us: 30000\n"
         "camera_exposure_us: 40000\n");
     const std::string duplicateBefore = readFile();
-    TEST_CHECK(!config_resolver::updateFlatIntegerConfigFile(
-                   kCfgPath, "camera_exposure_us", 50000, err),
+    TEST_CHECK(!config_resolver::updateFlatConfigFile(
+                   kCfgPath, {{"camera_exposure_us", 50000}}, err),
                "duplicate_exposure_rejected");
     TEST_CHECK(readFile() == duplicateBefore, "duplicate_file_unchanged");
 
@@ -292,14 +292,15 @@ int test_config_resolver() {
     writeFile("%YAML:1.0\n---\ncam_ip: \"192.168.66.253\" # camera\n"
               "fusion_exposures_us: [5000, 8500, 14500, 25000] # bracket\n"
               "cam_width: 4024\ncam_height: 3036\nrobot_ip: \"192.168.66.14\"\n");
-    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "192.168.66.200", err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath, {{"cam_ip", "192.168.66.200"}}, err),
                "camera_ip_persisted");
-    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "robot_ip", "192.168.66.20", err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath, {{"robot_ip", "192.168.66.20"}}, err),
                "robot_ip_persisted");
-    TEST_CHECK(config_resolver::updateFlatIntegerConfigFile(kCfgPath, "cam_width", 2448, err) &&
-               config_resolver::updateFlatIntegerConfigFile(kCfgPath, "cam_height", 2048, err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath, {{"cam_width", 2448}}, err) &&
+               config_resolver::updateFlatConfigFile(kCfgPath, {{"cam_height", 2048}}, err),
                "resolution_persisted");
-    TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", {6000, 18000}, err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(
+                   kCfgPath, {{"fusion_exposures_us", std::vector<int>{6000, 18000}}}, err),
                "fusion_sequence_persisted");
     TEST_CHECK(readFile().find("# camera") != std::string::npos && readFile().find("# bracket") != std::string::npos,
                "collection_updates_preserve_comments");
@@ -325,7 +326,8 @@ int test_config_resolver() {
     }
     for (const std::string& sequence : {std::string("\n  - 5000\n  - 8500"), std::string("[5000,\n 8500\n]")}) {
         writeFile("%YAML:1.0\n---\nfusion_exposures_us: " + sequence + "\n# keep\nrobot_ip: \"192.168.66.14\"\n");
-        TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", {7000, 22000}, err),
+        TEST_CHECK(config_resolver::updateFlatConfigFile(
+                       kCfgPath, {{"fusion_exposures_us", std::vector<int>{7000, 22000}}}, err),
                    "multiline_sequence_updated");
         cv::FileStorage config(kCfgPath, cv::FileStorage::READ);
         TEST_CHECK(config_resolver::resolveCollectionConfig(config).fusion_exposures_us == std::vector<int>({7000, 22000}) &&
@@ -333,10 +335,10 @@ int test_config_resolver() {
                    "multiline_update_preserves_following_fields");
     }
     writeFile("%YAML:1.0\n---\ncam_ip: \"old#host\" # comment\n");
-    TEST_CHECK(config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "new#host", err) &&
+    TEST_CHECK(config_resolver::updateFlatConfigFile(kCfgPath, {{"cam_ip", "new#host"}}, err) &&
                readFile().find("\"new#host\" # comment") != std::string::npos, "hash_in_quoted_string_preserved");
     const auto beforeInvalidString = readFile();
-    TEST_CHECK(!config_resolver::updateFlatStringConfigFile(kCfgPath, "cam_ip", "bad\ninjected: 1", err) &&
+    TEST_CHECK(!config_resolver::updateFlatConfigFile(kCfgPath, {{"cam_ip", "bad\ninjected: 1"}}, err) &&
                readFile() == beforeInvalidString, "multiline_string_write_rejected");
 
     // ---- Unicode 目录与文件名 ----
@@ -381,7 +383,7 @@ int test_config_resolver() {
             std::ofstream fixture(unicodePath, std::ios::binary);
             fixture << "%YAML:1.0\n---\n# 中文注释\ncam_ip: \"192.168.1.11\"\nrobot_speed_mm_s: 12\n";
         }
-        TEST_CHECK(config_resolver::updateFlatStringConfigFile(utf8Path, "cam_ip", "192.168.66.201", err) &&
+        TEST_CHECK(config_resolver::updateFlatConfigFile(utf8Path, {{"cam_ip", "192.168.66.201"}}, err) &&
                    err.empty(), "unicode_path_save_accepts_utf8_name");
         const std::string saved = readFile(unicodePath);
         TEST_CHECK(saved.find("# 中文注释") != std::string::npos &&
@@ -399,7 +401,7 @@ int test_config_resolver() {
         // 报告错误时使用 UTF-8 名字，而不是 ANSI 代码页解出的乱码。
         const std::string missingUnicodePath = "caitu_测试配置_手眼目录_不存在/配置.yaml";
         err.clear();
-        TEST_CHECK(!config_resolver::updateFlatStringConfigFile(missingUnicodePath, "cam_ip", "10.0.0.1", err) &&
+        TEST_CHECK(!config_resolver::updateFlatConfigFile(missingUnicodePath, {{"cam_ip", "10.0.0.1"}}, err) &&
                    err.find("测试配置") != std::string::npos,
                    "unicode_error_message_keeps_utf8_name");
 
@@ -408,7 +410,8 @@ int test_config_resolver() {
         bool rejectedWithoutThrow = false;
         err.clear();
         try {
-            rejectedWithoutThrow = !config_resolver::updateFlatStringConfigFile(invalidUtf8, "cam_ip", "10.0.0.1", err);
+            rejectedWithoutThrow =
+                !config_resolver::updateFlatConfigFile(invalidUtf8, {{"cam_ip", "10.0.0.1"}}, err);
         } catch (const std::exception&) {
             rejectedWithoutThrow = false;
         }
@@ -418,7 +421,8 @@ int test_config_resolver() {
     }
 
     std::remove(kCfgPath);
-    TEST_CHECK(config_resolver::updateFlatIntegerSequenceConfigFile(kCfgPath, "fusion_exposures_us", defaultExposures, err),
+    TEST_CHECK(config_resolver::updateFlatConfigFile(
+                   kCfgPath, {{"fusion_exposures_us", defaultExposures}}, err),
                "missing_config_created_with_exposures");
 
     writeFile(

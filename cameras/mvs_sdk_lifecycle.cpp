@@ -37,9 +37,4 @@ void release() {
     if (g_refcount == 0) MV_CC_Finalize();
 }
 
-unsigned int referenceCount() {
-    std::lock_guard<std::mutex> lock(g_mutex);
-    return g_refcount;
-}
-
 }  // namespace mvs_sdk

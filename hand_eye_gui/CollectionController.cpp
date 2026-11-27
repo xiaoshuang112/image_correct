@@ -422,11 +422,6 @@ void CollectionController::loadConfigYaml()
 //  属性 setter
 // ===================================================================
 
-QString CollectionController::diagnosticLogPath() const
-{
-    return DiagnosticLogger::instance().logFilePath();
-}
-
 QString CollectionController::cameraBackend() const
 {
     return QStringLiteral("mvs");
@@ -453,8 +448,6 @@ void CollectionController::openCamera()
         if (second) {
             m_cam2DeviceModel = QString::fromStdString(audit.model);
             m_cam2DeviceSerial = QString::fromStdString(audit.serial);
-            m_cam2DeviceFirmware = QString::fromStdString(audit.firmware);
-            m_cam2DeviceTransport = QString::fromStdString(audit.transport);
             m_cam2ActualWidth = audit.actual_width;
             m_cam2ActualHeight = audit.actual_height;
             m_camera2ActualExposureUs = resolvedExposure;
@@ -463,8 +456,6 @@ void CollectionController::openCamera()
         } else {
             m_camDeviceModel = QString::fromStdString(audit.model);
             m_camDeviceSerial = QString::fromStdString(audit.serial);
-            m_camDeviceFirmware = QString::fromStdString(audit.firmware);
-            m_camDeviceTransport = QString::fromStdString(audit.transport);
             m_camActualWidth = audit.actual_width;
             m_camActualHeight = audit.actual_height;
             m_cameraActualExposureUs = resolvedExposure;
