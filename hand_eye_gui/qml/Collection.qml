@@ -48,7 +48,7 @@ ApplicationWindow {
                                         : savedStageMatch ? Number(savedStageMatch[1])
                                         : 0
     readonly property bool progressFinished: progressText.indexOf("完成") >= 0 && progressTotal > 0 && completedSteps >= progressTotal && !busy
-    readonly property real progressRatio: {
+    readonly property real parsedProgressRatio: {
         if (progressFinished) return 1.0
         if (pointStageMatch && progressTotal > 0) {
             var capturing = progressText.indexOf("采集") >= 0
@@ -58,7 +58,15 @@ ApplicationWindow {
         if (savedStageMatch && progressTotal > 0) {
             return Math.min(0.95, Math.max(0, completedSteps / (progressTotal + 1)))
         }
-        return busy ? 0.08 : 0
+        return -1
+    }
+    property real latchedProgressRatio: 0
+    onParsedProgressRatioChanged: if (parsedProgressRatio >= 0) latchedProgressRatio = parsedProgressRatio
+    onProgressTextChanged: if (progressText === "" || progressText.indexOf("基准位稳定") >= 0) latchedProgressRatio = 0
+    readonly property real progressRatio: {
+        if (parsedProgressRatio >= 0) return parsedProgressRatio
+        if (busy) return Math.max(0.08, latchedProgressRatio)
+        return 0
     }
     property string frameMetadata: ""
     property bool hasFrame: false
@@ -118,7 +126,7 @@ ApplicationWindow {
             root.frameMetadata = "相机 1 · " + root.controller.cameraModel + " · " + root.controller.cameraActualWidth + " × " + root.controller.cameraActualHeight + " · " + root.controller.cameraActualExposureUs + " μs" + (root.controller.undistortionEnabled ? " · 去畸变" : "")
         }
     }
-    onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = "" }
+    onControllerChanged: { historyReady = false; seenCount = controller.savedImageCount; shutterFlash.stop(); flash.opacity = 0; historyReady = true; hasFrame = false; frameMetadata = ""; latchedProgressRatio = 0 }
     onClosing: function(event) {
         teach.stopJog()
         if (busy) { event.accepted = false; controller.cancelCollectionOperation() }
@@ -669,8 +677,14 @@ ApplicationWindow {
                                     }
                                     // Crosshair Switch (Camera 1 overlay only in dual mode)
                                     RowLayout {
+                                        id: crosshairControl
+                                        objectName: "crosshairControl"
+                                        readonly property bool hoveredForTooltip: crosshairHover.hovered
                                         spacing: 5
                                         opacity: root.crosshairSupported ? 1 : 0.4
+                                        ToolTip.visible: crosshairHover.hovered
+                                        ToolTip.text: root.crosshairSupported ? "显示或隐藏预览中心十字线（仅预览有效）" : "相机 2 预览不显示中心十字线（仅相机 1 支持）"
+                                        HoverHandler { id: crosshairHover }
                                         Rectangle {
                                             objectName: "crosshairToggle"
                                             enabled: root.crosshairSupported
@@ -686,9 +700,6 @@ ApplicationWindow {
                                                 anchors.fill: parent; enabled: root.crosshairSupported; cursorShape: Qt.PointingHandCursor
                                                 onClicked: root.showCrosshair = !root.showCrosshair
                                             }
-                                            ToolTip.visible: crosshairHover.hovered
-                                            ToolTip.text: root.crosshairSupported ? "显示或隐藏预览中心十字线（仅预览有效）" : "相机 2 预览不显示中心十字线（仅相机 1 支持）"
-                                            HoverHandler { id: crosshairHover }
                                         }
                                         HmiText {
                                             visible: !viewfinderBar.tight

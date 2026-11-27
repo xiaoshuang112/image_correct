@@ -663,8 +663,12 @@ SharedCollectionState {
         require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
                 "progress reached 100% while capturing point 9");
         controller->setProperty("ninePointProgress", "已保存 9/9 · 返回基准位"); QTest::qWait(10);
-        require(window->property("progressRatio").toDouble() < 0.99 && !window->property("progressFinished").toBool(),
+        const double returningRatio = window->property("progressRatio").toDouble();
+        require(returningRatio >= 0.89 && returningRatio < 0.99 && !window->property("progressFinished").toBool(),
                 "progress reached 100% while returning to origin");
+        controller->setProperty("ninePointProgress", "正在停止自动采图…"); QTest::qWait(10);
+        require(qAbs(window->property("progressRatio").toDouble() - returningRatio) < 0.001,
+                "stopping capture jumped progress backwards");
         controller->setProperty("motionFault", true); controller->setProperty("collectionBusy", false); QTest::qWait(10);
         require(text("stopButton") == "重试停止" && !item("settingsButton")->isEnabled(), "main fault did not preserve stop/connection lock");
         controller->setProperty("motionFault", false); QTest::qWait(10);
@@ -694,6 +698,12 @@ SharedCollectionState {
                 text("frameMetadata").contains("相机 2") && !item("previewDirectionGizmo")->isVisible() &&
                 !item("crosshairToggle")->isEnabled() && !window->property("crosshairVisibleOnPreview").toBool(),
                 "switching to cam2 left crosshair switch active or cam1 gizmo visible");
+        auto* crosshairToggleItem = item("crosshairToggle");
+        QTest::mouseMove(window, crosshairToggleItem->mapToScene(QPointF(crosshairToggleItem->width() / 2, crosshairToggleItem->height() / 2)).toPoint());
+        QTest::qWait(20);
+        require(item("crosshairControl")->isEnabled() && item("crosshairControl")->property("hoveredForTooltip").toBool(),
+                "disabled cam2 crosshair switch did not trigger hover tooltip");
+        QTest::mouseMove(window, QPoint(1, 1)); QTest::qWait(10);
         window->contentItem()->forceActiveFocus();
         QTest::keyClick(window, Qt::Key_Tab); QTest::qWait(20);
         require(controller->property("activePreviewCamera").toInt() == 1 &&
