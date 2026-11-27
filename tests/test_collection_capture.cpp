@@ -226,21 +226,32 @@ int main(int argc, char** argv) {
                 "incomplete cam2 saved half pair");
         cam2.incomplete = false;
 
-        // Camera 2 PNG write failure removes Camera 1 PNGs just written
-        const QString writeFailRoot = temp.filePath("dual-write-fail");
-        const QDir writeFailDay(QDir(writeFailRoot).filePath("2026-11-03"));
-        require(QDir().mkpath(writeFailDay.absolutePath()), "cannot create dual write-fail day dir");
-        QFile cam2Blocker(writeFailDay.filePath("cam2"));
-        require(cam2Blocker.open(QIODevice::WriteOnly), "cannot create cam2 file blocker");
-        cam2Blocker.close();
+        const auto pathForPoint = [](QString path, const QString& label) {
+            return path.replace("_P01_fused", "_" + label + "_fused");
+        };
+
+        // The destination directories already exist, so cam1 commits both PNGs
+        // before cam2 detects its conflicting corrected image.
+        const auto conflictingCam2 = pathForPoint(expectedCam2, "P03");
+        require(QFile::copy(expectedCam1, conflictingCam2), "cannot create conflicting cam2 PNG");
+        QFile conflict(conflictingCam2);
+        require(conflict.open(QIODevice::ReadOnly), "cannot read conflicting cam2 PNG");
+        const auto originalBytes = conflict.readAll();
+        require(!originalBytes.isEmpty(), "conflicting cam2 PNG is empty");
+        conflict.close();
         const auto dualWriteFail = collection::captureDualAndSave(
-            cam1, cam2, writeFailRoot, time, {5000, 8500}, {6000, 9500},
-            maps, {}, readPose, cancelled, {}, {"P03", true});
-        require(!dualWriteFail.complete && dualWriteFail.path1.isEmpty() &&
-                writeFailDay.entryList({"*.png"}, QDir::Files).isEmpty() &&
-                !QFileInfo::exists(writeFailDay.filePath("cam1/undistorted/capture_20261103_235959_999_P03_fused_undistorted.png")) &&
-                !QFileInfo::exists(writeFailDay.filePath("cam1/raw/capture_20261103_235959_999_P03_fused.png")),
-                "cam2 write failure left cam1 PNGs behind");
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            maps, maps2, readPose, cancelled, {}, {"P03", true});
+        require(!dualWriteFail.complete && dualWriteFail.path1.isEmpty() && dualWriteFail.path2.isEmpty() &&
+                dualWriteFail.message.contains("图片文件已存在"),
+                "cam2 PNG collision did not report an incomplete pair");
+        require(!QFileInfo::exists(pathForPoint(expectedCam1, "P03")) &&
+                !QFileInfo::exists(pathForPoint(expectedRaw1, "P03")) &&
+                !QFileInfo::exists(pathForPoint(expectedRaw2, "P03")),
+                "cam2 PNG collision left new PNGs behind");
+        require(conflict.open(QIODevice::ReadOnly) && conflict.readAll() == originalBytes,
+                "cam2 PNG collision removed or changed the existing image");
+        conflict.close();
 
         // Pose RPC failure produces null poses and complete=false
         const auto dualNoPose = collection::captureDualAndSave(
@@ -251,6 +262,26 @@ int main(int argc, char** argv) {
                 record(jsonPath(dualNoPose.path1))["x"].isNull() &&
                 record(jsonPath(dualNoPose.path2))["x"].isNull(),
                 "dual pose RPC failure did not degrade to null or reported complete");
+
+        // A directory at cam2's pose path blocks the sidecar write after all PNGs commit.
+        const auto poseFailureCam1 = pathForPoint(expectedCam1, "P05");
+        const auto poseFailureCam2 = pathForPoint(expectedCam2, "P05");
+        const auto blockedPose = jsonPath(poseFailureCam2);
+        require(QDir().mkdir(blockedPose), "cannot block cam2 pose sidecar");
+        const auto dualPoseWriteFail = collection::captureDualAndSave(
+            cam1, cam2, dualRoot, time, {5000, 8500}, {6000, 9500},
+            maps, maps2, readPose, cancelled, {}, {"P05", true});
+        require(!dualPoseWriteFail.complete && dualPoseWriteFail.path1 == poseFailureCam1 &&
+                dualPoseWriteFail.path2 == poseFailureCam2 &&
+                dualPoseWriteFail.message.contains("相机 2：法兰位姿文件保存失败"),
+                "cam2 pose sidecar failure was not reported for the committed pair");
+        require(QFileInfo(poseFailureCam1).isFile() && QFileInfo(poseFailureCam2).isFile() &&
+                QFileInfo(pathForPoint(expectedRaw1, "P05")).isFile() &&
+                QFileInfo(pathForPoint(expectedRaw2, "P05")).isFile(),
+                "cam2 pose sidecar failure discarded images");
+        require(record(jsonPath(poseFailureCam1)) == json &&
+                record(jsonPath(pathForPoint(expectedRaw2, "P05"))) == json &&
+                QFileInfo(blockedPose).isDir(), "cam2 pose sidecar failure affected other pose records");
 
         std::cout << "Capture format, pose degradation, cancellation, commit barriers and undistorted pairs passed\n";
         return 0;

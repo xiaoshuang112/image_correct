@@ -9,6 +9,10 @@ Item {
     signal leave()
     property int tab: 0
     property int camSubTab: 0
+    readonly property bool dualMode: !!controller && controller.dualCameraMode
+    onDualModeChanged: {
+        if (!dualMode) camSubTab = 0
+    }
     property string cameraIp: ""
     property string robotIp: ""
     property string robotSpeed: ""
@@ -32,19 +36,28 @@ Item {
             var value = exposureSlots.get(i).value.trim()
             if (value !== "") exposures.push(value)
         }
+        return {cameraIp: cameraIp, robotIp: robotIp, robotSpeedMmS: robotSpeed,
+            previewWidth: previewWidth, previewHeight: previewHeight,
+            cameraExposureUs: previewExposure, exposureList: exposures.join(",")}
+    }
+    readonly property var camera2Draft: {
+        var dependency = revision
         var exposures2 = []
         for (var j = 0; j < exposure2Slots.count; ++j) {
             var v2 = exposure2Slots.get(j).value.trim()
             if (v2 !== "") exposures2.push(v2)
         }
-        return {cameraIp: cameraIp, camera2Ip: camera2Ip, camera2Sn: camera2Sn, robotIp: robotIp, robotSpeedMmS: robotSpeed,
-            previewWidth: previewWidth, previewHeight: previewHeight, preview2Width: preview2Width, preview2Height: preview2Height,
-            cameraExposureUs: previewExposure, camera2ExposureUs: preview2Exposure, camera2Gain: camera2Gain,
-            exposureList: exposures.join(","), exposure2List: exposures2.join(",")}
+        return {camera2Ip: camera2Ip, camera2Sn: camera2Sn,
+            preview2Width: preview2Width, preview2Height: preview2Height,
+            camera2ExposureUs: preview2Exposure, camera2Gain: camera2Gain, exposure2List: exposures2.join(",")}
+    }
+    function settingsValues(includeCamera2) {
+        return includeCamera2 ? Object.assign({}, draft, camera2Draft) : draft
     }
     readonly property int dirtyCount: {
+        var values = settingsValues(dualMode)
         var count = 0
-        for (var key in draft) if (String(draft[key]) !== String(savedDraft[key])) ++count
+        for (var key in values) if (String(values[key]) !== String(savedDraft[key])) ++count
         return loaded ? count : 0
     }
     readonly property bool dirty: dirtyCount > 0
@@ -67,7 +80,7 @@ Item {
         ++revision
     }
     readonly property string exposureError: exposureListError(draft.exposureList)
-    readonly property string exposure2Error: exposureListError(draft.exposure2List)
+    readonly property string exposure2Error: dualMode ? exposureListError(camera2Draft.exposure2List) : ""
     function reload() {
         loaded = false
         cameraIp = controller.cameraIp; robotIp = controller.robotIp
@@ -85,7 +98,7 @@ Item {
         var values2 = controller.exposure2List.split(/[,，;\s]+/).filter(function(v) { return v !== "" })
         for (var k = 0; k < exposure2Slots.count; ++k) exposure2Slots.setProperty(k, "value", k < values2.length ? values2[k] : "")
         ++revision
-        savedDraft = JSON.parse(JSON.stringify(draft))
+        savedDraft = settingsValues(true)
         loaded = true; feedback = "配置已载入，编辑后点击「保存配置」"
     }
     function requestLeave() { if (locked) return; if (dirty) leaveConfirm.open(); else leave() }
@@ -94,7 +107,7 @@ Item {
         if (exposureError) { feedback = exposureError; return }
         if (exposure2Error) { feedback = "相机 2 " + exposure2Error; return }
         feedback = "正在保存配置…"
-        controller.applySettings(draft)
+        controller.applySettings(settingsValues(dualMode))
     }
     Connections {
         target: page.controller
@@ -194,7 +207,9 @@ Item {
                         objectName: "settingsLeftCard"; width: (parent.width - 14) / 2; height: parent.height; x: 0
                         Column {
                             id: leftContent; width: parent.width; spacing: 14
-                            readonly property real deviceHeight: Math.max(camera1DeviceFields.implicitHeight, camera2DeviceFields.implicitHeight)
+                            readonly property real deviceHeight: page.dualMode
+                                ? Math.max(camera1DeviceFields.implicitHeight, camera2DeviceFields.implicitHeight)
+                                : camera1DeviceFields.implicitHeight
                             readonly property real requiredHeight: 32 + spacing
                                 + Math.max(deviceHeight, imagingSettings.implicitHeight, storageSettings.implicitHeight)
                             RowLayout {
@@ -206,7 +221,7 @@ Item {
                                 }
                                 // Camera 1 | Camera 2 sub-tab switcher on Devices tab
                                 Rectangle {
-                                    visible: page.tab === 0
+                                    visible: page.tab === 0 && page.dualMode
                                     Layout.preferredHeight: 30; implicitWidth: camSubRow.implicitWidth + 6
                                     radius: 7; color: Theme.surfaceAlt; border.width: 1; border.color: Theme.hairline
                                     RowLayout {
@@ -247,7 +262,7 @@ Item {
 
                             // TAB 0 - Camera 2 Device Fields
                             Column {
-                                id: camera2DeviceFields; visible: page.tab === 0 && page.camSubTab === 1; width: parent.width; spacing: 8
+                                id: camera2DeviceFields; visible: page.tab === 0 && page.dualMode && page.camSubTab === 1; width: parent.width; spacing: 8
                                 HmiText { width: parent.width; text: "相机 2 IP（可选，与序列号二选一）"; font.pixelSize: Theme.meta }
                                 CollectField { objectName: "camera2IpInput"; width: parent.width; text: page.camera2Ip; placeholderText: "192.168.66.254"; enabled: !page.locked && !page.controller.camera2Opened; onTextChanged: page.camera2Ip = text }
                                 HmiText { width: parent.width; text: "相机 2 序列号（可选）"; font.pixelSize: Theme.meta }
@@ -284,6 +299,7 @@ Item {
                                         CollectField { objectName: "previewExposureInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.previewExposure; enabled: !page.locked; onTextChanged: page.previewExposure = text }
                                     }
                                     ColumnLayout {
+                                        visible: page.dualMode
                                         Layout.fillWidth: true; Layout.preferredWidth: 1; Layout.minimumWidth: 0; spacing: 4
                                         HmiText { text: "相机 2 预览曝光 · μs"; font.pixelSize: Theme.meta }
                                         CollectField { objectName: "preview2ExposureInput"; Layout.fillWidth: true; Layout.minimumWidth: 0; text: page.preview2Exposure; enabled: !page.locked; onTextChanged: page.preview2Exposure = text }
@@ -301,12 +317,13 @@ Item {
                                 HmiText { objectName: "undistortionStatus"; width: parent.width; text: page.controller.undistortionStatus; font.pixelSize: Theme.micro; color: page.controller.undistortionReady ? Theme.okText : Theme.ink3 }
                                 CollectButton {
                                     objectName: "undistortion2Button"; width: parent.width; small: true; implicitHeight: 36
+                                    visible: page.dualMode
                                     positive: page.controller.undistortion2Enabled
                                     text: page.controller.undistortion2Enabled ? "相机 2 去畸变已启用" : "启用相机 2 去畸变"
                                     enabled: !page.locked && page.controller.camera2Opened && (page.controller.undistortion2Ready || page.controller.undistortion2Enabled)
                                     onClicked: page.controller.toggleUndistortion2()
                                 }
-                                HmiText { objectName: "undistortion2Status"; width: parent.width; text: page.controller.undistortion2Status; font.pixelSize: Theme.micro; color: page.controller.undistortion2Ready ? Theme.okText : Theme.ink3 }
+                                HmiText { objectName: "undistortion2Status"; visible: page.dualMode; width: parent.width; text: page.controller.undistortion2Status; font.pixelSize: Theme.micro; color: page.controller.undistortion2Ready ? Theme.okText : Theme.ink3 }
                                 HmiText { width: parent.width; text: "校正开关即时生效（也可在主页预览栏一键切换）；曝光需保存。"; font.pixelSize: Theme.micro; color: Theme.ink3 }
                             }
 
@@ -401,11 +418,11 @@ Item {
                                 }
                                 HmiText { objectName: "exposureError"; visible: page.exposureError !== ""; width: parent.width; text: page.exposureError; color: Theme.danger; font.pixelSize: Theme.micro }
 
-                                Rectangle { width: parent.width; height: 1; color: Theme.hairline }
+                                Rectangle { visible: page.dualMode; width: parent.width; height: 1; color: Theme.hairline }
 
                                 // Cam 2 Sequence
                                 RowLayout {
-                                    width: parent.width
+                                    visible: page.dualMode; width: parent.width
                                     HmiText { text: "相机 2 融合序列"; font.pixelSize: Theme.meta; font.weight: Font.DemiBold; color: Theme.ink }
                                     Item { Layout.fillWidth: true }
                                     HmiText {
@@ -415,7 +432,7 @@ Item {
                                     }
                                 }
                                 RowLayout {
-                                    width: parent.width; spacing: 6
+                                    visible: page.dualMode; width: parent.width; spacing: 6
                                     Repeater {
                                         model: exposure2Slots
                                         ColumnLayout {
@@ -452,6 +469,7 @@ Item {
                                     }
                                 }
                                 Column {
+                                    visible: page.dualMode
                                     width: parent.width; spacing: 4
                                     HmiText { text: "相机 2 校正参数"; font.pixelSize: Theme.micro; color: Theme.ink3 }
                                     Rectangle {

@@ -292,12 +292,15 @@ SharedCollectionState {
     function chooseTcpCoordinateFile() { coordinateDialogCalls++ }
     property int settingsDelay: 0
     property var pendingSettings
+    property bool submittedCamera2Settings: false
     signal settingsFinished(string error)
     property Timer settingsTimer: Timer { interval: mockController.settingsDelay; onTriggered: mockController.finishSettings() }
     function applySettings(values) {
         settingsCalls++
         settingsSaving = true; collectionBusy = true
         pendingSettings = JSON.parse(JSON.stringify(values))
+        submittedCamera2Settings = ["camera2Ip", "camera2Sn", "preview2Width", "preview2Height",
+            "camera2ExposureUs", "camera2Gain", "exposure2List"].some(function(key) { return key in values })
         settingsTimer.start()
     }
     function finishSettings() {
@@ -306,13 +309,17 @@ SharedCollectionState {
         if (!error && (!/^\d+$/.test(String(values.robotSpeedMmS)) || Number(values.robotSpeedMmS) < 1 || Number(values.robotSpeedMmS) > 1000))
             error = "移动速度须为 1～1000 mm/s 范围内的整数"
         if (!error) {
-            cameraIp = values.cameraIp; camera2Ip = values.camera2Ip; camera2Sn = values.camera2Sn
+            cameraIp = values.cameraIp
             robotIp = values.robotIp; robotSpeedMmS = Number(values.robotSpeedMmS)
             previewWidth = Number(values.previewWidth); previewHeight = Number(values.previewHeight)
-            preview2Width = Number(values.preview2Width); preview2Height = Number(values.preview2Height)
-            cameraExposureUs = Number(values.cameraExposureUs); camera2ExposureUs = Number(values.camera2ExposureUs)
-            camera2Gain = Number(values.camera2Gain)
-            exposureList = values.exposureList; exposure2List = values.exposure2List
+            cameraExposureUs = Number(values.cameraExposureUs)
+            exposureList = values.exposureList
+            if (dualCameraMode) {
+                camera2Ip = values.camera2Ip; camera2Sn = values.camera2Sn
+                preview2Width = Number(values.preview2Width); preview2Height = Number(values.preview2Height)
+                camera2ExposureUs = Number(values.camera2ExposureUs); camera2Gain = Number(values.camera2Gain)
+                exposure2List = values.exposure2List
+            }
         }
         settingsSaving = false; collectionBusy = false
         settingsFinished(error)
@@ -508,6 +515,8 @@ SharedCollectionState {
         controller->setProperty("cameraExposureUs", 33333);
         controller->setProperty("cameraActualExposureUs", 33333); invoke("frameUpdated");
         require(text("frameMetadata").contains("33333"), "frame metadata not updated");
+        const QString legacyExposure2List = "5000,5000";
+        controller->setProperty("exposure2List", legacyExposure2List);
         click(item("settingsButton"));
         require(pageIs("settings"), "settings navigation failed");
         require(!controller->property("previewVisible").toBool() && controller->property("previewActive").toBool(), "settings did not suspend processing while preserving preview intent");
@@ -520,6 +529,8 @@ SharedCollectionState {
         require(item("exposureInput") == exposureField, "settings reload recreated exposure controls");
         auto* settingsPage = item("settingsPage");
         require(text("robotSpeedInput") == "10", "speed input did not show current speed");
+        require(!item("settingsCam2SubTab")->isVisible() && item("cameraIpInput")->isVisible() &&
+                !settingsPage->property("dirty").toBool(), "single mode did not load clean camera1 settings");
         setText("robotSpeedInput", "1000");
         require(controller->property("robotSpeedMmS").toInt() == 10 && settingsPage->property("dirty").toBool(), "draft speed applied before save");
         controller->setProperty("collectionBusy", true); QTest::qWait(10);
@@ -527,6 +538,13 @@ SharedCollectionState {
         controller->setProperty("collectionBusy", false);
         require(!item("cameraIpInput")->isEnabled() && !item("robotIpInput")->isEnabled(), "connected device IP remains editable");
         click(item("settingsTab1"));
+        require(!item("preview2ExposureInput")->isVisible() && !item("exposure2Input")->isVisible() &&
+                !item("undistortion2Button")->isVisible() && settingsPage->property("exposure2Error").toString().isEmpty(),
+                "single mode exposed camera2 imaging settings or validation");
+        const int singleDirtyCount = settingsPage->property("dirtyCount").toInt();
+        setText("exposure2Input", "invalid");
+        require(settingsPage->property("dirtyCount").toInt() == singleDirtyCount,
+                "hidden camera2 draft contributed to single mode dirty count");
         setText("previewExposureInput", "15000");
         require(controller->property("cameraExposureUs").toInt() == 33333 && settingsPage->property("dirty").toBool(), "draft changed backend before explicit save");
         std::vector<std::pair<const char*, QPointer<QQuickItem>>> settingsControls;
@@ -571,6 +589,9 @@ SharedCollectionState {
         click(item("saveSettingsButton"));
         require(!settingsPage->property("dirty").toBool() && controller->property("exposureList").toString() == "25000,5000,8500", "settings save sorted exposures or retained dirty draft");
         require(controller->property("robotSpeedMmS").toInt() == 1000 && text("robotSpeedInput") == "1000", "saved speed not reflected in input");
+        require(!controller->property("submittedCamera2Settings").toBool() &&
+                controller->property("exposure2List").toString() == legacyExposure2List,
+                "single mode submitted or rewrote saved camera2 settings");
         setText("exposureInput2", "25000");
         const int savedCalls = controller->property("settingsCalls").toInt();
         click(item("saveSettingsButton"));
@@ -715,13 +736,33 @@ SharedCollectionState {
         click(item("settingsCam2SubTab"));
         require(item("camera2IpInput")->isVisible() && !item("camera2IpInput")->isEnabled() && !item("camera2GainInput")->isEnabled(),
                 "connected camera2 settings were editable");
-        click(item("settingsCam1SubTab"));
         click(item("settingsTab1"));
         click(item("undistortion2Button"));
         require(controller->property("undistortion2Enabled").toBool(), "cam2 undistortion button did not toggle");
+        require(item("preview2ExposureInput")->isVisible() && item("exposure2Input")->isVisible() &&
+                text("exposure2Input") == "5000" && text("exposure2Input2") == "5000",
+                "dual mode did not restore the saved camera2 settings");
+        setText("preview2ExposureInput", "13000");
+        const int dualSettingsCalls = controller->property("settingsCalls").toInt();
+        click(item("saveSettingsButton"));
+        require(controller->property("settingsCalls").toInt() == dualSettingsCalls &&
+                text("settingsFeedback").contains("相机 2") && text("settingsFeedback").contains("不同的正整数"),
+                "dual mode did not validate the camera2 exposure sequence");
+        setText("exposure2Input2", "8500");
+        click(item("saveSettingsButton"));
+        require(controller->property("settingsCalls").toInt() == dualSettingsCalls + 1 &&
+                controller->property("submittedCamera2Settings").toBool() &&
+                controller->property("camera2ExposureUs").toInt() == 13000 &&
+                controller->property("exposure2List").toString() == "5000,8500" &&
+                !settingsPage->property("dirty").toBool(), "dual mode did not save the corrected camera2 settings");
         click(item("settingsBackButton"));
         click(item("openCameraButton")); // disconnect and restore single mode for baseline checks
         click(item("singleCameraModeButton"));
+        click(item("settingsButton"));
+        click(item("settingsTab0"));
+        require(item("cameraIpInput")->isVisible() && !item("settingsCam2SubTab")->isVisible() &&
+                !item("camera2IpInput")->isVisible(), "single mode retained the camera2 device sub-tab");
+        click(item("settingsBackButton"));
         click(item("openCameraButton"));
         // Verify viewfinder quick undistortion and crosshair controls
         controller->setProperty("undistortionReady", true); QTest::qWait(10);

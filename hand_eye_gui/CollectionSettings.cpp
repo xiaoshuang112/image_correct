@@ -47,76 +47,86 @@ void CollectionController::applySettings(const QVariantMap& values) {
         const int value = text(key, QString::number(fallback)).toInt(&ok);
         return ok && value >= 0 ? value : -1;
     };
+    const bool dual = m_dualCameraMode;
     const QString cameraIp = text("cameraIp", m_cameraIp);
-    const QString camera2Ip = text("camera2Ip", m_camera2Ip);
-    const QString camera2Sn = text("camera2Sn", m_camera2Sn);
     const QString robotIp = text("robotIp", m_robotIp);
     const int robotSpeed = integer("robotSpeedMmS", m_robotSpeedMmS, collection::maximumRobotSpeedMmS);
     const int width = integer("previewWidth", m_previewWidth, 32768);
     const int height = integer("previewHeight", m_previewHeight, 32768);
-    const int width2 = integer("preview2Width", m_preview2Width, 32768);
-    const int height2 = integer("preview2Height", m_preview2Height, 32768);
     const int requestedExposure = integer("cameraExposureUs", m_cameraExposureUs, 10000000);
-    const int requestedExposure2 = integer("camera2ExposureUs", m_camera2ExposureUs, 10000000);
-    const int requestedGain2 = nonNegative("camera2Gain", m_camera2Gain);
     if (!validIp(cameraIp)) return fail("相机 1 IP 格式无效，请输入完整 IPv4 地址");
-    if (!camera2Ip.isEmpty() && !validIp(camera2Ip))
-        return fail("相机 2 IP 格式无效，请输入完整 IPv4 地址或留空");
-    if (!camera2Ip.isEmpty() && !cameraIp.isEmpty() && camera2Ip == cameraIp)
-        return fail("相机 1 与相机 2 的 IP 不能相同");
     if (!validIp(robotIp)) return fail("机器人 IP 格式无效，请输入完整 IPv4 地址");
     if (!collection::validRobotSpeed(robotSpeed)) return fail("移动速度须为 1～1000 mm/s 范围内的整数");
     if (width < 0 || height < 0) return fail("相机 1 采集宽、高须为 1～32768 范围内的整数");
-    if (width2 < 0 || height2 < 0) return fail("相机 2 采集宽、高须为 1～32768 范围内的整数");
     if (requestedExposure < 0) return fail("相机 1 预览曝光须为 1～10000000 μs 范围内的整数");
-    if (requestedExposure2 < 0) return fail("相机 2 预览曝光须为 1～10000000 μs 范围内的整数");
-    if (requestedGain2 < 0) return fail("相机 2 增益须为非负整数");
-    std::vector<int> exposures, exposures2;
+    std::vector<int> exposures;
     const auto exposureError = collection::parseExposureList(text("exposureList", m_exposureList), exposures);
     if (exposureError == collection::ExposureListError::InvalidValue)
         return fail("相机 1 融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
     if (exposureError == collection::ExposureListError::InvalidCount)
         return fail("相机 1 融合曝光应包含 2～5 个数值，未写入配置");
-    const auto exposure2Error = collection::parseExposureList(text("exposure2List", m_exposure2List), exposures2);
-    if (exposure2Error == collection::ExposureListError::InvalidValue)
-        return fail("相机 2 融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
-    if (exposure2Error == collection::ExposureListError::InvalidCount)
-        return fail("相机 2 融合曝光应包含 2～5 个数值，未写入配置");
     if (m_cameraOpened && (cameraIp != m_cameraIp || width != m_previewWidth || height != m_previewHeight))
         return fail("请先断开相机 1，再修改 IP 或分辨率");
-    if (m_camera2Opened &&
-        (camera2Ip != m_camera2Ip || camera2Sn != m_camera2Sn || width2 != m_preview2Width ||
-         height2 != m_preview2Height || requestedGain2 != m_camera2Gain))
-        return fail("请先断开相机 2，再修改 IP、序列号、分辨率或增益");
     if (m_robotConnected && robotIp != m_robotIp)
         return fail("请先断开机器人，再修改 IP");
 
-    QStringList exposureStrings, exposure2Strings;
+    QStringList exposureStrings;
     for (int exposure : exposures) exposureStrings << QString::number(exposure);
-    for (int exposure : exposures2) exposure2Strings << QString::number(exposure);
     const QString exposureList = exposureStrings.join(',');
-    const QString exposure2List = exposure2Strings.join(',');
     config_resolver::ConfigUpdates updates;
     if (cameraIp != m_cameraIp) updates["cam_ip"] = cameraIp.toStdString();
-    if (camera2Ip != m_camera2Ip) updates["cam2_ip"] = camera2Ip.toStdString();
-    if (camera2Sn != m_camera2Sn) updates["cam2_sn"] = camera2Sn.toStdString();
     if (robotIp != m_robotIp) updates["robot_ip"] = robotIp.toStdString();
     if (robotSpeed != m_robotSpeedMmS) updates["robot_speed_mm_s"] = robotSpeed;
     if (width != m_previewWidth) updates["cam_width"] = width;
     if (height != m_previewHeight) updates["cam_height"] = height;
-    if (width2 != m_preview2Width) updates["cam2_width"] = width2;
-    if (height2 != m_preview2Height) updates["cam2_height"] = height2;
     if (exposureList != m_exposureList) updates["fusion_exposures_us"] = exposures;
-    if (exposure2List != m_exposure2List) updates["camera2_fusion_exposures_us"] = exposures2;
     const bool exposureChanged = requestedExposure != m_cameraExposureUs;
-    const bool exposure2Changed = requestedExposure2 != m_camera2ExposureUs;
     if (exposureChanged) updates["camera_exposure_us"] = requestedExposure;
-    if (exposure2Changed) updates["camera2_exposure_us"] = requestedExposure2;
-    if (requestedGain2 != m_camera2Gain) updates["camera2_gain"] = requestedGain2;
+
+    QString camera2Ip, camera2Sn, exposure2List;
+    int width2 = 0, height2 = 0, requestedExposure2 = 0, requestedGain2 = 0;
+    std::vector<int> exposures2;
+    bool exposure2Changed = false;
+    if (dual) {
+        camera2Ip = text("camera2Ip", m_camera2Ip);
+        camera2Sn = text("camera2Sn", m_camera2Sn);
+        width2 = integer("preview2Width", m_preview2Width, 32768);
+        height2 = integer("preview2Height", m_preview2Height, 32768);
+        requestedExposure2 = integer("camera2ExposureUs", m_camera2ExposureUs, 10000000);
+        requestedGain2 = nonNegative("camera2Gain", m_camera2Gain);
+        if (!camera2Ip.isEmpty() && !validIp(camera2Ip))
+            return fail("相机 2 IP 格式无效，请输入完整 IPv4 地址或留空");
+        if (camera2Ip == cameraIp)
+            return fail("相机 1 与相机 2 的 IP 不能相同");
+        if (width2 < 0 || height2 < 0) return fail("相机 2 采集宽、高须为 1～32768 范围内的整数");
+        if (requestedExposure2 < 0) return fail("相机 2 预览曝光须为 1～10000000 μs 范围内的整数");
+        if (requestedGain2 < 0) return fail("相机 2 增益须为非负整数");
+        const auto exposure2Error = collection::parseExposureList(text("exposure2List", m_exposure2List), exposures2);
+        if (exposure2Error == collection::ExposureListError::InvalidValue)
+            return fail("相机 2 融合曝光应为不同的正整数（1～1000000 μs），未写入配置");
+        if (exposure2Error == collection::ExposureListError::InvalidCount)
+            return fail("相机 2 融合曝光应包含 2～5 个数值，未写入配置");
+        if (m_camera2Opened &&
+            (camera2Ip != m_camera2Ip || camera2Sn != m_camera2Sn || width2 != m_preview2Width ||
+             height2 != m_preview2Height || requestedGain2 != m_camera2Gain))
+            return fail("请先断开相机 2，再修改 IP、序列号、分辨率或增益");
+
+        QStringList exposure2Strings;
+        for (int exposure : exposures2) exposure2Strings << QString::number(exposure);
+        exposure2List = exposure2Strings.join(',');
+        if (camera2Ip != m_camera2Ip) updates["cam2_ip"] = camera2Ip.toStdString();
+        if (camera2Sn != m_camera2Sn) updates["cam2_sn"] = camera2Sn.toStdString();
+        if (width2 != m_preview2Width) updates["cam2_width"] = width2;
+        if (height2 != m_preview2Height) updates["cam2_height"] = height2;
+        if (exposure2List != m_exposure2List) updates["camera2_fusion_exposures_us"] = exposures2;
+        exposure2Changed = requestedExposure2 != m_camera2ExposureUs;
+        if (exposure2Changed) updates["camera2_exposure_us"] = requestedExposure2;
+        if (requestedGain2 != m_camera2Gain) updates["camera2_gain"] = requestedGain2;
+    }
     if (updates.empty()) { emit settingsFinished({}); return; }
 
     const auto camera = m_cameraOpened ? m_camera : nullptr;
-    const auto camera2 = m_camera2Opened ? m_camera2 : nullptr;
+    const auto camera2 = dual && m_camera2Opened ? m_camera2 : nullptr;
     const auto pendingPreview = m_previewFuture;
     const auto pendingHealthProbe = m_healthProbeFuture;
     const auto path = m_appPath + "config.yaml";
@@ -124,7 +134,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
     beginCollectionOperation();
     setStatus("正在保存配置…");
     try {
-        m_collectionThread = std::thread([this, camera, camera2, pendingPreview, pendingHealthProbe, path, updates,
+        m_collectionThread = std::thread([this, dual, camera, camera2, pendingPreview, pendingHealthProbe, path, updates,
             exposures, exposures2, exposureChanged, exposure2Changed, requestedExposure, requestedExposure2,
             requestedGain2, cameraIp, camera2Ip, camera2Sn, robotIp, robotSpeed, width, height, width2, height2,
             exposureList, exposure2List]() mutable {
@@ -196,7 +206,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
                 if (device2Touched && camera2)
                     error += restoreDevice(camera2, 2, previousDevice2, previousAuto2, deviceExposure2);
             }
-            QMetaObject::invokeMethod(this, [this, error, actualExposure, actualExposure2,
+            QMetaObject::invokeMethod(this, [this, dual, error, actualExposure, actualExposure2,
                 deviceExposure, deviceExposure2, deviceTouched, device2Touched,
                 cameraIp, camera2Ip, camera2Sn, robotIp, robotSpeed, width, height, width2, height2,
                 requestedGain2, exposureList, exposure2List, path, fields = updates.size()] {
@@ -210,28 +220,30 @@ void CollectionController::applySettings(const QVariantMap& values) {
                 }
                 if (error.isEmpty()) {
                     if (m_cameraIp != cameraIp) { m_cameraIp = cameraIp; emit cameraIpChanged(); }
-                    if (m_camera2Ip != camera2Ip) { m_camera2Ip = camera2Ip; emit camera2IpChanged(); }
-                    if (m_camera2Sn != camera2Sn) { m_camera2Sn = camera2Sn; emit camera2SnChanged(); }
                     if (m_robotIp != robotIp) { m_robotIp = robotIp; emit robotIpChanged(); }
                     m_robotSpeedMmS = robotSpeed;
                     if (m_previewWidth != width) { m_previewWidth = width; emit previewWidthChanged(); }
                     if (m_previewHeight != height) { m_previewHeight = height; emit previewHeightChanged(); }
-                    if (m_preview2Width != width2) { m_preview2Width = width2; emit preview2WidthChanged(); }
-                    if (m_preview2Height != height2) { m_preview2Height = height2; emit preview2HeightChanged(); }
                     if (m_cameraExposureUs != actualExposure) {
                         m_cameraExposureUs = actualExposure;
                         emit cameraExposureUsChanged();
                     }
-                    if (m_camera2ExposureUs != actualExposure2) {
-                        m_camera2ExposureUs = actualExposure2;
-                        emit camera2ExposureUsChanged();
-                    }
-                    if (m_camera2Gain != requestedGain2) {
-                        m_camera2Gain = requestedGain2;
-                        emit camera2GainChanged();
-                    }
                     m_exposureList = exposureList;
-                    m_exposure2List = exposure2List;
+                    if (dual) {
+                        if (m_camera2Ip != camera2Ip) { m_camera2Ip = camera2Ip; emit camera2IpChanged(); }
+                        if (m_camera2Sn != camera2Sn) { m_camera2Sn = camera2Sn; emit camera2SnChanged(); }
+                        if (m_preview2Width != width2) { m_preview2Width = width2; emit preview2WidthChanged(); }
+                        if (m_preview2Height != height2) { m_preview2Height = height2; emit preview2HeightChanged(); }
+                        if (m_camera2ExposureUs != actualExposure2) {
+                            m_camera2ExposureUs = actualExposure2;
+                            emit camera2ExposureUsChanged();
+                        }
+                        if (m_camera2Gain != requestedGain2) {
+                            m_camera2Gain = requestedGain2;
+                            emit camera2GainChanged();
+                        }
+                        m_exposure2List = exposure2List;
+                    }
                     emit collectionChanged();
                     APP_LOG_EVENT_INFO("config", "settings_apply", "saved",
                         {{"fields", QString::number(fields)}, {"path", QString::fromStdString(path)}});

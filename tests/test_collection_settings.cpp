@@ -159,10 +159,46 @@ void testCollectionSettings() {
           && camera->exposure == 20000 && readFile(path) == duplicate, "no writes after invalid device readback");
     CollectionSettingsTestAccess::camera(controller, {});
 
+    const QByteArray savedCamera2 = "cam2_ip: \"10.0.0.40\" # retained\ncam2_sn: \"OLD\"\n"
+        "cam2_width: 2000\ncam2_height: 1500\ncamera2_exposure_us: 11000\ncamera2_gain: 4\n"
+        "camera2_fusion_exposures_us: [4000, 8000]\n";
+    writeFile(path, original + savedCamera2);
+    CollectionController singleSettings;
+    CollectionSettingsTestAccess::initialize(singleSettings, temporary.path());
+    CollectionSettingsTestAccess::reload(singleSettings);
+    check(!singleSettings.dualCameraMode(), "settings regression starts in single-camera mode");
+    check(apply(singleSettings, {{"cameraIp", "10.0.0.40"}}).isEmpty() &&
+          singleSettings.cameraIp() == "10.0.0.40",
+          "stored camera2 IP conflict does not block single-camera settings");
+    check(apply(singleSettings, {{"robotSpeedMmS", 50}, {"camera2Ip", "invalid"}, {"camera2Sn", "NEW"},
+                                {"preview2Width", -1}, {"preview2Height", 34567}, {"camera2ExposureUs", 0},
+                                {"camera2Gain", -1}, {"exposure2List", "100,100"}}).isEmpty() &&
+          singleSettings.robotSpeedMmS() == 50,
+          "invalid camera2 draft does not block single-camera settings");
+    auto inactiveCamera2 = std::make_shared<SettingsCamera>();
+    CollectionSettingsTestAccess::camera2(singleSettings, inactiveCamera2);
+    check(apply(singleSettings, {{"robotSpeedMmS", 60}, {"camera2Ip", "10.0.0.40"},
+                                {"camera2ExposureUs", 51000}, {"exposure2List", "100,90000"}}).isEmpty() &&
+          singleSettings.robotSpeedMmS() == 60 && inactiveCamera2->exposure == 12000 && inactiveCamera2->automatic,
+          "single-camera save skips camera2 device validation and updates");
+    CollectionSettingsTestAccess::camera2(singleSettings, {});
+    check(singleSettings.camera2Ip() == "10.0.0.40" && singleSettings.camera2Sn() == "OLD" &&
+          singleSettings.preview2Width() == 2000 && singleSettings.preview2Height() == 1500 &&
+          singleSettings.camera2ExposureUs() == 11000 && singleSettings.camera2Gain() == 4 &&
+          singleSettings.exposure2List() == "4000,8000" && readFile(path).contains(savedCamera2),
+          "single-camera saves preserve camera2 settings in memory and YAML");
+    singleSettings.setDualCameraMode(true);
+    const auto savedSingleSettings = readFile(path);
+    check(singleSettings.dualCameraMode() &&
+          !apply(singleSettings, {{"robotSpeedMmS", 70}}).isEmpty() && readFile(path) == savedSingleSettings,
+          "switching to dual-camera mode restores validation of the stored camera2 IP");
+
     writeFile(path, original);
     CollectionController dualSettings;
     CollectionSettingsTestAccess::initialize(dualSettings, temporary.path());
     CollectionSettingsTestAccess::reload(dualSettings);
+    dualSettings.setDualCameraMode(true);
+    check(dualSettings.dualCameraMode(), "dual settings regression starts in dual-camera mode");
     check(!apply(dualSettings, {{"camera2Ip", "10.0.0.40"}, {"cameraIp", "10.0.0.40"}}).isEmpty(),
           "duplicate camera IP rejected");
     check(apply(dualSettings, {{"camera2Ip", "10.0.0.41"}, {"camera2Sn", "ABC"}, {"preview2Width", "2000"},
@@ -181,6 +217,11 @@ void testCollectionSettings() {
           "connected camera2 IP locked");
     check(!apply(dualSettings, {{"camera2Gain", 5}}).isEmpty() && readFile(path) == beforeConnected2,
           "connected camera2 gain locked");
+    check(!apply(dualSettings, {{"camera2ExposureUs", 51000}}).isEmpty() && readFile(path) == beforeConnected2 &&
+          cam2->exposure == 12000 && cam2->automatic,
+          "connected camera2 exposure range checked before apply");
+    check(!apply(dualSettings, {{"exposure2List", "100,90000"}}).isEmpty() && readFile(path) == beforeConnected2,
+          "connected camera2 fusion exposure range checked before apply");
     check(apply(dualSettings, {{"camera2ExposureUs", 15003}}).isEmpty() &&
           dualSettings.camera2ExposureUs() == 15000 && dualSettings.camera2ActualExposureUs() == 15000,
           "connected camera2 live exposure updated and read back");
