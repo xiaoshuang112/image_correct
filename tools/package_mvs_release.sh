@@ -10,7 +10,7 @@ set -e
 #    ./tools/package_mvs_release.sh --no-bundle-libs
 #
 #  产物布局:
-#    <output>/collect-mvs          可执行文件（RPATH 含 $ORIGIN/lib/mvs）
+#    <output>/collect-mvs          可执行文件（捆绑运行库时 RPATH 含 $ORIGIN/lib/mvs）
 #    <output>/check_mvs_target.sh   目标机交付校验脚本
 #    <output>/lib/mvs/              MVS 运行库（默认捆绑，可用 --no-bundle-libs 关闭）
 #    <output>/config.yaml           配置样例（若发布目录还没有）
@@ -50,25 +50,50 @@ if [ -z "$OUTPUT_DIR" ]; then
     OUTPUT_DIR="$REPO_DIR/dist/collect-mvs-$(date +%Y%m%d-%H%M%S)"
 fi
 mkdir -p "$OUTPUT_DIR/lib/mvs" "$OUTPUT_DIR/param"
+shopt -s nullglob
+existing_libs=("$OUTPUT_DIR/lib/mvs/"*)
+if [ "$BUNDLE_LIBS" -eq 0 ] && [ "${#existing_libs[@]}" -gt 0 ]; then
+    echo "[错误] --no-bundle-libs 需要空的 lib/mvs，请使用新的发布目录: $OUTPUT_DIR"
+    exit 1
+fi
 
 echo "========================================"
 echo "  打包 collect-mvs → $OUTPUT_DIR"
 echo "========================================"
 
-# ---- 架构检查 ----
-if ! file "$BIN" | grep -q "aarch64"; then
-    echo "[警告] 二进制不是 aarch64 架构:"
-    file "$BIN"
-fi
+# ---- 二进制架构与对应的 MVS SDK 目录 ----
+BIN_DESCRIPTION="$(LC_ALL=C file -Lb -- "$BIN")"
+case "$BIN_DESCRIPTION" in
+    ELF\ 64-bit*,\ x86-64,*) BIN_ARCH=x86_64; ELF_ARCH="x86-64"; MVS_LIB_SUBDIR=64 ;;
+    ELF\ 64-bit*,\ ARM\ aarch64,*) BIN_ARCH=aarch64; ELF_ARCH="ARM aarch64"; MVS_LIB_SUBDIR=aarch64 ;;
+    *) echo "[错误] 不支持的 collect-mvs 二进制架构: $BIN_DESCRIPTION"; exit 1 ;;
+esac
+HOST_ARCH="$(uname -m)"
+case "$HOST_ARCH" in
+    amd64) HOST_ARCH=x86_64 ;;
+    arm64) HOST_ARCH=aarch64 ;;
+esac
+echo "  二进制架构: $BIN_ARCH"
 
-cp -d "$BIN" "$OUTPUT_DIR/collect-mvs"
+cp -L "$BIN" "$OUTPUT_DIR/collect-mvs"
 
 # ---- MVS 运行库 ----
-case "$(uname -m)" in
-    aarch64|arm64) MVS_LIB_DIR="$MVS_SDK_DIR/lib/aarch64" ;;
-    x86_64)        MVS_LIB_DIR="$MVS_SDK_DIR/lib/64" ;;
-    *)             MVS_LIB_DIR="$MVS_SDK_DIR/lib/32" ;;
-esac
+if [ -f "$BUILD_DIR/CMakeCache.txt" ]; then
+    CACHED_SDK_DIR="$(sed -n 's/^MVS_SDK_DIR:PATH=//p' "$BUILD_DIR/CMakeCache.txt")"
+    MVS_SDK_DIR="${CACHED_SDK_DIR:-$MVS_SDK_DIR}"
+fi
+MVS_LIB_DIR="$MVS_SDK_DIR/lib/$MVS_LIB_SUBDIR"
+
+copy_runtime_file() {
+    local source="$1"
+    local target="$OUTPUT_DIR/lib/mvs/${source##*/}"
+    if [ -L "$source" ] && [[ "$(readlink "$source")" == */* ]]; then
+        # 外部链接指向 SDK 本地文件，包中需要实际内容。
+        cp -L --remove-destination "$source" "$target"
+    else
+        cp -d --remove-destination "$source" "$target"
+    fi
+}
 
 if [ "$BUNDLE_LIBS" -eq 1 ]; then
     if [ ! -f "$MVS_LIB_DIR/libMvCameraControl.so" ]; then
@@ -86,25 +111,39 @@ if [ "$BUNDLE_LIBS" -eq 1 ]; then
         libMVRender.so
         libMvCamLVision.so
         libMvSDKVersion.so
-        libGCBase_gcc494_v3_0.so
-        libGenCP_gcc494_v3_0.so
-        libLog_gcc494_v3_0.so
-        liblog4cpp_gcc494_v3_0.so
+        'libGCBase_gcc*_v3_0.so'
+        'libGenCP_gcc*_v3_0.so'
+        'libLog_gcc*_v3_0.so'
+        'liblog4cpp_gcc*_v3_0.so'
     )
     for lib in "${MVS_RUNTIME_LIBS[@]}"; do
-        if compgen -G "$MVS_LIB_DIR/${lib}*" > /dev/null; then
-            cp -d "$MVS_LIB_DIR/${lib}"* "$OUTPUT_DIR/lib/mvs/"
-        else
+        # lib 来自上面的固定列表，允许匹配不同 SDK 版本的 GenICam 库。
+        matches=("$MVS_LIB_DIR/"$lib "$MVS_LIB_DIR/"$lib.*)
+        found=0
+        for source in "${matches[@]}"; do
+            [ -e "$source" ] || [ -L "$source" ] || continue
+            copy_runtime_file "$source"
+            found=1
+        done
+        if [ "$found" -eq 0 ]; then
             echo "[警告] MVS 组件缺失，未打包: $lib"
         fi
     done
     # GenTL producer 与运行参数文件
     for extra in MvProducerGEV.cti MvProducerU3V.cti CommonParameters.ini; do
-        [ -f "$MVS_LIB_DIR/$extra" ] && cp -d "$MVS_LIB_DIR/$extra" "$OUTPUT_DIR/lib/mvs/"
+        [ -f "$MVS_LIB_DIR/$extra" ] || continue
+        copy_runtime_file "$MVS_LIB_DIR/$extra"
+    done
+    for library in "$OUTPUT_DIR/lib/mvs/"*.so "$OUTPUT_DIR/lib/mvs/"*.so.* "$OUTPUT_DIR/lib/mvs/"*.cti; do
+        description="$(LC_ALL=C file -Lb -- "$library")"
+        if [[ "$description" != ELF\ 64-bit*,\ "$ELF_ARCH",* ]]; then
+            echo "[错误] $library 与二进制架构 $BIN_ARCH 不符: $description"
+            exit 1
+        fi
     done
     echo "  已捆绑 MVS 运行库: $(ls "$OUTPUT_DIR/lib/mvs" | wc -l) 个文件"
 else
-    echo "  --no-bundle-libs: 不捆绑 MVS 运行库，目标机必须安装 $MVS_SDK_DIR"
+    echo "  --no-bundle-libs: 不捆绑 MVS 运行库，目标机必须安装 /opt/MVS"
 fi
 
 # ---- 配置样例（不覆盖已有配置） ----
@@ -118,33 +157,35 @@ cp "$REPO_DIR/tools/check_mvs_target.sh" "$OUTPUT_DIR/check_mvs_target.sh"
 chmod +x "$OUTPUT_DIR/check_mvs_target.sh"
 
 # ---- RPATH / ldd 校验 ----
+PACKED_BIN="$OUTPUT_DIR/collect-mvs"
 if [ "$BUNDLE_LIBS" -eq 1 ]; then
-    LDD_ENV="LD_LIBRARY_PATH=$OUTPUT_DIR/lib/mvs"
+    DYNAMIC="$(LC_ALL=C readelf -d "$PACKED_BIN")"
+    if ! grep -Eq '\((RPATH|RUNPATH)\).*\[(.*:)?\$ORIGIN/lib/mvs(:|\])' <<< "$DYNAMIC"; then
+        echo "[错误] collect-mvs RPATH 缺少 \$ORIGIN/lib/mvs，发布包无法自包含运行"
+        grep -iE "rpath|runpath" <<< "$DYNAMIC" || true
+        exit 1
+    fi
+    echo "  collect-mvs RPATH 包含 \$ORIGIN/lib/mvs: OK"
+    LDD_LIBS="$OUTPUT_DIR/lib/mvs"
 else
-    LDD_ENV="LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-}"
+    LDD_LIBS="$MVS_LIB_DIR${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-verify_packed_binary() {
-    local packed="$1"
-    local name="$2"
-    if ! file "$packed" | grep -q "aarch64"; then
-        echo "[警告] $name 不是 aarch64 架构: $(file -b "$packed")"
-    fi
-    if ! readelf -d "$packed" | grep -q '\$ORIGIN/lib/mvs'; then
-        echo "[错误] $name RPATH 缺少 \$ORIGIN/lib/mvs，发布包无法自包含运行"
-        readelf -d "$packed" | grep -iE "rpath|runpath" || true
+if [ "$BIN_ARCH" != "$HOST_ARCH" ]; then
+    echo "  collect-mvs ldd: 需在 $BIN_ARCH 目标机校验（打包主机架构 $HOST_ARCH）"
+else
+    if ! LDD_OUTPUT="$(LC_ALL=C LD_LIBRARY_PATH="$LDD_LIBS" ldd "$PACKED_BIN" 2>&1)"; then
+        echo "$LDD_OUTPUT"
+        echo "[错误] collect-mvs ldd 执行失败"
         exit 1
     fi
-    echo "  $name RPATH 包含 \$ORIGIN/lib/mvs: OK"
-    if env $LDD_ENV ldd "$packed" | grep -q "not found"; then
-        echo "[错误] $name 存在未解析的动态库:"
-        env $LDD_ENV ldd "$packed" | grep "not found"
+    if [[ "$LDD_OUTPUT" == *'not found'* ]]; then
+        echo "[错误] collect-mvs 存在未解析的动态库:"
+        grep 'not found' <<< "$LDD_OUTPUT"
         exit 1
     fi
-    echo "  $name ldd: 无缺失库"
-}
-
-verify_packed_binary "$OUTPUT_DIR/collect-mvs" "collect-mvs"
+    echo "  collect-mvs ldd: 无缺失库"
+fi
 
 # ---- 构建身份与校验清单 ----
 GIT_COMMIT="$(git -C "$REPO_DIR" rev-parse --short=12 HEAD 2>/dev/null || echo unknown)"
@@ -154,6 +195,7 @@ GIT_STATE="$(if [ -z "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; t
     echo "git_commit: $GIT_COMMIT"
     echo "git_worktree_state: $GIT_STATE"
     echo "camera_backend: mvs"
+    echo "binary_arch: $BIN_ARCH"
     echo "bundle_libs: $BUNDLE_LIBS"
     echo "source_binary: $BIN"
     echo "binary_sha256: $(sha256sum "$BIN" | awk '{print $1}')"
@@ -161,7 +203,6 @@ GIT_STATE="$(if [ -z "$(git -C "$REPO_DIR" status --porcelain 2>/dev/null)" ]; t
 
 (
     cd "$OUTPUT_DIR"
-    shopt -s nullglob
     sha256sum collect-mvs check_mvs_target.sh lib/mvs/* > SHA256SUMS
 )
 

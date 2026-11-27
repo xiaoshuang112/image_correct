@@ -24,10 +24,10 @@ public:
     /// 清除当前画面为占位背景（断开、切路或故障时使用）
     void clearImage();
 
+private:
     /// 设置一个占位图像（"等待视频流..."）
     void setPlaceholder(int width, int height);
 
-private:
     QImage  m_image;
     QMutex  m_mutex;
 };

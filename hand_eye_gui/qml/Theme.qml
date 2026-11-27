@@ -26,17 +26,12 @@ QtObject {
     readonly property color warningText: "#FCD34D"
     readonly property color danger: "#EF4444"
     readonly property color dangerHover: "#DC2626"
-    readonly property color dangerSoft: "#26EF4444"
     readonly property color viewfinder: "#05070A"
     readonly property color overlay: "#D60B0E13"
     readonly property color chip: "#CC0B0E13"
     readonly property color white: "#FFFFFF"
     readonly property color axisX: "#F87171"
     readonly property color axisY: "#34D399"
-    readonly property color axisZ: "#60A5FA"
-    readonly property color axisRx: "#FB923C"
-    readonly property color axisRy: "#A78BFA"
-    readonly property color axisRz: "#22D3EE"
     readonly property var axisColors: ["#F87171", "#34D399", "#60A5FA", "#FB923C", "#A78BFA", "#22D3EE"]
     readonly property string sans: "Noto Sans CJK SC"
     readonly property string mono: "Noto Sans Mono CJK SC"
@@ -45,14 +40,10 @@ QtObject {
     readonly property int body: 14
     readonly property int title: 16
     readonly property int appTitle: 19
-    readonly property int stat: 24
     readonly property int radiusCard: 10
     readonly property int radiusControl: 6
     readonly property int radiusSmall: 6
-    readonly property int radiusPill: 14
     readonly property int controlHeight: 40
-    readonly property int margin: 14
-    readonly property int gap: 12
     readonly property int padding: 18
     readonly property int pageContentWidth: 1120
     readonly property int pageCardMinHeight: 340

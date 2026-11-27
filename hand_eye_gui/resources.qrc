@@ -2,7 +2,6 @@
     <qresource prefix="/">
         <file>qml/Collection.qml</file>
         <file>qml/HmiText.qml</file>
-        <file>qml/HmiPanel.qml</file>
         <file>qml/TcpSelector.qml</file>
         <file>qml/SettingsPage.qml</file>
         <file>qml/TcpTeachCard.qml</file>

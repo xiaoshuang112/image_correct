@@ -203,7 +203,7 @@ Item {
                         rightContent.requiredHeight + Theme.padding * 2,
                         Math.min(Theme.pageCardMinHeight, Math.max(0, scroll.availableHeight - 32)))
                     // LEFT CARD
-                    HmiPanel {
+                    CollectCard {
                         objectName: "settingsLeftCard"; width: (parent.width - 14) / 2; height: parent.height; x: 0
                         Column {
                             id: leftContent; width: parent.width; spacing: 14
@@ -359,7 +359,7 @@ Item {
                     }
 
                     // RIGHT CARD
-                    HmiPanel {
+                    CollectCard {
                         objectName: "settingsRightCard"; width: (parent.width - 14) / 2; height: parent.height; x: width + 14
                         Column {
                             id: rightContent; width: parent.width; spacing: 14

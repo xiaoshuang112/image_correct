@@ -47,8 +47,6 @@ class CollectionController : public QObject
     Q_PROPERTY(QString cameraBackend     READ cameraBackend     CONSTANT)
     Q_PROPERTY(QString cameraModel       READ cameraModel       NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(QString cameraSerial      READ cameraSerial      NOTIFY cameraDeviceInfoChanged)
-    Q_PROPERTY(QString cameraFirmware    READ cameraFirmware    NOTIFY cameraDeviceInfoChanged)
-    Q_PROPERTY(QString cameraTransport   READ cameraTransport   NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(int     cameraActualWidth  READ cameraActualWidth  NOTIFY cameraDeviceInfoChanged)
     Q_PROPERTY(int     cameraActualHeight READ cameraActualHeight NOTIFY cameraDeviceInfoChanged)
     // 相机 2 配置与运行态（双相机模式；标识留空表示待配置）
@@ -61,9 +59,6 @@ class CollectionController : public QObject
     Q_PROPERTY(int camera2Gain READ camera2Gain NOTIFY camera2GainChanged)
     Q_PROPERTY(QString exposure2List READ exposure2List NOTIFY collectionChanged)
     Q_PROPERTY(QString camera2Model READ camera2Model NOTIFY camera2DeviceInfoChanged)
-    Q_PROPERTY(QString camera2Serial READ camera2Serial NOTIFY camera2DeviceInfoChanged)
-    Q_PROPERTY(QString camera2Firmware READ camera2Firmware NOTIFY camera2DeviceInfoChanged)
-    Q_PROPERTY(QString camera2Transport READ camera2Transport NOTIFY camera2DeviceInfoChanged)
     Q_PROPERTY(int camera2ActualWidth READ camera2ActualWidth NOTIFY camera2DeviceInfoChanged)
     Q_PROPERTY(int camera2ActualHeight READ camera2ActualHeight NOTIFY camera2DeviceInfoChanged)
     Q_PROPERTY(bool camera2Opened READ camera2Opened NOTIFY camera2OpenedChanged)
@@ -79,7 +74,6 @@ class CollectionController : public QObject
     Q_PROPERTY(bool previewVisible READ previewVisible WRITE setPreviewVisible NOTIFY previewVisibleChanged)
     Q_PROPERTY(QSize previewDisplaySize READ previewDisplaySize WRITE setPreviewDisplaySize NOTIFY previewDisplaySizeChanged)
     Q_PROPERTY(QString statusMessage  READ statusMessage  NOTIFY statusMessageChanged)
-    Q_PROPERTY(QString diagnosticLogPath READ diagnosticLogPath CONSTANT)
     Q_PROPERTY(bool collectionBusy READ collectionBusy NOTIFY collectionChanged)
     Q_PROPERTY(bool settingsSaving READ settingsSaving NOTIFY collectionChanged)
     Q_PROPERTY(bool coordinatesImporting READ coordinatesImporting NOTIFY collectionChanged)
@@ -165,7 +159,7 @@ public:
     Q_INVOKABLE void openDiagnosticFolder();
     Q_INVOKABLE void applySettings(const QVariantMap& values);
     Q_INVOKABLE void chooseTcpCoordinateFile();
-    Q_INVOKABLE void importTcpCoordinates(const QUrl& url);
+    void importTcpCoordinates(const QUrl& url);
     Q_INVOKABLE QVariantMap parseTcpTarget(const QString& text) const;
     QVariantList tcpPoseValues() const { return m_tcpPoseValues; }
     bool tcpPoseValid() const { return m_tcpPoseValid; }
@@ -204,8 +198,6 @@ public:
     QString cameraBackend() const;
     QString cameraModel() const     { return m_camDeviceModel; }
     QString cameraSerial() const    { return m_camDeviceSerial; }
-    QString cameraFirmware() const  { return m_camDeviceFirmware; }
-    QString cameraTransport() const { return m_camDeviceTransport; }
     int     cameraActualWidth() const  { return m_camActualWidth; }
     int     cameraActualHeight() const { return m_camActualHeight; }
     QString camera2Ip() const { return m_camera2Ip; }
@@ -216,9 +208,6 @@ public:
     int camera2ActualExposureUs() const { return m_camera2ActualExposureUs; }
     int camera2Gain() const { return m_camera2Gain; }
     QString camera2Model() const { return m_cam2DeviceModel; }
-    QString camera2Serial() const { return m_cam2DeviceSerial; }
-    QString camera2Firmware() const { return m_cam2DeviceFirmware; }
-    QString camera2Transport() const { return m_cam2DeviceTransport; }
     int camera2ActualWidth() const { return m_cam2ActualWidth; }
     int camera2ActualHeight() const { return m_cam2ActualHeight; }
     bool camera2Opened() const { return m_camera2Opened; }
@@ -238,7 +227,6 @@ public:
     QSize previewDisplaySize() const { return m_previewDisplaySize; }
     void setPreviewDisplaySize(const QSize& size);
     QString statusMessage() const   { return m_statusMessage; }
-    QString diagnosticLogPath() const;
 
 
 public slots:
@@ -391,15 +379,11 @@ private:
     // 打开相机后回读的实际设备信息（只读审计）
     QString  m_camDeviceModel;
     QString  m_camDeviceSerial;
-    QString  m_camDeviceFirmware;
-    QString  m_camDeviceTransport;
     int      m_camActualWidth  = 0;
     int      m_camActualHeight = 0;
     int      m_cameraActualExposureUs = -1;
     QString  m_cam2DeviceModel;
     QString  m_cam2DeviceSerial;
-    QString  m_cam2DeviceFirmware;
-    QString  m_cam2DeviceTransport;
     int      m_cam2ActualWidth = 0;
     int      m_cam2ActualHeight = 0;
     int      m_camera2ActualExposureUs = -1;
