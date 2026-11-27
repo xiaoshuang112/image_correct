@@ -682,8 +682,11 @@ SharedCollectionState {
                 text("frameMetadata").contains("相机 1") && item("previewDirectionGizmo")->isVisible(),
                 "Tab shortcut did not switch back to cam1");
         click(item("settingsButton"));
-        require(!item("camera2IpInput")->isEnabled() && !item("camera2GainInput")->isEnabled(),
+        click(item("settingsTab0"));
+        click(item("settingsCam2SubTab"));
+        require(item("camera2IpInput")->isVisible() && !item("camera2IpInput")->isEnabled() && !item("camera2GainInput")->isEnabled(),
                 "connected camera2 settings were editable");
+        click(item("settingsCam1SubTab"));
         click(item("settingsTab1"));
         click(item("undistortion2Button"));
         require(controller->property("undistortion2Enabled").toBool(), "cam2 undistortion button did not toggle");
@@ -691,25 +694,43 @@ SharedCollectionState {
         click(item("openCameraButton")); // disconnect and restore single mode for baseline checks
         click(item("singleCameraModeButton"));
         click(item("openCameraButton"));
+        // Verify viewfinder quick undistortion and crosshair controls
+        controller->setProperty("undistortionReady", true); QTest::qWait(10);
+        require(item("quickUndistortButton")->isEnabled(), "quick undistortion toggle disabled when ready");
+        click(item("quickUndistortButton"));
+        require(controller->property("undistortionEnabled").toBool(), "quick undistortion toggle did not enable undistortion");
+        click(item("quickUndistortButton"));
+        require(!controller->property("undistortionEnabled").toBool(), "quick undistortion toggle did not disable undistortion");
+        controller->setProperty("undistortionReady", false); QTest::qWait(10);
+        require(window->property("showCrosshair").toBool(), "crosshair should default visible");
+        click(item("crosshairToggle"));
+        require(!window->property("showCrosshair").toBool(), "crosshair toggle did not hide crosshair");
+        click(item("crosshairToggle"));
+        require(window->property("showCrosshair").toBool(), "crosshair toggle did not restore crosshair");
         click(item("ninePointModeButton"));
 
         for (const QSize size : {QSize(1280,850), QSize(1280,800), QSize(1024,740), QSize(760,600)}) {
             window->resize(size); QTest::qWait(100);
             const QRectF viewport(0,0,size.width(),size.height());
-            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "previewButton", "tcpTeachCard", "manualMoveButton", "tcpAxis0", "tcpAxis5", "previewDirectionX", "previewDirectionY", "operationBrief"}) {
+            for (const char* name : {"openCameraButton", "connectRobotButton", "settingsButton", "ninePointPlan", "ninePointButton", "tcpSelector", "savePoseButton", "previewButton", "quickUndistortButton", "crosshairToggle", "tcpTeachCard", "manualMoveButton", "tcpAxis0", "tcpAxis5", "previewDirectionX", "previewDirectionY", "operationBrief"}) {
                 if (!viewport.contains(bounds(item(name)))) std::cerr << name << " outside viewport at " << size.width() << "x" << size.height() << '\n';
                 require(viewport.contains(bounds(item(name))), "action clipped at supported size");
             }
             require(qAbs(bounds(item("mainControls")).bottom() - bounds(item("mainRightColumn")).bottom()) < 1, "main columns not bottom aligned");
             require(bounds(item("captureImageArea")).height() >= 160, "preview too small");
             require(!bounds(item("ninePointButton")).intersects(bounds(item("tcpSelector"))), "capture overlaps TCP selector");
+            require(bounds(item("previewButton")).bottom() <= bounds(item("captureImageArea")).top() + 1, "preview control not docked in viewfinder toolbar");
+            require(!bounds(item("previewButton")).intersects(bounds(item("quickUndistortButton"))), "viewfinder controls overlap");
+            require(!bounds(item("quickUndistortButton")).intersects(bounds(item("previewDirectionX"))), "viewfinder controls overlap direction selector");
+            require(bounds(item("mainControls")).adjusted(-1,-1,1,1).contains(bounds(item("operationBrief"))), "brief spills outside left control card");
+            require(bounds(item("ninePointButton")).bottom() < bounds(item("operationBrief")).top(), "primary button overlaps operation brief");
             require(item("tcpTeachCard")->height() <= 212, "teaching card exceeds compact four rows");
             require(bounds(item("tcpAxis0")).width() >= 32 && bounds(item("tcpAxis0")).height() >= 40, "target field unreadable");
             editAxis(0, "123.45");
             require(viewport.contains(bounds(item("actualPoseWhileEditing"))), "actual pose during drafting is clipped");
-            require(bounds(item("actualPoseWhileEditing")).bottom() <= bounds(item("previewButton")).top() - 2, "draft actual pose overlaps preview button");
+            require(bounds(item("tcpTeachCard")).adjusted(-1,-1,1,1).contains(bounds(item("actualPoseWhileEditing"))), "draft actual pose not kept inline inside teaching card");
+            require(!bounds(item("actualPoseWhileEditing")).intersects(bounds(item("manualMoveButton"))), "draft actual pose overlaps move button");
             require(viewport.contains(bounds(item("previewButton"))), "draft pushed preview button outside viewport");
-            require(bounds(item("operationBrief")).bottom() <= bounds(item("previewButton")).top() - 2, "brief spills into bottom controls");
             if (argc > 6 && size == QSize(760,600)) require(screenshot(argv[6]), "draft screenshot failed");
             click(item("useCurrentPoseButton"));
             if (argc > 1 && size == QSize(1280,850)) require(screenshot(argv[1]), "main screenshot failed");

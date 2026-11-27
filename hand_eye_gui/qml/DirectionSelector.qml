@@ -9,7 +9,7 @@ CompactSelector {
     signal chosen(string value)
     readonly property var choices: !restrictPerpendicular ? ["none", "up", "down", "left", "right"] : perpendicularTo === "none" ? ["none"] : perpendicularTo === "up" || perpendicularTo === "down" ? ["left", "right"] : ["up", "down"]
     function label(value) { return ({none: "未设置", up: "↑ 上", down: "↓ 下", left: "← 左", right: "→ 右"})[value] }
-    implicitWidth: 88; implicitHeight: 30
+    implicitWidth: 76; implicitHeight: 28
     font.family: Theme.sans; font.pixelSize: Theme.meta
     model: choices.map(label)
     currentIndex: Math.max(0, choices.indexOf(direction))
