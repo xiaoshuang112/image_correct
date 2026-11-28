@@ -1,4 +1,5 @@
 #include "hand_eye_gui/CollectionController.hpp"
+#include "utils/collection_undistortion.hpp"
 #include <QDir>
 #include <QFile>
 #include <QEventLoop>
@@ -72,6 +73,16 @@ struct CollectionSettingsTestAccess {
     static void busy(CollectionController& c, bool value) { c.m_collectionBusy = value; }
     static void reload(CollectionController& c) { c.loadConfigYaml(); }
     static const std::string& appPath(const CollectionController& c) { return c.m_appPath; }
+    static void setupProjectionCameras(CollectionController& c, const QString& calibrationFile) {
+        c.m_cameraOpened = c.m_camera2Opened = c.m_dualCameraReady = true;
+        c.m_camActualWidth = c.m_cam2ActualWidth = 320;
+        c.m_camActualHeight = c.m_cam2ActualHeight = 240;
+        c.m_undistortionCalibration = c.m_undistortionCalibration2 =
+            std::make_shared<collection::UndistortionCalibration>(
+                collection::UndistortionCalibration::load(calibrationFile.toStdString()));
+    }
+    static void setSecondCameraWidth(CollectionController& c, int width) { c.m_cam2ActualWidth = width; }
+    static auto maps(const CollectionController& c) { return std::make_pair(c.m_undistortionMaps, c.m_undistortionMaps2); }
 };
 
 void testCollectionSettings() {
@@ -226,6 +237,53 @@ void testCollectionSettings() {
           dualSettings.camera2ExposureUs() == 15000 && dualSettings.camera2ActualExposureUs() == 15000,
           "connected camera2 live exposure updated and read back");
     CollectionSettingsTestAccess::camera2(dualSettings, {});
+
+    writeFile(path, original);
+    CollectionController projectionSettings;
+    CollectionSettingsTestAccess::initialize(projectionSettings, temporary.path());
+    CollectionSettingsTestAccess::reload(projectionSettings);
+    check(projectionSettings.undistortionProjection() == "opencv_alpha1_v1",
+          "existing configs must keep the historical projection");
+    writeFile(path, original + "undistortion_projection: \"incorrect\"\n");
+    CollectionSettingsTestAccess::reload(projectionSettings);
+    check(projectionSettings.undistortionProjection().isEmpty(),
+          "invalid production config must not silently select historical projection");
+    check(apply(projectionSettings, {{"undistortionProjection", "square_pixels_v1"}}).isEmpty(),
+          "valid projection must repair the invalid config");
+    CollectionSettingsTestAccess::reload(projectionSettings);
+    check(projectionSettings.undistortionProjection() == "square_pixels_v1", "saved projection did not reload");
+    projectionSettings.setDualCameraMode(true);
+    const QString calibration = temporary.filePath("projection_calibration.yaml");
+    writeFile(calibration,
+        "%YAML:1.0\n---\nimage_width: 320\nimage_height: 240\n"
+        "camera_matrix: !!opencv-matrix\n   rows: 3\n   cols: 3\n   dt: d\n"
+        "   data: [180., 0., 160., 0., 190., 120., 0., 0., 1.]\n"
+        "distortion_coefficients: !!opencv-matrix\n   rows: 1\n   cols: 5\n   dt: d\n"
+        "   data: [-0.24, 0.03, 0., 0., 0.]\n");
+    CollectionSettingsTestAccess::setupProjectionCameras(projectionSettings, calibration);
+    projectionSettings.toggleUndistortion();
+    projectionSettings.capturePhoto();
+    check(projectionSettings.statusMessage().contains("先启用两路相机的去畸变") &&
+          !projectionSettings.collectionBusy(), "production accepted a pair with one raw preview");
+    projectionSettings.toggleUndistortion2();
+    const auto oldMaps = CollectionSettingsTestAccess::maps(projectionSettings);
+    check(oldMaps.first && oldMaps.second &&
+          oldMaps.first->geometry().projection == collection::PixelProjection::SquarePixels &&
+          oldMaps.second->geometry().projection == collection::PixelProjection::SquarePixels,
+          "both camera toggles must use the same production mode");
+    const auto beforeFailedProjection = readFile(path);
+    CollectionSettingsTestAccess::setSecondCameraWidth(projectionSettings, 321);
+    check(!apply(projectionSettings, {{"undistortionProjection", "opencv_alpha1_v1"}}).isEmpty() &&
+          readFile(path) == beforeFailedProjection && CollectionSettingsTestAccess::maps(projectionSettings) == oldMaps,
+          "a bad map must not persist a new mode or partially replace a camera map");
+    CollectionSettingsTestAccess::setSecondCameraWidth(projectionSettings, 320);
+    check(apply(projectionSettings, {{"undistortionProjection", "opencv_alpha1_v1"}}).isEmpty(),
+          "switching projection with active maps failed");
+    const auto newMaps = CollectionSettingsTestAccess::maps(projectionSettings);
+    check(newMaps.first && newMaps.second && newMaps.first != oldMaps.first && newMaps.second != oldMaps.second &&
+          newMaps.first->geometry().projection == collection::PixelProjection::Alpha1 &&
+          newMaps.second->geometry().projection == collection::PixelProjection::Alpha1,
+          "successful save must replace both maps with the new projection");
 
     // m_appPath 保存的是 UTF-8（生产里来自 exePath.toStdString()）。Unicode 目录必须按
     // UTF-8 解码读取；按 ANSI 代码页（此机器 936/GBK）解码会指向另一个不存在的名字，

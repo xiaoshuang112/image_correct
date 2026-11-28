@@ -93,6 +93,7 @@ class CollectionController : public QObject
     Q_PROPERTY(bool undistortion2Ready READ undistortion2Ready NOTIFY collectionChanged)
     Q_PROPERTY(bool undistortion2Enabled READ undistortion2Enabled NOTIFY collectionChanged)
     Q_PROPERTY(QString undistortion2Status READ undistortion2Status NOTIFY collectionChanged)
+    Q_PROPERTY(QString undistortionProjection READ undistortionProjection NOTIFY collectionChanged)
     Q_PROPERTY(QStringList tcpNames READ tcpNames NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString selectedTcp READ selectedTcp WRITE setSelectedTcp NOTIFY tcpToolsChanged)
     Q_PROPERTY(QString ninePointProgress READ ninePointProgress NOTIFY collectionChanged)
@@ -138,10 +139,11 @@ public:
     int savedPoseCount() const { return m_savedPoseCount; }
     bool undistortionReady() const { return bool(m_undistortionCalibration); }
     bool undistortionEnabled() const { return bool(m_undistortionMaps); }
-    QString undistortionStatus() const { return m_undistortionStatus; }
+    QString undistortionStatus() const { return undistortionDescription(1); }
     bool undistortion2Ready() const { return bool(m_undistortionCalibration2); }
     bool undistortion2Enabled() const { return bool(m_undistortionMaps2); }
-    QString undistortion2Status() const { return m_undistortion2Status; }
+    QString undistortion2Status() const { return undistortionDescription(2); }
+    QString undistortionProjection() const { return QString::fromLatin1(collection::pixelProjectionPolicy(m_projection)); }
     Q_INVOKABLE void toggleUndistortion();
     Q_INVOKABLE void toggleUndistortion2();
     Q_INVOKABLE void togglePreviewCamera();
@@ -322,6 +324,10 @@ private:
     void setCamera2Status(const QString& msg);
     void setCameraHealth(int cameraIndex, bool healthy);
     void toggleCameraUndistortion(int cameraIndex);
+    QString undistortionDescription(int cameraIndex) const;
+    std::shared_ptr<const collection::UndistortionMaps> buildCameraUndistortion(
+        int cameraIndex, collection::PixelProjection projection) const;
+    void logUndistortionMap(int cameraIndex) const;
 
     // ---- 预览循环 ----
     void onPreviewTick();
@@ -379,11 +385,13 @@ private:
     // 打开相机后回读的实际设备信息（只读审计）
     QString  m_camDeviceModel;
     QString  m_camDeviceSerial;
+    collection::CameraOrientation m_camOrientation;
     int      m_camActualWidth  = 0;
     int      m_camActualHeight = 0;
     int      m_cameraActualExposureUs = -1;
     QString  m_cam2DeviceModel;
     QString  m_cam2DeviceSerial;
+    collection::CameraOrientation m_cam2Orientation;
     int      m_cam2ActualWidth = 0;
     int      m_cam2ActualHeight = 0;
     int      m_camera2ActualExposureUs = -1;
@@ -480,6 +488,7 @@ private:
     QString m_exposure2List = "5000,8500,14500,25000";
     QString m_handEyePath;
     QString m_handEyePath2;
+    collection::PixelProjection m_projection = collection::PixelProjection::Alpha1;
     QString m_undistortionStatus;
     QString m_undistortion2Status;
     std::shared_ptr<const collection::UndistortionCalibration> m_undistortionCalibration;

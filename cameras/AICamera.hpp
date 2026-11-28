@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include "CameraConfig.hpp"
+#include "utils/pixel_projection.hpp"
 
 struct CameraDeviceAuditInfo {
     std::string serial;
@@ -21,6 +22,7 @@ struct CameraDeviceAuditInfo {
     float gain = -1.0f;         // 打开后回读的实际增益
     std::string trigger_mode;   // off / on
     std::string sdk_version;    // 相机 SDK 运行时版本
+    collection::CameraOrientation orientation;
 };
 
 // Qt 无关的相机错误详情：Controller 与审计日志通过它获取失败阶段和 SDK 错误码。

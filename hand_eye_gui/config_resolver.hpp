@@ -3,6 +3,7 @@
 
 #include "cameras/CameraConfig.hpp"
 #include "RobotMotionLimits.hpp"
+#include "utils/pixel_projection.hpp"
 #include <opencv2/core/persistence.hpp>
 
 #include <string>
@@ -53,6 +54,7 @@ ResolvedCamera2Config resolveCamera2Config(const cv::FileStorage& fs,
 
 struct CollectionConfig {
     std::string robot_ip = "192.168.66.14";
+    collection::PixelProjection projection = collection::PixelProjection::Alpha1;
     int robot_speed_mm_s = collection::defaultRobotSpeedMmS;
     std::vector<int> fusion_exposures_us{5000, 8500, 14500, 25000};
     // Keep aligned with collection::defaultNinePointYawOffsets and the 10 mm UI defaults.

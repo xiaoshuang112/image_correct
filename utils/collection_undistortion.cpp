@@ -1,6 +1,7 @@
 #include "collection_undistortion.hpp"
 #include <opencv2/calib3d.hpp>
 #include <opencv2/imgproc.hpp>
+#include <algorithm>
 #include <cmath>
 #include <filesystem>
 #include <fstream>
@@ -78,50 +79,58 @@ void UndistortionCalibration::validateCamera(cv::Size size, const std::string& s
 }
 
 UndistortionMaps::UndistortionMaps(const UndistortionCalibration& calibration,
-                                 cv::Size size, const std::string& serial) {
+                                 cv::Size size, const std::string& serial,
+                                 PixelProjection projection, CameraOrientation cameraOrientation) {
     calibration.validateCamera(size, serial);
-    // Production stores the calibration intrinsics in float camera fields
-    // before getOptimalNewCameraMatrix. Reproduce that rounding, then keep
-    // the returned K_new at full precision for the remap.
+    if (projection == PixelProjection::Invalid)
+        throw std::runtime_error("去畸变投影模式无效");
+    const bool square = projection == PixelProjection::SquarePixels;
+    calibration.cameraMatrix.convertTo(m_geometry.originalCameraMatrix, CV_64F);
+    calibration.distortion.convertTo(m_geometry.distortion, CV_64F);
+    const cv::Mat& distortion = m_geometry.distortion;
     cv::Mat computation;
-    calibration.cameraMatrix.convertTo(computation, CV_32F);
-    computation.convertTo(computation, CV_64F);
+    if (square) {
+        computation = m_geometry.originalCameraMatrix;
+    } else {
+        // Historical production stored the calibration intrinsics as float.
+        calibration.cameraMatrix.convertTo(computation, CV_32F);
+        computation.convertTo(computation, CV_64F);
+    }
     cv::Rect validRoi;
     cv::Mat newK;
-    // Exact zeros are an undistorted lens. OpenCV 4.6 still insets the
-    // getOptimalNewCameraMatrix sample grid (#23305, fixed in 4.8), which
-    // rescales K and moves pixels. Keep the float-roundtripped intrinsics
-    // and the full frame. Near-zero calibrations stay on the production path.
-    const double* coefficients = calibration.distortion.ptr<double>();
-    bool exactZero = true;
-    for (size_t i = 0; i < calibration.distortion.total(); ++i)
-        exactZero = exactZero && coefficients[i] == 0.0;
-    if (exactZero) {
+    // Keep the historical fast path for exact zeros. OpenCV 4.6 insets
+    // the sample grid (#23305), which would move already undistorted pixels.
+    // Production square pixels always follows the detector's map construction.
+    if (!square && cv::countNonZero(distortion) == 0) {
         newK = computation.clone();
         validRoi = cv::Rect(0, 0, size.width, size.height);
     } else {
         newK = cv::getOptimalNewCameraMatrix(
-            computation, calibration.distortion, size, 1.0, size, &validRoi, false);
+            computation, distortion, size, 1.0, size, square ? nullptr : &validRoi, false);
     }
     if (newK.size() != cv::Size(3, 3) || !cv::checkRange(newK))
         throw std::runtime_error("去畸变输出内参无效");
     cv::Mat output;
     newK.convertTo(output, CV_64F);
+    if (square) {
+        double& fx = output.at<double>(0, 0);
+        double& fy = output.at<double>(1, 1);
+        if (fx <= 0 || fy <= 0) throw std::runtime_error("去畸变输出焦距无效");
+        fx = fy = std::min(fx, fy);
+    }
     {
         cv::Mat x, y;
-        cv::initUndistortRectifyMap(computation, calibration.distortion,
+        cv::initUndistortRectifyMap(computation, distortion,
             cv::Mat(), output, size, CV_32FC1, x, y);
         if (!cv::checkRange(x) || !cv::checkRange(y))
             throw std::runtime_error("去畸变映射包含无效数值");
     }
-    cv::initUndistortRectifyMap(computation, calibration.distortion,
+    cv::initUndistortRectifyMap(computation, distortion,
         cv::Mat(), output, size, kMapType, m_map1, m_map2);
     if (m_map1.type() != CV_16SC2 || m_map2.type() != CV_16UC1 || m_map1.size() != size)
         throw std::runtime_error("去畸变映射类型或尺寸无效");
 
-    m_geometry.originalCameraMatrix = calibration.cameraMatrix.clone();
     m_geometry.computationCameraMatrix = computation;
-    m_geometry.distortion = calibration.distortion.clone();
     m_geometry.outputCameraMatrix = output;
     m_geometry.inputSize = size;
     m_geometry.outputSize = size;
@@ -130,7 +139,9 @@ UndistortionMaps::UndistortionMaps(const UndistortionCalibration& calibration,
     m_geometry.cropped = false;
     m_geometry.flipHorizontal = false;
     m_geometry.flipVertical = false;
-    m_geometry.pixelFrame = kProductionAlpha1PixelFrame;
+    m_geometry.pixelFrame = square ? kSquarePixelsProjection : kProductionAlpha1PixelFrame;
+    m_geometry.projection = projection;
+    m_geometry.cameraOrientation = cameraOrientation;
 }
 
 cv::Mat UndistortionMaps::apply(const cv::Mat& image) const {

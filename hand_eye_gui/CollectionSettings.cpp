@@ -48,6 +48,10 @@ void CollectionController::applySettings(const QVariantMap& values) {
         return ok && value >= 0 ? value : -1;
     };
     const bool dual = m_dualCameraMode;
+    const auto projection = collection::parsePixelProjection(text("undistortionProjection", undistortionProjection()).toStdString());
+    if (projection == collection::PixelProjection::Invalid)
+        return fail("请选择有效的去畸变投影模式");
+    const bool projectionChanged = projection != m_projection;
     const QString cameraIp = text("cameraIp", m_cameraIp);
     const QString robotIp = text("robotIp", m_robotIp);
     const int robotSpeed = integer("robotSpeedMmS", m_robotSpeedMmS, collection::maximumRobotSpeedMmS);
@@ -74,6 +78,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
     for (int exposure : exposures) exposureStrings << QString::number(exposure);
     const QString exposureList = exposureStrings.join(',');
     config_resolver::ConfigUpdates updates;
+    if (projectionChanged) updates["undistortion_projection"] = std::string(collection::pixelProjectionPolicy(projection));
     if (cameraIp != m_cameraIp) updates["cam_ip"] = cameraIp.toStdString();
     if (robotIp != m_robotIp) updates["robot_ip"] = robotIp.toStdString();
     if (robotSpeed != m_robotSpeedMmS) updates["robot_speed_mm_s"] = robotSpeed;
@@ -135,6 +140,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
     setStatus("正在保存配置…");
     try {
         m_collectionThread = std::thread([this, dual, camera, camera2, pendingPreview, pendingHealthProbe, path, updates,
+            projection, projectionChanged,
             exposures, exposures2, exposureChanged, exposure2Changed, requestedExposure, requestedExposure2,
             requestedGain2, cameraIp, camera2Ip, camera2Sn, robotIp, robotSpeed, width, height, width2, height2,
             exposureList, exposure2List]() mutable {
@@ -142,6 +148,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
             if (pendingPreview.valid()) pendingPreview.wait();
             if (pendingHealthProbe.valid()) pendingHealthProbe.wait();
             QString error;
+            std::shared_ptr<const collection::UndistortionMaps> maps1, maps2;
             int actualExposure = requestedExposure, deviceExposure = -1, previousDevice = -1;
             int actualExposure2 = requestedExposure2, deviceExposure2 = -1, previousDevice2 = -1;
             bool previousAuto = false, previousAuto2 = false, deviceTouched = false, device2Touched = false;
@@ -178,6 +185,11 @@ void CollectionController::applySettings(const QVariantMap& values) {
                 }
             };
             try {
+                // Build active replacements before writing the setting. A failure keeps the old mode and maps.
+                if (projectionChanged) {
+                    if (m_undistortionMaps) maps1 = buildCameraUndistortion(1, projection);
+                    if (dual && m_undistortionMaps2) maps2 = buildCameraUndistortion(2, projection);
+                }
                 if (camera && updates.count("fusion_exposures_us"))
                     collection::checkCaptureExposures(*camera, exposures);
                 if (camera2 && updates.count("camera2_fusion_exposures_us"))
@@ -207,6 +219,7 @@ void CollectionController::applySettings(const QVariantMap& values) {
                     error += restoreDevice(camera2, 2, previousDevice2, previousAuto2, deviceExposure2);
             }
             QMetaObject::invokeMethod(this, [this, dual, error, actualExposure, actualExposure2,
+                projection, projectionChanged, maps1, maps2,
                 deviceExposure, deviceExposure2, deviceTouched, device2Touched,
                 cameraIp, camera2Ip, camera2Sn, robotIp, robotSpeed, width, height, width2, height2,
                 requestedGain2, exposureList, exposure2List, path, fields = updates.size()] {
@@ -219,6 +232,14 @@ void CollectionController::applySettings(const QVariantMap& values) {
                     emit camera2ActualExposureUsChanged();
                 }
                 if (error.isEmpty()) {
+                    if (projectionChanged) {
+                        ++m_previewGeneration;
+                        m_projection = projection;
+                        m_undistortionMaps = maps1;
+                        m_undistortionMaps2 = maps2;
+                        if (maps1) logUndistortionMap(1);
+                        if (maps2) logUndistortionMap(2);
+                    }
                     if (m_cameraIp != cameraIp) { m_cameraIp = cameraIp; emit cameraIpChanged(); }
                     if (m_robotIp != robotIp) { m_robotIp = robotIp; emit robotIpChanged(); }
                     m_robotSpeedMmS = robotSpeed;
@@ -246,7 +267,8 @@ void CollectionController::applySettings(const QVariantMap& values) {
                     }
                     emit collectionChanged();
                     APP_LOG_EVENT_INFO("config", "settings_apply", "saved",
-                        {{"fields", QString::number(fields)}, {"path", QString::fromStdString(path)}});
+                        {{"fields", QString::number(fields)}, {"path", QString::fromStdString(path)},
+                         {"undistortion_projection", undistortionProjection()}});
                 } else APP_LOG_EVENT_WARNING("config", "settings_apply", "failed", {{"reason", error}});
                 m_settingsSaving = false;
                 QString okDetail;
